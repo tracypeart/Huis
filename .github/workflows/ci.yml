@@ -47,9 +47,10 @@ jobs:
       - name: Diagnose page count (temporary)
         run: |
           set +e
-          npx tsx -e 'import("./src/extract/tools").then(async (t) => { try { console.log("count", await t.pdfPageCount("/tmp/t.pdf")); } catch (e) { console.log("ERR", e); } })'
-          npx tsx -e 'import("./src/extract/tools").then(async (t) => { try { console.log("run", JSON.stringify(await t.run("qpdf", ["--no-warn","--show-npages","/tmp/t.pdf"], { okCodes: [0,3] }))); } catch (e) { console.log("ERR2", e); } })'
-          which prlimit qpdf pdftoppm
+          mkdir -p /tmp/w
+          env -i PATH="$PATH" HOME=/tmp/w TMPDIR=/tmp/w LANG=C.UTF-8 OMP_THREAD_LIMIT=1 qpdf --no-warn --show-npages /tmp/t.pdf; echo "minimal-env exit=$?"
+          env -i PATH="$PATH" HOME=/tmp/w TMPDIR=/tmp/w LANG=C.UTF-8 NODE_ENV=production node --import tsx -e 'import("./src/extract/tools.ts").then(async (t) => { try { console.log("count", await t.pdfPageCount("/tmp/t.pdf")); } catch (e) { console.log("ERR", e && e.message); } })'
+          env -i PATH="$PATH" HOME=/tmp/w TMPDIR=/tmp/w LANG=C.UTF-8 NODE_ENV=production node --import tsx -e 'import("./src/extract/formats.ts").then(async (f) => { const r = await f.extract({ inputPath: "/tmp/t.pdf", outDir: "/tmp/w", filename: "t.pdf", detectedType: "PDF", depth: 0 }); console.log("extract", r.status, r.detail, r.pages); })'
       - name: Type check
         run: npm run typecheck
       - name: Security and privilege tests
