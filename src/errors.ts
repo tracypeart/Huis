@@ -23,3 +23,15 @@ export class UnauthenticatedError extends Error {
     this.name = "UnauthenticatedError";
   }
 }
+
+/**
+ * An error whose message was written for the person using Huis. Only these
+ * (and the classes above) are ever shown on screen; anything else becomes a
+ * generic message so internal details never leak.
+ */
+export class UserFacingError extends Error {
+  constructor(message: string, public readonly status = 400) {
+    super(message);
+    this.name = "UserFacingError";
+  }
+}

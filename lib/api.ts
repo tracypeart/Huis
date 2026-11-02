@@ -4,8 +4,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { ZodError } from "zod";
 import { authConfig } from "../src/auth/config";
 import type { FirmSession } from "../src/db/tenant";
-import { NotFoundError, PermissionDeniedError, UnauthenticatedError } from "../src/errors";
-import { db, getSession } from "./server";
+import { NotFoundError, PermissionDeniedError, UnauthenticatedError, UserFacingError } from "../src/errors";
+import { clientIp, db, getSession, userMessage } from "./server";
 
 /** JSON error that is safe to show the user. */
 export class ApiError extends Error {
@@ -24,6 +24,9 @@ export async function api(
   fn: (s: FirmSession) => Promise<Response | Record<string, unknown>>,
 ): Promise<Response> {
   try {
+    // Block other websites from making requests in the user's name. Browsers
+    // label cross-site requests; state-changing ones must also carry our Origin.
+    if (req.headers.get("sec-fetch-site") === "cross-site") throw new ApiError(403, "Request blocked.");
     if (req.method !== "GET" && req.method !== "HEAD") {
       const origin = req.headers.get("origin");
       if (!origin || origin !== new URL(authConfig().baseUrl).origin) throw new ApiError(403, "Request blocked.");
@@ -31,9 +34,11 @@ export async function api(
     const session = await getSession();
     if (!session) throw new ApiError(401, "Please sign in again.");
     const h = await headers();
-    const ip = (h.get("x-forwarded-for") ?? "").split(",")[0]?.trim() || undefined;
     const out = await db().withFirm(
-      { firmId: session.firmId, userId: session.userId, ipAddress: ip, userAgent: h.get("user-agent") ?? undefined },
+      {
+        firmId: session.firmId, userId: session.userId, sessionVersion: session.sessionVersion,
+        ipAddress: clientIp(h), userAgent: h.get("user-agent") ?? undefined,
+      },
       fn,
     );
     return out instanceof Response ? out : NextResponse.json(out);
@@ -49,9 +54,13 @@ export function apiErrorResponse(err: unknown): Response {
   else if (err instanceof UnauthenticatedError) { status = 401; message = err.message; }
   else if (err instanceof PermissionDeniedError) { status = 403; message = err.message; }
   else if (err instanceof NotFoundError) { status = 404; message = err.message; }
+  else if (err instanceof UserFacingError) { status = err.status; message = err.message; }
   else if (err instanceof ZodError) { status = 400; message = err.issues[0]?.message ?? "Invalid request."; }
-  else if (err instanceof Error && /^(Upload|Chunk|Invalid chunk|This upload)/.test(err.message)) { status = 409; message = err.message; }
-  else console.error("[huis] api error:", err instanceof Error ? err.message : "unknown");
+  else {
+    message = userMessage(err);
+    if (message.startsWith("Something went wrong")) console.error("[huis] api error:", err instanceof Error ? err.name : "unknown");
+    else status = 400;
+  }
   return NextResponse.json({ error: message }, { status, headers: { "cache-control": "no-store" } });
 }
 

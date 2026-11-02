@@ -8,7 +8,7 @@ import { createClient } from "../src/services/clients";
 import { CONTACT_KINDS, createContact } from "../src/services/contacts";
 import { resolveIdentity, signUpFirm } from "../src/services/firms";
 import { addMatterMember, createMatter, linkContactToMatter, setCourtCaseNumber } from "../src/services/matters";
-import { changeUserRole, disableUser, inviteUser, issueInvitation } from "../src/services/users";
+import { changeUserRole, disableUser, endUserSessions, inviteUser, issueInvitation } from "../src/services/users";
 import { moveEvidence } from "../src/services/evidence";
 import { ROLES } from "../src/security/permissions";
 import { act, db, getPending, setSessionCookie, withSession } from "./server";
@@ -171,6 +171,12 @@ export async function disableUserAction(fd: FormData): Promise<void> {
 export async function moveEvidenceAction(fd: FormData): Promise<void> {
   const evidenceId = text(fd, "evidenceId") ?? "";
   return act(`/evidence/${evidenceId}`, "Moved. The move is recorded in the chain of custody.", () => withSession(async (s) => {
-    await moveEvidence(s, evidenceId, text(fd, "folderId") ?? "");
+    await moveEvidence(s, evidenceId, text(fd, "folderId") ?? "", { acknowledgePrivilegeWaiverRisk: fd.get("acknowledge") === "on" });
+  }));
+}
+
+export async function endSessionsAction(fd: FormData): Promise<void> {
+  return act("/users", "Signed out on all devices.", () => withSession(async (s) => {
+    await endUserSessions(s, text(fd, "userId") ?? "");
   }));
 }

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { z } from "zod";
 import type { FirmSession } from "../db/tenant";
-import { NotFoundError, PermissionDeniedError } from "../errors";
+import { NotFoundError, PermissionDeniedError, UserFacingError } from "../errors";
 import { INTERNAL_ROLES } from "../security/permissions";
 import { storageKeys, type EvidenceVault } from "../storage/store";
 import { recordAudit } from "./audit";
@@ -118,9 +118,9 @@ export function expectedChunkLength(session: UploadSession, index: number): numb
  * The database work is done by the caller around this.
  */
 export async function storeChunk(vault: EvidenceVault, session: UploadSession, index: number, body: Buffer): Promise<void> {
-  if (session.completedAt) throw new Error("This upload is already complete.");
-  if (!Number.isInteger(index) || index < 0 || index >= session.chunkCount) throw new Error("Invalid chunk number.");
-  if (body.length !== expectedChunkLength(session, index)) throw new Error("Chunk size does not match.");
+  if (session.completedAt) throw new UserFacingError("This upload is already complete.", 409);
+  if (!Number.isInteger(index) || index < 0 || index >= session.chunkCount) throw new UserFacingError("Invalid chunk number.");
+  if (body.length !== expectedChunkLength(session, index)) throw new UserFacingError("Chunk size does not match.");
   await vault.put(session.firmId, storageKeys.stagingChunk(session.firmId, session.id, index), Readable.from([body]));
 }
 
@@ -142,7 +142,7 @@ export async function markChunkReceived(s: FirmSession, sessionId: string, index
  */
 export async function assembleOriginal(vault: EvidenceVault, session: UploadSession, evidenceId: string): Promise<{ size: number; sha256: string; storageKey: string }> {
   const missing = Array.from({ length: session.chunkCount }, (_, i) => i).filter((i) => !session.receivedChunks.includes(i));
-  if (missing.length) throw new Error(`Upload incomplete: ${missing.length} part(s) missing.`);
+  if (missing.length) throw new UserFacingError(`Upload incomplete: ${missing.length} part(s) missing.`, 409);
   const storageKey = storageKeys.original(session.firmId, session.matterId, evidenceId);
   const firmId = session.firmId;
   async function* chunks() {
@@ -154,7 +154,7 @@ export async function assembleOriginal(vault: EvidenceVault, session: UploadSess
   const { size, sha256 } = await vault.put(firmId, storageKey, Readable.from(chunks()));
   if (size !== session.totalSize) {
     await vault.delete(storageKey);
-    throw new Error("Upload size does not match what was announced.");
+    throw new UserFacingError("Upload size does not match what was announced.");
   }
   return { size, sha256, storageKey };
 }
@@ -166,7 +166,7 @@ export async function recordEvidence(
   const locked = (await s.client.query(
     "SELECT completed_at FROM huis.upload_sessions WHERE id = $1 FOR UPDATE", [session.id],
   )).rows[0];
-  if (!locked || locked.completed_at) throw new Error("This upload is already complete.");
+  if (!locked || locked.completed_at) throw new UserFacingError("This upload is already complete.", 409);
 
   await s.client.query(
     `INSERT INTO huis.evidence_items (id, firm_id, matter_id, folder_id, original_filename, relative_path,
@@ -176,19 +176,8 @@ export async function recordEvidence(
      session.declaredType, file.size, file.sha256, file.storageKey, session.source, session.receivedFrom,
      session.dateReceived, s.actor.userId],
   );
-  await s.client.query(
-    `INSERT INTO huis.evidence_custody_events (firm_id, evidence_id, actor_user_id, event, details, ip_address)
-     VALUES ($1, $2, $3, 'received', $4, $5)`,
-    [s.actor.firmId, evidenceId, s.actor.userId, JSON.stringify({
-      original_filename: session.filename, relative_path: session.relativePath, size_bytes: file.size,
-      sha256: file.sha256, source: session.source, received_from: session.receivedFrom,
-      date_received: session.dateReceived,
-    }), s.ctx.ipAddress ?? null],
-  );
-  await s.client.query(
-    "INSERT INTO huis.jobs (firm_id, kind, evidence_id) VALUES ($1, 'evidence.process', $2)",
-    [s.actor.firmId, evidenceId],
-  );
+  // The database itself writes the "received" custody event and queues
+  // scanning (trigger huis.evidence_after_insert), so neither can be forged.
   await s.client.query(
     "UPDATE huis.upload_sessions SET completed_at = now(), evidence_id = $2 WHERE id = $1", [session.id, evidenceId],
   );
@@ -299,29 +288,41 @@ export async function authorizeDownload(s: FirmSession, evidenceId: string): Pro
       item.status === "pending_scan" ? "open this file until its security scan is complete" : "open this file — it failed its security scan",
     );
   }
-  await s.client.query(
-    `INSERT INTO huis.evidence_custody_events (firm_id, evidence_id, actor_user_id, event, details, ip_address)
-     VALUES ($1, $2, $3, 'downloaded', '{}', $4)`,
-    [s.actor.firmId, evidenceId, s.actor.userId, s.ctx.ipAddress ?? null],
-  );
+  const ok = (await s.client.query<{ ok: boolean }>("SELECT huis.record_evidence_download($1) AS ok", [evidenceId])).rows[0]?.ok;
+  if (!ok) throw new PermissionDeniedError("open this file");
   await recordAudit(s, "evidence.downloaded", { targetType: "evidence", targetId: evidenceId, matterId: item.matterId });
   return item;
 }
 
-/** Moves an item to another folder in the same matter (e.g. into the red privileged area). */
-export async function moveEvidence(s: FirmSession, evidenceId: string, folderId: string): Promise<void> {
+export class SharingAcknowledgementRequired extends UserFacingError {
+  constructor() {
+    super(
+      "This folder can be seen by people outside the firm (such as the client). Moving material there may waive privilege. " +
+      "Confirm you have reviewed it before moving.",
+    );
+    this.name = "SharingAcknowledgementRequired";
+  }
+}
+
+/**
+ * Moves an item to another folder in the same matter (for example into the red
+ * privileged area). Moving into a folder people outside the firm can see
+ * requires an explicit privilege-waiver acknowledgement, recorded in custody.
+ */
+export async function moveEvidence(
+  s: FirmSession, evidenceId: string, folderId: string, opts: { acknowledgePrivilegeWaiverRisk?: boolean } = {},
+): Promise<void> {
   const item = await getEvidence(s, evidenceId);
   if (!INTERNAL_ROLES.has(s.actor.role) || s.actor.role === "read_only") throw new PermissionDeniedError("move evidence");
-  const target = (await s.client.query<{ name: string }>(
-    "SELECT name FROM huis.matter_folders WHERE id = $1 AND matter_id = $2", [folderId, item.matterId],
-  )).rows[0];
-  if (!target) throw new NotFoundError("Folder");
-  const res = await s.client.query("UPDATE huis.evidence_items SET folder_id = $2 WHERE id = $1", [evidenceId, folderId]);
-  if (res.rowCount === 0) throw new PermissionDeniedError("move evidence");
-  await s.client.query(
-    `INSERT INTO huis.evidence_custody_events (firm_id, evidence_id, actor_user_id, event, details, ip_address)
-     VALUES ($1, $2, $3, 'moved', $4, $5)`,
-    [s.actor.firmId, evidenceId, s.actor.userId, JSON.stringify({ from: item.folderName, to: target.name }), s.ctx.ipAddress ?? null],
-  );
-  await recordAudit(s, "evidence.moved", { targetType: "evidence", targetId: evidenceId, matterId: item.matterId, metadata: { to_folder: folderId } });
+  if (!z.uuid().safeParse(folderId).success) throw new NotFoundError("Folder");
+  const result = (await s.client.query<{ r: string }>(
+    "SELECT huis.move_evidence($1, $2, $3) AS r", [evidenceId, folderId, Boolean(opts.acknowledgePrivilegeWaiverRisk)],
+  )).rows[0]?.r;
+  if (result === "folder_not_found") throw new NotFoundError("Folder");
+  if (result === "acknowledgement_required") throw new SharingAcknowledgementRequired();
+  if (result === "moved") {
+    await recordAudit(s, "evidence.moved", {
+      targetType: "evidence", targetId: evidenceId, matterId: item.matterId, metadata: { to_folder: folderId },
+    });
+  }
 }

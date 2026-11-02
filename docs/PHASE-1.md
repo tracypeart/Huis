@@ -15,7 +15,7 @@
 | Matter numbers | `huis.assign_matter_number` trigger | `HUIS-UT-ARIVERA-2026-000001` per firm per year; court case number and firm number kept separately |
 | Roles | `src/security/permissions.ts` + database policies | 14 roles; admin-only actions enforced in both the app and the database |
 | Licensing | `licenses` table | One active license per user; one account per firm (decision #4) |
-| Audit log | `audit_events` | Append-only (even a database superuser is blocked), hash-chained so tampering is detectable; client names never written to it |
+| Audit log | `audit_events` | Append-only (edits and deletes are refused, even for the table owner), hash-chained so tampering is detectable; client names never written to it. See `SECURITY-REVIEW-2026-11.md` for the remaining superuser caveat |
 | Sign-up / sign-in lookup | `huis.bootstrap_firm`, `huis.resolve_identity` | New firm on a 7-day trial; sign-in returns only firm and user ids |
 
 ## How application code must access data

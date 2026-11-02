@@ -255,10 +255,13 @@ describe("originals are immutable; custody is append-only", () => {
   it("blocks edits to the original record, scan results and custody events", async () => {
     const x = await setup();
     const item = await upload(x.owner, { matterId: x.matter.id, filename: "x.txt" }, Buffer.from("original"));
+    // The app's database role has no UPDATE right on evidence at all.
     await expect(db.withFirm(x.owner, (s) => s.client.query("UPDATE huis.evidence_items SET sha256 = repeat('0', 64) WHERE id = $1", [item.id])))
-      .rejects.toThrow(/immutable/);
+      .rejects.toBeInstanceOf(PermissionDeniedError);
     await expect(db.withFirm(x.owner, (s) => s.client.query("UPDATE huis.evidence_items SET status = 'clean' WHERE id = $1", [item.id])))
-      .rejects.toThrow(/scanner/);
+      .rejects.toBeInstanceOf(PermissionDeniedError);
+    // Even the table owner can't rewrite the original record.
+    await expect(t.admin.query("UPDATE huis.evidence_items SET sha256 = repeat('0', 64) WHERE id = $1", [item.id])).rejects.toThrow(/immutable/);
     await expect(t.admin.query("DELETE FROM huis.evidence_items WHERE id = $1", [item.id])).rejects.toThrow(/append-only/);
     await expect(t.admin.query("UPDATE huis.evidence_custody_events SET event = 'x' WHERE evidence_id = $1", [item.id])).rejects.toThrow(/append-only/);
     await expect(db.withFirm(x.owner, (s) => s.client.query(

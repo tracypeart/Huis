@@ -36,6 +36,8 @@ export interface SessionPayload extends Record<string, unknown> {
   userId: string;
   provider: string;
   subject: string;
+  /** Bumped on sign-out-everywhere / admin "end sessions"; old cookies stop working. */
+  sessionVersion: number;
 }
 
 /** Sign-in in progress (between leaving for Microsoft and returning). */

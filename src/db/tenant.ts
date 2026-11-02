@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import pg from "pg";
 import { PermissionDeniedError, UnauthenticatedError } from "../errors";
 import type { Role } from "../security/permissions";
@@ -8,6 +9,8 @@ export interface RequestContext {
   userId: string;
   ipAddress?: string;
   userAgent?: string;
+  /** From the session cookie; must match the user's current session version. */
+  sessionVersion?: number;
 }
 
 /** The verified, active user behind a request (loaded from the database). */
@@ -16,6 +19,7 @@ export interface Actor {
   firmId: string;
   role: Role;
   fullName: string;
+  sessionVersion: number;
 }
 
 /** A database session bound to one firm and one user. */
@@ -50,19 +54,23 @@ export class HuisDb {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      const ip = ctx.ipAddress && isIP(ctx.ipAddress) ? ctx.ipAddress : "";
       await client.query(
-        "SELECT set_config('app.firm_id', $1, true), set_config('app.user_id', $2, true)",
-        [ctx.firmId, ctx.userId],
+        "SELECT set_config('app.firm_id', $1, true), set_config('app.user_id', $2, true), set_config('app.ip', $3, true)",
+        [ctx.firmId, ctx.userId, ip],
       );
-      const { rows } = await client.query<{ id: string; firm_id: string; role: Role; full_name: string; status: string }>(
-        "SELECT id, firm_id, role, full_name, status FROM huis.users WHERE id = $1",
+      const { rows } = await client.query<{ id: string; firm_id: string; role: Role; full_name: string; status: string; session_version: number }>(
+        "SELECT id, firm_id, role, full_name, status, session_version FROM huis.users WHERE id = $1",
         [ctx.userId],
       );
       const row = rows[0];
-      if (!row || row.status !== "active" || row.firm_id !== ctx.firmId) {
+      if (!row || row.status !== "active" || row.firm_id !== ctx.firmId
+          || (ctx.sessionVersion !== undefined && ctx.sessionVersion !== row.session_version)) {
         throw new UnauthenticatedError();
       }
-      const actor: Actor = { userId: row.id, firmId: row.firm_id, role: row.role, fullName: row.full_name };
+      const actor: Actor = {
+        userId: row.id, firmId: row.firm_id, role: row.role, fullName: row.full_name, sessionVersion: row.session_version,
+      };
       const result = await fn({ client, ctx, actor });
       await client.query("COMMIT");
       return result;

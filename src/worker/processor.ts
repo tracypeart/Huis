@@ -27,7 +27,7 @@ export class EvidenceProcessor {
   /** Processes one job. Returns false when the queue is empty. */
   async runOnce(): Promise<boolean> {
     const { rows } = await this.pool.query<{
-      job_id: string; firm_id: string; evidence_id: string; storage_key: string; sha256: string; attempts: number;
+      job_id: string; lock_token: string; firm_id: string; evidence_id: string; storage_key: string; sha256: string; attempts: number;
     }>("SELECT * FROM huis.worker_claim_job()");
     const job = rows[0];
     if (!job) return false;
@@ -61,12 +61,12 @@ export class EvidenceProcessor {
       const detail = scan.status === "clean" && type.executable
         ? `${scan.detail}. Warning: this file is a program (${type.label}), not a document.`
         : scan.detail;
-      await this.pool.query("SELECT huis.worker_complete($1, $2, $3, $4, $5)", [
-        job.job_id, scan.status, `${this.scanner.name}: ${detail}`, type.label, verified ?? "unverified",
+      await this.pool.query("SELECT huis.worker_complete($1, $2, $3, $4, $5, $6)", [
+        job.job_id, job.lock_token, scan.status, `${this.scanner.name}: ${detail}`, type.label, verified ?? "unverified",
       ]);
     } catch (err) {
       const message = err instanceof Error ? err.message : "processing error";
-      await this.pool.query("SELECT huis.worker_fail($1, $2, $3)", [job.job_id, message, job.attempts >= MAX_ATTEMPTS]);
+      await this.pool.query("SELECT huis.worker_fail($1, $2, $3, $4)", [job.job_id, job.lock_token, message, job.attempts >= MAX_ATTEMPTS]);
     }
     return true;
   }

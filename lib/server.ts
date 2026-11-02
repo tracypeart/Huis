@@ -9,7 +9,7 @@ import {
   type PendingPayload, type SessionPayload,
 } from "../src/auth/tokens";
 import { HuisDb, type FirmSession } from "../src/db/tenant";
-import { NotFoundError, PermissionDeniedError, UnauthenticatedError } from "../src/errors";
+import { NotFoundError, PermissionDeniedError, UnauthenticatedError, UserFacingError } from "../src/errors";
 
 const globalForDb = globalThis as unknown as { huisDb?: HuisDb };
 
@@ -32,10 +32,27 @@ function cookieOptions(maxAge: number) {
   };
 }
 
-export async function setSessionCookie(p: SessionPayload): Promise<void> {
+/**
+ * Starts a session for a verified identity in one firm. The cookie carries the
+ * user's current session version, so "sign out everywhere" and an admin's
+ * "end sessions" invalidate every existing cookie at once.
+ */
+export async function setSessionCookie(p: { firmId: string; userId: string; provider: string; subject: string }): Promise<void> {
+  const sessionVersion = await db().withFirm({ firmId: p.firmId, userId: p.userId }, async (s) => s.actor.sessionVersion);
   const jar = await cookies();
-  jar.set(COOKIE.session, await seal(p, authConfig().sessionKey, "session", SESSION_TTL_SECONDS), cookieOptions(SESSION_TTL_SECONDS));
+  jar.set(COOKIE.session, await seal({ ...p, sessionVersion }, authConfig().sessionKey, "session", SESSION_TTL_SECONDS), cookieOptions(SESSION_TTL_SECONDS));
   jar.delete(COOKIE.pending);
+}
+
+/**
+ * The visitor's IP for audit records. Forwarded headers can be forged by the
+ * browser, so they are only trusted when Huis runs behind a known proxy
+ * (HUIS_TRUST_PROXY=1), and then only the entry that proxy appended (the last).
+ */
+export function clientIp(h: Headers): string | undefined {
+  if (process.env.HUIS_TRUST_PROXY !== "1") return undefined;
+  const parts = (h.get("x-forwarded-for") ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+  return parts.at(-1);
 }
 
 export async function setPendingCookie(p: PendingPayload): Promise<void> {
@@ -50,7 +67,9 @@ export async function getPending(): Promise<PendingPayload | null> {
 
 export async function getSession(): Promise<SessionPayload | null> {
   const jar = await cookies();
-  return unseal<SessionPayload>(jar.get(COOKIE.session)?.value, authConfig().sessionKey, "session");
+  const s = await unseal<SessionPayload>(jar.get(COOKIE.session)?.value, authConfig().sessionKey, "session");
+  // A session without a version can't be revoked, so it is not accepted.
+  return s && typeof s.sessionVersion === "number" ? s : null;
 }
 
 export async function clearAuthCookies(): Promise<void> {
@@ -66,10 +85,12 @@ export async function withSession<T>(fn: (s: FirmSession) => Promise<T>): Promis
   const session = await getSession();
   if (!session) redirect("/signin");
   const h = await headers();
-  const ip = (h.get("x-forwarded-for") ?? "").split(",")[0]?.trim() || undefined;
   try {
     return await db().withFirm(
-      { firmId: session.firmId, userId: session.userId, ipAddress: ip, userAgent: h.get("user-agent") ?? undefined },
+      {
+        firmId: session.firmId, userId: session.userId, sessionVersion: session.sessionVersion,
+        ipAddress: clientIp(h), userAgent: h.get("user-agent") ?? undefined,
+      },
       fn,
     );
   } catch (err) {
@@ -105,7 +126,7 @@ export async function getFlash(flashId: string | undefined): Promise<Flash | nul
 
 /** Turns errors into messages that are safe to show (no SQL or internal detail). */
 export function userMessage(err: unknown): string {
-  if (err instanceof PermissionDeniedError || err instanceof NotFoundError) return err.message;
+  if (err instanceof PermissionDeniedError || err instanceof NotFoundError || err instanceof UserFacingError) return err.message;
   if (err instanceof ZodError) {
     const issue = err.issues[0];
     return issue ? `Please check ${issue.path.join(".") || "the form"}: ${issue.message}` : "Please check the form.";
@@ -114,10 +135,12 @@ export function userMessage(err: unknown): string {
     const code = (err as { code?: string }).code;
     if (code === "23505") return "That already exists. Please use a different value.";
     if (code === "23503") return "A related record was not found.";
-    return "Something went wrong. Please try again.";
+    // Rules enforced by the database raise plain-language messages; show those
+    // that were written for users (database exceptions with code P0001).
+    if (code === "P0001" && err instanceof Error && /^[A-Z][^\n]{10,200}$/.test(err.message) && !/[_()]/.test(err.message)) {
+      return err.message;
+    }
   }
-  if (err instanceof Error && err.name !== "Error") return err.message;
-  if (err instanceof Error && err.message.length < 200) return err.message;
   return "Something went wrong. Please try again.";
 }
 

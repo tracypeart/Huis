@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 import type { FirmSession } from "../db/tenant";
-import { NotFoundError } from "../errors";
+import { NotFoundError, UserFacingError } from "../errors";
 import { assertCan, INTERNAL_ROLES, ROLES, type Role } from "../security/permissions";
 import { recordAudit } from "./audit";
 import { deriveMatterCode } from "./firms";
@@ -82,7 +82,7 @@ export async function issueInvitation(s: FirmSession, userId: string): Promise<s
   const target = rows[0];
   if (!target) throw new NotFoundError("User");
   if (target.auth_subject || target.status !== "active") {
-    throw new Error("This person already has access or is disabled.");
+    throw new UserFacingError("This person already has access or is disabled.");
   }
   await s.client.query(
     "UPDATE huis.user_invitations SET revoked_at = now() WHERE user_id = $1 AND accepted_at IS NULL AND revoked_at IS NULL",
@@ -115,6 +115,11 @@ export async function changeUserRole(s: FirmSession, userId: string, role: Role)
   );
   const current = rows[0];
   if (!current) throw new NotFoundError("User");
+  if (INTERNAL_ROLES.has(current.role) !== INTERNAL_ROLES.has(role)) {
+    throw new UserFacingError(
+      "Someone can't be moved between firm staff and an outside role (client, co-counsel, expert). Remove their access and invite them again with the new role.",
+    );
+  }
   if (current.role === "firm_owner" && role !== "firm_owner") {
     await assertAnotherActiveOwner(s, userId);
   }
@@ -148,6 +153,14 @@ async function assertAnotherActiveOwner(s: FirmSession, excludingUserId: string)
     [excludingUserId],
   );
   if ((rows[0]?.n ?? 0) === 0) {
-    throw new Error("A firm must always have at least one active owner.");
+    throw new UserFacingError("A firm must always have at least one active owner.");
   }
+}
+
+/** Signs a person out on every device immediately (e.g. lost laptop). */
+export async function endUserSessions(s: FirmSession, userId: string): Promise<void> {
+  assertCan(s.actor.role, "users.manage");
+  const res = await s.client.query("UPDATE huis.users SET session_version = session_version + 1 WHERE id = $1", [userId]);
+  if (res.rowCount === 0) throw new NotFoundError("User");
+  await recordAudit(s, "user.sessions_ended", { targetType: "user", targetId: userId });
 }

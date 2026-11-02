@@ -1,4 +1,4 @@
-import { changeRoleAction, disableUserAction, inviteUserAction, reissueInviteAction } from "../../../lib/actions";
+import { changeRoleAction, disableUserAction, endSessionsAction, inviteUserAction, reissueInviteAction } from "../../../lib/actions";
 import { getFlash, withSession } from "../../../lib/server";
 import { FlashBanner, ROLE_LABELS } from "../../../lib/ui";
 import { listUsers } from "../../../src/services/users";
@@ -64,6 +64,12 @@ export default async function Users({ searchParams }: { searchParams: Promise<{ 
                 )}</td>
                 <td><span className="badge">{u.status}</span></td>
                 <td>
+                  {u.status === "active" && u.signInLinked ? (
+                    <form action={endSessionsAction} style={{ marginBottom: 6 }}>
+                      <input type="hidden" name="userId" value={u.id} />
+                      <button type="submit" className="secondary">Sign out everywhere</button>
+                    </form>
+                  ) : null}
                   {u.status === "active" && u.id !== me ? (
                     <form action={disableUserAction}>
                       <input type="hidden" name="userId" value={u.id} />
