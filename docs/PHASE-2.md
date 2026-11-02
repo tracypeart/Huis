@@ -1,6 +1,6 @@
 # Phase 2 — Universal Intake & Evidence Engine
 
-**Status:** Part 1 (secure intake) merged after independent review. Part 2 (readable & searchable) built and tested — under independent review.
+**Status:** Part 1 (secure intake) and Part 2 (readable & searchable) merged after independent security reviews. Part 3 in progress.
 
 ## Deferred to the end of the build (Tracy, Nov 1 2026)
 Hosting, the production database, Replit Secrets, the production Microsoft redirect address and a real ClamAV server are set up together at the end. Until then everything runs and is tested locally.
