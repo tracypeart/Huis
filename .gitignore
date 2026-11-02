@@ -8,9 +8,9 @@ coverage/
 .DS_Store
 
 # Never commit client data, evidence or exports
-uploads/
-evidence/
-exports/
+/uploads/
+/evidence/
+/exports/
 *.pst
 *.mbox
 *.ost
