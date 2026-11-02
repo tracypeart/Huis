@@ -57,9 +57,11 @@ export function run(cmd: string, args: string[], opts: {
 export async function pdfPageCount(file: string): Promise<number> {
   // Paths are always absolute ones Huis generated, so they can't be mistaken for options.
   if (!path.isAbsolute(file)) throw new Error("expected an absolute path");
-  const out = (await run("qpdf", ["--show-npages", file], { timeoutSec: 120, maxBytes: 64, okCodes: [0, 3] })).trim();
-  if (!/^\d{1,7}$/.test(out)) throw new Error("page count unreadable");
-  const n = Number(out);
+  const out = await run("qpdf", ["--no-warn", "--show-npages", file], { timeoutSec: 120, maxBytes: 64 * 1024, okCodes: [0, 3] });
+  // The count is the only line that is just a number (ignore any notices).
+  const line = out.split(/\r?\n/).map((l) => l.trim()).filter((l) => /^\d{1,7}$/.test(l)).pop();
+  if (!line) throw new Error("page count unreadable");
+  const n = Number(line);
   if (n < 1) throw new Error("PDF has no pages");
   return n;
 }

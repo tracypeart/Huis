@@ -36,6 +36,13 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends poppler-utils tesseract-ocr tesseract-ocr-eng \
             libreoffice-writer libreoffice-calc libreoffice-impress ffmpeg pst-utils qpdf
+      - name: Diagnose qpdf (temporary)
+        run: |
+          qpdf --version | head -1
+          printf '%%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%%%EOF\n' > /tmp/t.pdf
+          set +e
+          qpdf --no-warn --show-npages /tmp/t.pdf; echo "exit=$?"
+          qpdf --show-npages /tmp/t.pdf; echo "exit=$?"
       - run: npm ci
       - name: Type check
         run: npm run typecheck
