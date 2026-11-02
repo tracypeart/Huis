@@ -49,6 +49,20 @@
 | R3-4 | Low | Comparing two crafted files could stall the web server for ~0.7 s per request | Lines compared as integers, 1 million characters per side; the crafted case now takes 74 ms or is refused as too large |
 | R3-5 | Suspected Medium | A crafted mailbox could expand to fill the worker's disk before any limit applied | Disk use is watched while a mailbox unpacks and unpacking stops past the limit; the worker checks the upload's remaining budget *before* encrypting and storing contained files |
 
+## Fourth review — Phase 2 part 3b (viewer, marks, redacted and exhibit copies)
+
+**Scope:** the page viewer, viewing copies, highlights/notes/redaction marks, produced (redacted / exhibit / Bates) copies.
+**Result:** work product held: clients, walled-out staff and other firms could not see, add or remove marks or copy requests; read-only staff could view but not mark; Bates numbers stayed unique under 8 concurrent requests; redactions held on rotated pages; LibreOffice did not pull in linked local files. The reviewer confirmed 1 High, 2 Medium and 2 Low problems, plus suspected ones. **All fixed**, each with a regression test ("security review 4" in `test/extraction.test.ts`); the reviewer's exploit tests now fail.
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| R4-1 | High | On PDFs with a crop area (common in scanned and Acrobat-cropped files), the viewer shows the crop but copies rendered the whole page, so redactions could land in the wrong place and content the attorney never saw could be produced | Copies render exactly the area the viewer shows (`-cropbox`); test proves the redacted word and the hidden margin are both gone |
+| R4-2 | Medium | Filled-in form fields weren't drawn in the viewer but were printed into copies, so they couldn't be seen or redacted | The viewer draws form fields and annotations exactly as copies are produced (confirmed in a real browser) |
+| R4-3 | Medium | A crafted document title could fake the page count, so a production was silently cut short | Page counts come from the PDF's real page tree (qpdf), never from text output; the copy maker also checks the renderer agrees there's no extra page |
+| R4-4 | Low | A huge page was only refused after it was rendered (hundreds of MB to GB) | Rendering runs under memory and file-size limits |
+| R4-5 | Low | A copy shared with a client revealed the privileged source's id, name, fingerprint and requester in the copy's custody record | The copy's own record says only what the copy is (labels, Bates, number of redactions); the link to the source is kept where only firm staff can see it |
+| Suspected | Low | Copies could be made from a document quarantined after the request; unlimited mark sizes and counts | Requests from no-longer-clean sources fail; mark requests capped at 16 KB; 5,000 marks per document and 2,000 redactions per copy |
+
 ## Still open (tracked, not code defects)
 1. **MFA enforcement** — Microsoft sign-in doesn't yet require proof of MFA. Plan: require the firm's Microsoft MFA (Conditional Access) or a Huis passkey. Part of the end-of-build Azure/hosting step.
 2. **Administrator-level tampering** — someone with full database superuser access could switch off the protective rules and rewrite history consistently. The hash chains make ordinary tampering detectable, but defeating a superuser needs the chain's latest fingerprint stored outside the database (e.g. a daily signed export). Planned with production hosting.

@@ -969,7 +969,10 @@ describe("part 3b: produced copies", () => {
     expect(srcEvents.map((e) => e.event)).toEqual(expect.arrayContaining(["copy_requested", "copy_produced"]));
     const copyEvents = (await t.admin.query("SELECT event, details FROM huis.evidence_custody_events WHERE evidence_id = $1 ORDER BY chain_seq", [produced.id])).rows;
     expect(copyEvents.map((e) => e.event).slice(0, 2)).toEqual(["received", "produced_from"]);
-    expect(copyEvents[1].details).toMatchObject({ source_id: item.id, redactions: 1, bates_prefix: "ACME", bates_start: 1 });
+    expect(copyEvents[1].details).toMatchObject({ redactions: 1, bates_prefix: "ACME", bates_start: 1 });
+    // The copy may go outside the firm, so its own record names nothing about the source.
+    expect(Object.keys(copyEvents[1].details).filter((k) => /source|requested_by/.test(k))).toEqual([]);
+    expect(produced.receivedFrom).toBe("Produced by Huis");
     expect(await db.withFirm(x.owner, (s) => producedFrom(s, produced.id))).toEqual({ id: item.id, filename: "termination-letter.pdf" });
 
     // The original is untouched.
@@ -1022,5 +1025,115 @@ describe("part 3b: produced copies", () => {
     await db.withFirm(x.owner, (s) => addMatterMember(s, { matterId: x.matter.id, userId: x.portal.id, access: "view", acknowledgePrivilegeWaiverRisk: true }));
     await expect(db.withFirm(x.portalCtx, (s) => requestCopy(s, item.id, { redact: false, exhibitLabel: "1", folderId: folder.id }))).rejects.toThrow();
     await expect(db.withFirm(x.portalCtx, (s) => s.client.query("SELECT huis.request_copy($1, false, '1', null, $2, true)", [item.id, folder.id]))).rejects.toThrow();
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// Security review 4 (part 3b) regressions
+// ---------------------------------------------------------------------------
+/** A hand-built PDF: pages with their own MediaBox/CropBox and content, plus an optional raw Info title. */
+function rawPdf(pages: { media: number[]; crop?: number[]; content: string }[], title?: string): Buffer {
+  const objs: string[] = [];
+  const kids = pages.map((_, i) => 4 + i * 2);
+  objs.push("<< /Type /Catalog /Pages 2 0 R >>");
+  objs.push(`<< /Type /Pages /Kids [${kids.map((k) => `${k} 0 R`).join(" ")}] /Count ${pages.length} >>`);
+  objs.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+  pages.forEach((p, i) => {
+    objs.push(`<< /Type /Page /Parent 2 0 R /MediaBox [${p.media.join(" ")}]${p.crop ? ` /CropBox [${p.crop.join(" ")}]` : ""} /Resources << /Font << /F1 3 0 R >> >> /Contents ${5 + i * 2} 0 R >>`);
+    objs.push(`<< /Length ${p.content.length} >>\nstream\n${p.content}\nendstream`);
+  });
+  if (title !== undefined) objs.push(`<< /Title (${title}) >>`);
+  let out = "%PDF-1.4\n";
+  const offs: number[] = [];
+  objs.forEach((o, i) => { offs.push(out.length); out += `${i + 1} 0 obj\n${o}\nendobj\n`; });
+  const x = out.length;
+  out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n${offs.map((o) => `${String(o).padStart(10, "0")} 00000 n \n`).join("")}`;
+  out += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R${title !== undefined ? ` /Info ${objs.length} 0 R` : ""} >>\nstartxref\n${x}\n%%EOF\n`;
+  return Buffer.from(out, "latin1");
+}
+
+describe("security review 4 regressions", () => {
+  it("F1: on cropped pages, redactions land where they were drawn and nothing outside the crop is produced", async () => {
+    const x = await setup();
+    const discovery = (await db.withFirm(x.owner, (s) => listMatterFolders(s, x.matter.id))).find((f) => f.name === "Discovery")!;
+    // MediaBox 0 0 600 800; visible CropBox 300 400 600 800 (top-right quarter).
+    const content = [
+      "BT /F1 28 Tf 330 700 Td (VISIBLE HEADING) Tj ET",
+      "BT /F1 28 Tf 330 600 Td (SECRETWORD) Tj ET",
+      "BT /F1 28 Tf 40 100 Td (OUTSIDECROP) Tj ET",
+    ].join("\n");
+    const file = path.join(dir, "cropped.pdf");
+    await writeFile(file, rawPdf([{ media: [0, 0, 600, 800], crop: [300, 400, 600, 800], content }]));
+    const item = await upload(x.owner, x.matter.id, file);
+    await processor.drain();
+    // The mark as the viewer records it: fractions of the CropBox (300 wide, 400 tall, origin top-left).
+    // SECRETWORD baseline y=600 → 200 pt below the crop top; x 330 → 30 pt in.
+    await db.withFirm(x.owner, (s) => addAnnotation(s, item.id, { page: 1, kind: "redaction", x: 25 / 300, y: 170 / 400, w: 260 / 300, h: 45 / 400 }));
+    await db.withFirm(x.owner, (s) => requestCopy(s, item.id, { redact: true, folderId: discovery.id }));
+    await processor.drain();
+    const copy = (await db.withFirm(x.owner, (s) => listCopies(s, item.id)))[0]!;
+    expect(copy.status).toBe("done");
+    const out = await fetchStored(x.firmId, storageKeys.original(x.firmId, x.matter.id, copy.producedId!));
+    const size = /Page size:\s+([\d.]+) x ([\d.]+)/.exec(execFileSync("pdfinfo", [out], { encoding: "utf8" }))!;
+    expect(Math.round(Number(size[1]))).toBe(300);
+    expect(Math.round(Number(size[2]))).toBe(400);
+    const png = path.join(dir, `crop-${randomBytes(3).toString("hex")}`);
+    execFileSync("pdftoppm", ["-r", "200", "-png", "-singlefile", out, png]);
+    const text = execFileSync("tesseract", [`${png}.png`, "-"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    expect(text).toMatch(/VISIBLE/);
+    expect(text).not.toMatch(/SECRET/);
+    expect(text).not.toMatch(/OUTSIDE/);
+  });
+
+  it("F3: a crafted title can't fake the page count, so productions are never cut short", async () => {
+    const x = await setup();
+    const discovery = (await db.withFirm(x.owner, (s) => listMatterFolders(s, x.matter.id))).find((f) => f.name === "Discovery")!;
+    const page = (n: number) => ({ media: [0, 0, 612, 792], content: `BT /F1 24 Tf 72 700 Td (Page number ${n}) Tj ET` });
+    const file = path.join(dir, "title-trick.pdf");
+    await writeFile(file, rawPdf([page(1), page(2), page(3)], "x\nPages: 1"));
+    expect(execFileSync("pdfinfo", [file], { encoding: "utf8" })).toMatch(/^Pages:\s+1$/m); // the trick fools naive parsing
+    const item = await upload(x.owner, x.matter.id, file);
+    await processor.drain();
+    expect((await db.withFirm(x.owner, (s) => getEvidence(s, item.id)))?.pageCount).toBe(3);
+    await db.withFirm(x.owner, (s) => requestCopy(s, item.id, { redact: false, batesPrefix: "TRICK", folderId: discovery.id }));
+    await processor.drain();
+    const copy = (await db.withFirm(x.owner, (s) => listCopies(s, item.id)))[0]!;
+    expect(copy).toMatchObject({ status: "done", batesStart: 1, batesEnd: 3 });
+    const out = await fetchStored(x.firmId, storageKeys.original(x.firmId, x.matter.id, copy.producedId!));
+    expect(Number(execFileSync("qpdf", ["--show-npages", out], { encoding: "utf8" }).trim())).toBe(3);
+  });
+
+  it("F5: a copy shared with the client doesn't reveal its privileged source", async () => {
+    const x = await setup();
+    await db.withFirm(x.owner, (s) => addMatterMember(s, { matterId: x.matter.id, userId: x.portal.id, access: "view", acknowledgePrivilegeWaiverRisk: true }));
+    const folders = await db.withFirm(x.owner, (s) => listMatterFolders(s, x.matter.id));
+    const red = folders.find((f) => f.isPrivilegedArea)!;
+    const shared = folders.find((f) => f.name === "Client Uploads")!;
+    const item = await upload(x.owner, x.matter.id, files.pdf!, "letter.pdf", red.id);
+    await processor.drain();
+    await db.withFirm(x.owner, (s) => requestCopy(s, item.id, { redact: false, exhibitLabel: "3", folderId: shared.id, acknowledgePrivilegeWaiverRisk: true }));
+    await processor.drain();
+    const copyId = (await db.withFirm(x.owner, (s) => listCopies(s, item.id)))[0]!.producedId!;
+    const seen = await db.withFirm(x.portalCtx, async (s) => (await s.client.query(
+      "SELECT details::text AS d FROM huis.evidence_custody_events WHERE evidence_id = $1", [copyId])).rows.map((r) => r.d).join(" "));
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen).not.toContain(item.id);
+    expect(seen).not.toContain((await db.withFirm(x.owner, (s) => getEvidence(s, item.id)))!.sha256);
+    expect(await db.withFirm(x.portalCtx, (s) => producedFrom(s, copyId))).toBeNull();
+  });
+
+  it("copies are never made from a document that was quarantined after the request", async () => {
+    const x = await setup();
+    const discovery = (await db.withFirm(x.owner, (s) => listMatterFolders(s, x.matter.id))).find((f) => f.name === "Discovery")!;
+    const item = await upload(x.owner, x.matter.id, files.pdf!);
+    await processor.drain();
+    await db.withFirm(x.owner, (s) => requestCopy(s, item.id, { redact: false, exhibitLabel: "9", folderId: discovery.id }));
+    await t.admin.query("UPDATE huis.evidence_items SET status = 'infected' WHERE id = $1", [item.id]).catch(async () => {
+      const c = await t.admin.connect();
+      try { await c.query("BEGIN"); await c.query("SET LOCAL session_replication_role = replica"); await c.query("UPDATE huis.evidence_items SET status = 'infected' WHERE id = $1", [item.id]); await c.query("COMMIT"); } finally { c.release(); }
+    });
+    await processor.drain();
+    expect((await db.withFirm(x.owner, (s) => listCopies(s, item.id)))[0]).toMatchObject({ status: "failed", producedId: null });
   });
 });

@@ -78,6 +78,9 @@ export async function addAnnotation(s: FirmSession, evidenceId: string, input: u
   if (!canWork(s)) throw new PermissionDeniedError("mark up documents");
   if (item.status !== "clean") throw new PermissionDeniedError("mark up this file until it passes its security scan");
   const a = annotationInput.parse(input);
+  const count = Number((await s.client.query<{ n: string }>(
+    "SELECT count(*) AS n FROM huis.evidence_annotations WHERE evidence_id = $1", [evidenceId])).rows[0]!.n);
+  if (count >= 5000) throw new UserFacingError("This document already has the maximum of 5,000 marks.");
   const { rows } = await s.client.query<{ id: string }>(
     `INSERT INTO huis.evidence_annotations (firm_id, evidence_id, page, kind, x, y, w, h, color, note, created_by)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
@@ -120,6 +123,7 @@ const COPY_ERRORS: Record<string, string> = {
   no_pages: "Copies can only be made of documents that open as pages (PDFs, Office files and photos).",
   too_many_pages: "Copies are limited to 2,000 pages.",
   no_redactions: "Mark at least one area to redact in the viewer first.",
+  too_many_redactions: "A copy can have at most 2,000 redaction areas.",
 };
 
 export async function requestCopy(s: FirmSession, evidenceId: string, input: unknown): Promise<string> {

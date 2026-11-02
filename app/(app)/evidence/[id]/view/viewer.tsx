@@ -32,6 +32,9 @@ export function Viewer({ evidenceId, staff, canMark }: { evidenceId: string; sta
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const start = useRef<{ x: number; y: number } | null>(null);
+  // Draw form fields and annotations into the page image, exactly as copies are
+  // produced, so nothing appears in a copy that wasn't visible (and redactable) here.
+  const annotationMode = useRef<number | undefined>(undefined);
 
   // Load the document.
   useEffect(() => {
@@ -39,6 +42,7 @@ export function Viewer({ evidenceId, staff, canMark }: { evidenceId: string; sta
     (async () => {
       try {
         const pdfjs = await import("pdfjs-dist");
+        annotationMode.current = pdfjs.AnnotationMode.ENABLE;
         pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.mjs";
         const task = pdfjs.getDocument({
           url: `/api/evidence/${evidenceId}/view`,
@@ -81,7 +85,7 @@ export function Viewer({ evidenceId, staff, canMark }: { evidenceId: string; sta
       canvas.style.height = `${Math.floor(viewport.height)}px`;
       const ctx = canvas.getContext("2d")!;
       ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-      task = p.render({ canvasContext: ctx, viewport, canvas });
+      task = p.render({ canvasContext: ctx, viewport, canvas, annotationMode: annotationMode.current });
       await task!.promise.catch(() => undefined);
     })();
     return () => { cancelled = true; task?.cancel(); };

@@ -1,6 +1,6 @@
 # Phase 2 — Universal Intake & Evidence Engine
 
-**Status:** Parts 1, 2 and 3a merged after independent security reviews. Part 3b (working copies) built and tested; under independent review.
+**Status:** Parts 1, 2, 3a and 3b merged after independent security reviews (see `SECURITY-REVIEW-2026-11.md`). Remaining: transcription provider decision.
 
 ## Deferred to the end of the build (Tracy, Nov 1 2026)
 Hosting, the production database, Replit Secrets, the production Microsoft redirect address and a real ClamAV server are set up together at the end. Until then everything runs and is tested locally.
@@ -99,7 +99,9 @@ The original is never changed. Everything below happens on separate layers or ne
 | Exhibit and Bates | Optional exhibit label (stamped on page 1) and Bates numbering (stamped on every page). Bates numbers run continuously per matter and are reserved when the copy is requested, e.g. *SMITH-000101 – SMITH-000110* |
 | Linked custody | The copy is a new evidence item ("Produced by Huis from …") with its own fingerprint and chain of custody. The original's custody records the request and the finished copy. Saving a copy into a folder outsiders can see needs the same privilege-waiver acknowledgement as moving a document there, and it is recorded |
 
-Limits: copies up to 2,000 pages. Copies are image-based (150 dpi), the common format for productions; the OCR text makes them searchable.
+Copies render exactly the area the viewer shows (a PDF's crop area), and the viewer draws filled-in form fields exactly as copies will, so nothing appears in a copy that the attorney couldn't see and redact. Page counts come from the PDF's real structure, so a production can't be silently cut short.
+
+Limits: copies up to 2,000 pages and 2,000 redaction areas; 5,000 marks per document. Copies are image-based (150 dpi), the common format for productions; the OCR text makes them searchable.
 
 ## Next in Phase 2
 1. **Transcription provider** for audio/video (needs a provider decision with zero-data-retention terms).

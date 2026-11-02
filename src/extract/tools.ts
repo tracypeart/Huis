@@ -10,6 +10,8 @@ import { LIMITS } from "./types";
  */
 export function run(cmd: string, args: string[], opts: {
   timeoutSec?: number; maxBytes?: number;
+  /** Exit codes that count as success (default: only 0). */
+  okCodes?: number[];
   /** Checked every few seconds while the tool runs; returning false stops it (e.g. disk use too high). */
   watch?: () => Promise<boolean>; watchMs?: number;
 } = {}): Promise<string> {
@@ -40,10 +42,23 @@ export function run(cmd: string, args: string[], opts: {
       clearTimeout(timer);
       killGroup();
       if (failed) return;
-      if (code === 0) resolve(Buffer.concat(chunks).toString("utf8"));
+      if (code !== null && (opts.okCodes ?? [0]).includes(code)) resolve(Buffer.concat(chunks).toString("utf8"));
       else fail();
     });
   });
+}
+
+/**
+ * A PDF's page count from its actual page tree (qpdf). Never parsed from
+ * pdfinfo's text output, where a crafted title can fake a "Pages:" line.
+ * qpdf exits 3 when it had to repair the file but still read it.
+ */
+export async function pdfPageCount(file: string): Promise<number> {
+  const out = (await run("qpdf", ["--show-npages", "--", file], { timeoutSec: 120, maxBytes: 64, okCodes: [0, 3] })).trim();
+  if (!/^\d{1,7}$/.test(out)) throw new Error("page count unreadable");
+  const n = Number(out);
+  if (n < 1) throw new Error("PDF has no pages");
+  return n;
 }
 
 /** Reads at most `max` bytes from the start of a file. */

@@ -12,7 +12,7 @@ import { createWriteStream } from "node:fs";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { deflateSync } from "node:zlib";
-import { run } from "./tools";
+import { pdfPageCount, run } from "./tools";
 
 export interface RedactionBox { page: number; x: number; y: number; w: number; h: number }
 
@@ -160,11 +160,15 @@ class PdfWriter {
 }
 
 export async function produceCopy(input: ProduceInput): Promise<ProduceResult> {
-  const info = await run("pdfinfo", [input.inputPath], { timeoutSec: 60 });
-  const m = /^Pages:\s+(\d+)/m.exec(info);
-  const pages = m ? Number(m[1]) : 0;
-  // The page count was fixed when the copy was requested (Bates numbers are reserved for it).
+  // The page count was fixed when the copy was requested (Bates numbers are
+  // reserved for it). It must match the PDF's real page tree, and the
+  // renderer must agree there is no page after the last one, or pages could
+  // be silently left out of a production.
+  const pages = await pdfPageCount(input.inputPath);
   if (pages !== input.pageCount) throw new Error("page count does not match");
+  const beyond = await run("pdftoppm", ["-r", "10", "-f", String(pages + 1), "-l", String(pages + 1), "-cropbox", input.inputPath, path.join(input.workDir, "probe")],
+    { timeoutSec: 60 }).then(() => true, () => false);
+  if (beyond) throw new Error("renderer sees more pages than the page tree");
   const scratch = path.join(input.workDir, "pages");
   await mkdir(scratch, { mode: 0o700 });
   const pdf = new PdfWriter(input.outPath);
@@ -172,7 +176,12 @@ export async function produceCopy(input: ProduceInput): Promise<ProduceResult> {
   try {
     for (let p = 1; p <= pages; p++) {
       const base = path.join(scratch, "page");
-      await run("pdftoppm", ["-r", String(PRODUCE_DPI), "-f", String(p), "-l", String(p), "-singlefile", input.inputPath, base], { timeoutSec: 120 });
+      // -cropbox: render exactly the area the viewer shows (CropBox ∩ MediaBox),
+      // so redaction marks land where the attorney drew them and nothing the
+      // attorney never saw (outside the crop) is printed into the copy.
+      // prlimit caps memory and the page image's size before it is written.
+      await run("prlimit", [`--as=${3 * 1024 ** 3}`, `--fsize=${MAX_PIXELS * 3 + 1024}`, "--",
+        "pdftoppm", "-r", String(PRODUCE_DPI), "-cropbox", "-f", String(p), "-l", String(p), "-singlefile", input.inputPath, base], { timeoutSec: 120 });
       const file = `${base}.ppm`;
       const img = parsePpm(await readFile(file));
       await rm(file, { force: true });

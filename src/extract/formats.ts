@@ -5,7 +5,7 @@ import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Transform } from "node:stream";
 import yauzl from "yauzl";
-import { cleanText, decodeText, htmlToText, readHead, run, safeName } from "./tools";
+import { cleanText, decodeText, htmlToText, pdfPageCount, readHead, run, safeName } from "./tools";
 import { LIMITS, type ContainedFile, type EmailHeaders, type ExtractInput, type ExtractResult } from "./types";
 
 const empty = (over: Partial<ExtractResult>): ExtractResult => ({
@@ -26,9 +26,7 @@ function withExt(name: string, required: string | null): string {
 export async function extractPdf(input: ExtractInput): Promise<ExtractResult> {
   let pages: number | null = null;
   try {
-    const info = await run("pdfinfo", [input.inputPath], { timeoutSec: 60 });
-    const m = /^Pages:\s+(\d+)/m.exec(info);
-    pages = m ? Number(m[1]) : null;
+    pages = await pdfPageCount(input.inputPath);
   } catch {
     return empty({ status: "unsupported", detail: "This PDF could not be opened (damaged or password-protected)." });
   }
@@ -570,8 +568,7 @@ export async function makeRendition(input: ExtractInput): Promise<{ path: string
     await rename(pdf, out);
     let pages: number | null = null;
     try {
-      const m = /^Pages:\s+(\d+)/m.exec(await run("pdfinfo", [out], { timeoutSec: 60 }));
-      pages = m ? Number(m[1]) : null;
+      pages = await pdfPageCount(out);
     } catch {
       pages = null;
     }

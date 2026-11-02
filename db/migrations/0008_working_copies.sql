@@ -214,6 +214,7 @@ BEGIN
   SELECT coalesce(jsonb_agg(jsonb_build_object('page', page, 'x', x, 'y', y, 'w', w, 'h', h) ORDER BY page, y, x), '[]'::jsonb)
     INTO v_reds FROM huis.evidence_annotations WHERE evidence_id = v.id AND kind = 'redaction';
   IF coalesce(p_redact, false) AND jsonb_array_length(v_reds) = 0 THEN RETURN 'no_redactions'; END IF;
+  IF jsonb_array_length(v_reds) > 2000 THEN RETURN 'too_many_redactions'; END IF;
   IF NOT coalesce(p_redact, false) THEN v_reds := '[]'::jsonb; END IF;
 
   IF v_prefix IS NOT NULL THEN
@@ -256,6 +257,10 @@ DECLARE
   v_key text;
   v_item huis.evidence_items;
 BEGIN
+  -- Never produce from a document that has since been quarantined or failed a scan.
+  UPDATE huis.copy_requests c SET status = 'failed', last_error = 'source document is no longer clean', lock_token = NULL
+   WHERE c.status IN ('queued', 'running')
+     AND EXISTS (SELECT 1 FROM huis.evidence_items e WHERE e.id = c.source_id AND e.status <> 'clean');
   SELECT * INTO r FROM huis.copy_requests
    WHERE (status = 'queued' OR (status = 'running' AND locked_until < now())) AND attempts < 5
    ORDER BY requested_at FOR UPDATE SKIP LOCKED LIMIT 1;
@@ -287,11 +292,12 @@ BEGIN
     RAISE EXCEPTION 'unexpected storage location';
   END IF;
   IF p_pages IS DISTINCT FROM r.page_count THEN RAISE EXCEPTION 'page count changed'; END IF;
+  IF v.status <> 'clean' THEN RAISE EXCEPTION 'source document is no longer clean'; END IF;
 
   INSERT INTO huis.evidence_items (id, firm_id, matter_id, folder_id, original_filename, declared_content_type,
       size_bytes, sha256, storage_key, source, received_from, date_received, uploaded_by, uploaded_at)
     VALUES (p_new_id, r.firm_id, r.matter_id, r.target_folder_id, left(p_filename, 1024), 'application/pdf',
-      p_size, p_sha256, p_storage_key, 'produced_copy', left(format('Produced by Huis from "%s"', v.original_filename), 500),
+      p_size, p_sha256, p_storage_key, 'produced_copy', 'Produced by Huis',
       current_date, r.requested_by, now());
 
   UPDATE huis.copy_requests SET status = 'done', produced_id = p_new_id, completed_at = now(), lock_token = NULL
@@ -300,12 +306,13 @@ BEGIN
     VALUES (r.firm_id, r.source_id, 'copy_produced', jsonb_build_object(
       'copy_request', r.id, 'copy_id', p_new_id, 'sha256', p_sha256, 'redactions', jsonb_array_length(r.redactions),
       'exhibit_label', r.exhibit_label, 'bates_start', r.bates_start, 'bates_end', r.bates_end));
+  -- The copy may be shared outside the firm, so its own record says only what
+  -- the copy is. The link to the source (which may be privileged) is kept in
+  -- copy_requests and the source's custody, which only firm staff can see.
   INSERT INTO huis.evidence_custody_events (firm_id, evidence_id, event, details)
     VALUES (r.firm_id, p_new_id, 'produced_from', jsonb_build_object(
-      'copy_request', r.id, 'source_id', r.source_id, 'source_filename', v.original_filename, 'source_sha256', v.sha256,
-      'redactions', jsonb_array_length(r.redactions), 'exhibit_label', r.exhibit_label,
-      'bates_prefix', r.bates_prefix, 'bates_start', r.bates_start, 'bates_end', r.bates_end,
-      'requested_by', r.requested_by));
+      'copy_request', r.id, 'redactions', jsonb_array_length(r.redactions), 'exhibit_label', r.exhibit_label,
+      'bates_prefix', r.bates_prefix, 'bates_start', r.bates_start, 'bates_end', r.bates_end));
 END $$;
 
 CREATE FUNCTION huis.worker_fail_copy(p_request_id uuid, p_lock_token uuid, p_error text, p_final boolean) RETURNS void
