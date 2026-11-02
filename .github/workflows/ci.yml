@@ -22,12 +22,20 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       HUIS_TEST_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+      # GitHub runners are not root, so they cannot create the extraction sandbox.
+      # Production workers must (the worker refuses to start otherwise).
+      HUIS_ALLOW_UNSANDBOXED_EXTRACTION: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+      - name: Document tools (PDF, OCR, Office, media)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends poppler-utils tesseract-ocr tesseract-ocr-eng \
+            libreoffice-writer libreoffice-calc libreoffice-impress ffmpeg
       - run: npm ci
       - name: Type check
         run: npm run typecheck

@@ -2,6 +2,7 @@ import pg from "pg";
 import { scannerFromEnv } from "../storage/scanner";
 import { evidenceVault } from "../storage/store";
 import { EvidenceProcessor } from "./processor";
+import { sandboxMode } from "../extract/sandbox";
 
 /**
  * Evidence worker process. Run alongside the web app:
@@ -15,6 +16,11 @@ async function main() {
   if (!url) throw new Error("HUIS_WORKER_DATABASE_URL is not set");
   const scanner = scannerFromEnv();
   if (!scanner) throw new Error("No malware scanner configured (set HUIS_CLAMAV_HOST). Refusing to process evidence.");
+
+  const mode = sandboxMode();
+  if (!mode) throw new Error("No extraction sandbox available (needs namespaces). Refusing to open evidence files.");
+  if (mode === "none") console.warn("[huis-worker] WARNING: extraction is NOT sandboxed (development only).");
+  await EvidenceProcessor.sweepStaleWorkDirs();
 
   const pool = new pg.Pool({ connectionString: url, max: 2 });
   const processor = new EvidenceProcessor(pool, evidenceVault(), scanner);

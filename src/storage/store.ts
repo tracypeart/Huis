@@ -34,7 +34,7 @@ export class LocalObjectStore implements ObjectStore {
 
   async put(key: string, body: Readable): Promise<void> {
     const target = this.file(key);
-    await mkdir(path.dirname(target), { recursive: true });
+    await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
     const tmp = `${target}.${randomUUID()}.partial`;
     try {
       await pipeline(body, createWriteStream(tmp, { flags: "wx", mode: 0o600 }));

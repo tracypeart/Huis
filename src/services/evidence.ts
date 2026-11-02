@@ -222,10 +222,18 @@ export interface EvidenceItem {
   uploadedBy: string;
   uploadedByName: string | null;
   uploadedAt: Date;
+  /** Set when this item was found inside another (email attachment, archive entry). */
+  parentId: string | null;
+  containerPath: string | null;
+  childCount: number;
+  extractionStatus: "pending" | "done" | "partial" | "no_text" | "unsupported" | "needs_provider" | "failed" | null;
+  extractionDetail: string | null;
+  pageCount: number | null;
 }
 
 const EVIDENCE_SELECT = `
-  SELECT e.*, f.name AS folder_name, f.is_privileged_area, u.full_name AS uploader_name
+  SELECT e.*, f.name AS folder_name, f.is_privileged_area, u.full_name AS uploader_name,
+         (SELECT count(*)::int FROM huis.evidence_items c WHERE c.parent_id = e.id) AS child_count
     FROM huis.evidence_items e
     JOIN huis.matter_folders f ON f.id = e.folder_id
     LEFT JOIN huis.users u ON u.id = e.uploaded_by`;
@@ -238,8 +246,63 @@ const toEvidence = (r: Record<string, any>): EvidenceItem => ({
   source: r.source, receivedFrom: r.received_from,
   dateReceived: r.date_received ? new Date(r.date_received).toISOString().slice(0, 10) : null,
   duplicateOf: r.duplicate_of, uploadedBy: r.uploaded_by, uploadedByName: r.uploader_name ?? null,
-  uploadedAt: r.uploaded_at,
+  uploadedAt: r.uploaded_at, parentId: r.parent_id ?? null, containerPath: r.container_path ?? null,
+  childCount: r.child_count ?? 0, extractionStatus: r.extraction_status ?? null,
+  extractionDetail: r.extraction_detail ?? null, pageCount: r.page_count ?? null,
 });
+
+/** Items found inside this one (email attachments, archive contents) that the user may see. */
+export async function listContainedItems(s: FirmSession, evidenceId: string): Promise<EvidenceItem[]> {
+  await getEvidence(s, evidenceId);
+  const { rows } = await s.client.query(`${EVIDENCE_SELECT} WHERE e.parent_id = $1 ORDER BY e.container_path, e.original_filename`, [evidenceId]);
+  return rows.map(toEvidence);
+}
+
+export interface EvidenceText {
+  content: string;
+  method: string;
+  charCount: number;
+  truncated: boolean;
+}
+
+/**
+ * Extracted text for an item the user may see. Reading a document on screen
+ * is the same as opening it, so it is recorded in the chain of custody and
+ * the audit log, exactly like a download.
+ */
+export async function getEvidenceText(s: FirmSession, evidenceId: string): Promise<EvidenceText | null> {
+  const item = await getEvidence(s, evidenceId);
+  const { rows } = await s.client.query(
+    "SELECT content, method, char_count, truncated FROM huis.evidence_text WHERE evidence_id = $1", [evidenceId],
+  );
+  const r = rows[0];
+  if (!r) return null;
+  await s.client.query("SELECT huis.record_evidence_view($1)", [evidenceId]);
+  await recordAudit(s, "evidence.viewed", { targetType: "evidence", targetId: evidenceId, matterId: item.matterId });
+  return { content: r.content, method: r.method, charCount: r.char_count, truncated: r.truncated };
+}
+
+export interface EmailHeaders {
+  from: string | null;
+  to: string[];
+  cc: string[];
+  bcc: string[];
+  subject: string | null;
+  sentAt: Date | null;
+  attachmentCount: number;
+}
+
+export async function getEmailHeaders(s: FirmSession, evidenceId: string): Promise<EmailHeaders | null> {
+  const { rows } = await s.client.query(
+    "SELECT from_addr, to_addrs, cc_addrs, bcc_addrs, subject, sent_at, attachment_count FROM huis.evidence_email WHERE evidence_id = $1",
+    [evidenceId],
+  );
+  const r = rows[0];
+  return r ? {
+    from: r.from_addr, to: r.to_addrs, cc: r.cc_addrs, bcc: r.bcc_addrs, subject: r.subject,
+    sentAt: r.sent_at, attachmentCount: r.attachment_count,
+  } : null;
+}
 
 export async function listEvidence(s: FirmSession, matterId: string): Promise<EvidenceItem[]> {
   await getMatter(s, matterId);

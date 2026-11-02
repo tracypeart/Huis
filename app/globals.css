@@ -75,3 +75,12 @@ button.danger { background: #fff; color: var(--privileged); border: 1px solid va
   .nav .spacer, .nav .who { display: none; }
   .main { padding: 20px 16px; }
 }
+
+/* Search */
+.hit { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.hit:last-child { border-bottom: 0; }
+.snippet-line { margin: 6px 0 0; color: var(--ink); font-size: .92rem; line-height: 1.45; }
+mark { background: #fff1a8; color: inherit; padding: 0 1px; border-radius: 2px; }
+.doc-text { white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: .82rem; line-height: 1.5; background: #fafbfc; border: 1px solid var(--line); border-radius: 6px; padding: 14px;
+  max-height: 560px; overflow: auto; }
