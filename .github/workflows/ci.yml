@@ -44,6 +44,12 @@ jobs:
           qpdf --no-warn --show-npages /tmp/t.pdf; echo "exit=$?"
           qpdf --show-npages /tmp/t.pdf; echo "exit=$?"
       - run: npm ci
+      - name: Diagnose page count (temporary)
+        run: |
+          set +e
+          npx tsx -e 'import("./src/extract/tools").then(async (t) => { try { console.log("count", await t.pdfPageCount("/tmp/t.pdf")); } catch (e) { console.log("ERR", e); } })'
+          npx tsx -e 'import("./src/extract/tools").then(async (t) => { try { console.log("run", JSON.stringify(await t.run("qpdf", ["--no-warn","--show-npages","/tmp/t.pdf"], { okCodes: [0,3] }))); } catch (e) { console.log("ERR2", e); } })'
+          which prlimit qpdf pdftoppm
       - name: Type check
         run: npm run typecheck
       - name: Security and privilege tests
