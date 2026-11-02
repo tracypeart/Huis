@@ -1,6 +1,6 @@
 import pg from "pg";
-import { PermissionDeniedError, UnauthenticatedError } from "../errors.js";
-import type { Role } from "../security/permissions.js";
+import { PermissionDeniedError, UnauthenticatedError } from "../errors";
+import type { Role } from "../security/permissions";
 
 /** Who is making this request, as established by the sign-in layer. */
 export interface RequestContext {

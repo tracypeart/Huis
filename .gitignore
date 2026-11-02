@@ -13,3 +13,8 @@ evidence/
 exports/
 *.pst
 *.mbox
+
+# Next.js
+.next/
+next-env.d.ts
+*.tsbuildinfo

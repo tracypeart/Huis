@@ -1,5 +1,5 @@
-import type { FirmSession } from "../db/tenant.js";
-import { assertCan } from "../security/permissions.js";
+import type { FirmSession } from "../db/tenant";
+import { assertCan } from "../security/permissions";
 
 export interface AuditDetails {
   targetType?: string;

@@ -33,5 +33,9 @@ jobs:
         run: npm run typecheck
       - name: Security and privilege tests
         run: npm test
+      - name: Production build
+        run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
       - name: Dependency vulnerability scan
         run: npm audit --audit-level=high
