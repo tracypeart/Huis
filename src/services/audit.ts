@@ -13,11 +13,10 @@ export async function recordAudit(s: FirmSession, action: string, d: AuditDetail
   await s.client.query(
     `INSERT INTO huis.audit_events
        (firm_id, actor_user_id, action, target_type, target_id, matter_id, metadata, ip_address, user_agent)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+     VALUES ($1, $2, $3, $4, $5, $6, $7, huis.request_ip(), $8)`,
     [
       s.actor.firmId, s.actor.userId, action, d.targetType ?? null, d.targetId ?? null,
-      d.matterId ?? null, JSON.stringify(d.metadata ?? {}), s.ctx.ipAddress ?? null,
-      s.ctx.userAgent ?? null,
+      d.matterId ?? null, JSON.stringify(d.metadata ?? {}), (s.ctx.userAgent ?? "").slice(0, 500) || null,
     ],
   );
 }

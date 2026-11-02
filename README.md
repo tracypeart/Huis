@@ -2,11 +2,13 @@
 
 The Legal Intelligence Operating System: an AI-powered platform that connects the communications, evidence, documents, people, deadlines, research and strategy behind every legal matter.
 
-**Status:** Phase 1 — security core, Microsoft sign-in and web app shell built and tested. See [`docs/PHASE-1.md`](docs/PHASE-1.md).
+**Status:** Phase 1 complete (hosting deferred to the end). Phase 2 part 1 — secure evidence intake — built and tested. See [`docs/PHASE-2.md`](docs/PHASE-2.md).
 
 ## Start here
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — the master architecture: decisions, non-negotiables, the 10 phases, and open questions. **This is the authority.**
 - [`docs/PHASE-1.md`](docs/PHASE-1.md) — what Phase 1 guarantees and how code must access data.
+- [`docs/PHASE-2.md`](docs/PHASE-2.md) — evidence intake, encryption, scanning and chain of custody.
+- [`docs/SECURITY-REVIEW-2026-11.md`](docs/SECURITY-REVIEW-2026-11.md) — independent security review of Phases 1–2 and fixes.
 - [`docs/source/`](docs/source/) — original specs (ChatGPT architecture with Tracy's answers; Phase 11 Case Outcome Intelligence).
 
 ## Run locally
@@ -16,6 +18,7 @@ npm install
 cp .env.example .env.local        # then fill in the values (never commit it)
 npm run migrate                   # needs HUIS_MIGRATION_DATABASE_URL in your environment
 npm run dev                       # http://localhost:3000
+npm run worker                    # evidence worker (needs ClamAV)
 ```
 Tests: `HUIS_TEST_ADMIN_URL=postgres://postgres:<password>@localhost:5432/postgres npm test`
 

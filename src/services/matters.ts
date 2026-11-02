@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { FirmSession } from "../db/tenant";
-import { NotFoundError, PermissionDeniedError } from "../errors";
+import { NotFoundError, PermissionDeniedError, UserFacingError } from "../errors";
 import { assertCan, ATTORNEY_ROLES, INTERNAL_ROLES, type Role } from "../security/permissions";
 import { recordAudit } from "./audit";
 
@@ -69,7 +69,7 @@ export async function createMatter(s: FirmSession, input: CreateMatterInput): Pr
   )).rows[0];
   if (!lead || lead.status !== "active") throw new NotFoundError("Lead attorney");
   if (!ATTORNEY_ROLES.has(lead.role)) {
-    throw new Error("The lead attorney must be an attorney, managing partner or firm owner.");
+    throw new UserFacingError("The lead attorney must be an attorney, managing partner or firm owner.");
   }
 
   const clientVisible = (await s.client.query("SELECT 1 FROM huis.clients WHERE id = $1", [v.clientId])).rowCount;
@@ -138,7 +138,7 @@ export async function setCourtCaseNumber(s: FirmSession, matterId: string, court
   });
 }
 
-export class PrivilegeWaiverAcknowledgementRequired extends Error {
+export class PrivilegeWaiverAcknowledgementRequired extends UserFacingError {
   constructor() {
     super(
       "Adding someone outside the firm to this matter may expose privileged material. " +
@@ -176,7 +176,7 @@ export async function addMatterMember(s: FirmSession, input: AddMemberInput): Pr
 
   const external = !INTERNAL_ROLES.has(target.role);
   if (external) {
-    if (v.access !== "view") throw new Error("People outside the firm can only be given view access.");
+    if (v.access !== "view") throw new UserFacingError("People outside the firm can only be given view access.");
     if (!v.acknowledgePrivilegeWaiverRisk) throw new PrivilegeWaiverAcknowledgementRequired();
   }
 

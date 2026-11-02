@@ -70,3 +70,24 @@ export function StateSelect({ name, defaultValue = "UT" }: { name: string; defau
 export function date(d: Date | string): string {
   return new Date(d).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "America/Denver" });
 }
+
+export function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let v = n / 1024;
+  let u = 0;
+  while (v >= 1024 && u < units.length - 1) { v /= 1024; u += 1; }
+  return `${v.toFixed(v < 10 ? 1 : 0)} ${units[u]}`;
+}
+
+const STATUS: Record<string, [string, string]> = {
+  pending_scan: ["Scanning — held", "badge walled"],
+  clean: ["Scanned clean", "badge"],
+  infected: ["Threat found — quarantined", "badge privileged"],
+  scan_failed: ["Held — could not verify", "badge privileged"],
+};
+
+export function EvidenceStatus({ status }: { status: string }) {
+  const [label, cls] = STATUS[status] ?? [status, "badge"];
+  return <span className={cls}>{label}</span>;
+}
