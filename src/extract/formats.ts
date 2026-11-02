@@ -27,7 +27,8 @@ export async function extractPdf(input: ExtractInput): Promise<ExtractResult> {
   let pages: number | null = null;
   try {
     pages = await pdfPageCount(input.inputPath);
-  } catch {
+  } catch (err) {
+    if (process.env.HUIS_DEBUG_EXTRACT) console.error("DEBUG pdfPageCount failed:", err);
     return empty({ status: "unsupported", detail: "This PDF could not be opened (damaged or password-protected)." });
   }
   let text = "";

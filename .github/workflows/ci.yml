@@ -47,10 +47,7 @@ jobs:
       - name: Diagnose page count (temporary)
         run: |
           set +e
-          echo 'JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gPj4gPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCAyMDQgPj4Kc3RyZWFtCkJUCi9GMSAxNCBUZgo3MiA3MjAgVGQKMTggVEwKKE5vdGljZSBvZiB0ZXJtaW5hdGlvbikgVGogVCoKKFRoZSBlbXBsb3llZSB3YXMgaW5mb3JtZWQgb24gQXByaWwgMTggdGhhdCkgVGogVCoKKGhlciBwb3NpdGlvbiB3YXMgZWxpbWluYXRlZCBhZnRlciB0aGUgRk1MQSByZXF1ZXN0LikgVGogVCoKKFNpZ25lZCwgSHVtYW4gUmVzb3VyY2VzKSBUaiBUKgpFVAplbmRzdHJlYW0KZW5kb2JqCjUgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDEgMDAwMDAgbiAKMDAwMDAwMDQ5NiAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjU2NgolJUVPRgo=' | base64 -d > /tmp/letter.pdf
-          qpdf --no-warn --show-npages /tmp/letter.pdf; echo "letter exit=$?"
-          qpdf --show-npages /tmp/letter.pdf; echo "letter exit2=$?"
-          qpdf --check /tmp/letter.pdf 2>&1 | tail -5
+          HUIS_DEBUG_EXTRACT=1 npx vitest run test/extraction.test.ts -t "reads text PDFs" 2>&1 | grep -E "DEBUG|Error|errno|code|path|Tests " | head -20
       - name: Type check
         run: npm run typecheck
       - name: Security and privilege tests
