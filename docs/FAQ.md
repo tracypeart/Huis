@@ -62,15 +62,29 @@ No. Development and testing use only made-up sample files.
 - PDFs, including scanned ones (Huis reads scanned pages with OCR, up to 300 pages per file)
 - Photos of documents (PNG, JPEG, TIFF, GIF)
 - Word, Excel and PowerPoint, both current and older formats, plus RTF
-- Emails (.eml) and Outlook messages (.msg)
-- Mailbox exports (.mbox)
+- Emails (.eml) and Outlook messages (.msg), including emails attached inside other emails
+- Outlook mailbox files (.pst and .ost) and other mailbox exports (.mbox)
 - ZIP archives and discovery productions
 - Text, HTML and CSV files
 
 Audio and video will be transcribed once an approved transcription service that keeps no copy of the data is connected.
 
 ### What happens to email attachments and ZIP files?
-Each attachment, and each file inside a ZIP, becomes its own evidence item. It gets its own fingerprint, virus scan, chain of custody and searchable text, and it remembers which email or archive it came from. Mailbox exports are split into one item per message.
+Each attachment, and each file inside a ZIP, becomes its own evidence item. It gets its own fingerprint, virus scan, chain of custody and searchable text, and it remembers which email or archive it came from. An email forwarded as an attachment becomes its own email item, with its own attachments.
+
+### Can I upload a whole Outlook mailbox?
+Yes. Upload the .pst or .ost file. Huis splits it into separate items for every email, calendar entry and contact, each labelled with the mailbox folder it came from (for example "Inbox/Smith matter"). Every email's attachments are then split out as well. Very large mailboxes (up to 200,000 items) are processed in the background.
+
+### Does Huis find different versions of the same document?
+Yes. Within a matter, Huis links:
+- **Exact duplicates:** byte-for-byte identical copies.
+- **Versions:** the same document name once words like "final", "draft", "v2", "redline" or dates are ignored, with overlapping wording. For example, *Settlement Agreement DRAFT* and *Settlement Agreement FINAL v2*.
+- **Near-duplicates:** almost the same wording under a different name, such as a scan and the original.
+
+Each document lists its similar documents. **Compare** shows two versions side by side, with added and removed lines highlighted. Similarity is estimated from the readable text, so always confirm against the originals.
+
+### Could "similar documents" reveal something privileged?
+No. A link between two documents is shown only to someone allowed to see both. A client looking at a shared document never learns that a privileged or walled document resembles it. Opening a comparison is recorded as viewing both documents.
 
 ### What does search cover?
 The words inside every document, email, scan and attachment you're allowed to see, across all your matters or within one matter. You can search an exact phrase "in quotes", use `or` for alternatives, and put `-` before a word to exclude it. Matches are highlighted in the results.

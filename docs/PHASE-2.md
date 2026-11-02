@@ -67,8 +67,22 @@ Every item taken out of an email or archive gets its own fingerprint, virus scan
 
 **Tests:** 102 in total; part 2 adds 26 (16 below plus 10 from the second security review), using real generated files (text PDF, scanned PDF, photo, Word, Excel, email with attachments, mailbox, ZIP with a path-traversal name, a zip bomb, audio) plus public sample Outlook files, including a deliberately damaged one.
 
+## Part 3a — Outlook mailboxes, attached messages, versions
+
+| Feature | What Huis does |
+|---|---|
+| Outlook data files (.pst, .ost) | Split inside the sandbox into **one item per email, calendar entry and contact**, each labelled with its mailbox folder (e.g. `Inbox/Smith matter/12.eml`). Each email is then read like any other, so its attachments become items too. Up to 200,000 items per mailbox; very large mailboxes get up to 4 hours to unpack. Outlook "passwords" on .pst files are not real encryption and don't stop reading |
+| Emails attached inside emails | Forwarded or attached messages (.eml and Outlook .msg) become their own email items, with their own sender, recipients, date and attachments |
+| Near-duplicates | Documents with almost the same wording (about 85% or more) under different names, e.g. a scan and the original, or a document saved under a new name |
+| Versions | Documents with the same name once words like "final", "draft", "v2", "redline", "(1)" and dates are ignored, and overlapping wording, e.g. *Settlement Agreement DRAFT* and *Settlement Agreement FINAL v2* |
+| Compare | Each item lists its similar documents; **Compare** shows the two texts side by side with additions and removals highlighted. Opening a comparison is recorded as viewing both documents |
+
+**Privilege:** a similarity link is shown only to someone who can see *both* documents. A client looking at a shared document can never learn that a privileged or walled document resembles it. Fingerprints are computed by the worker and are unreadable by the app.
+
+**How similarity works:** each document's wording is reduced to a 64-number fingerprint of its five-word phrases. Matching fingerprints estimate the share of wording two documents have in common, without storing any extra copy of the text. Exact byte-for-byte copies are still shown as duplicates. Documents with very little text aren't compared.
+
+**Scale:** the unpacking limits per upload (size and item count) are now kept as running totals, so a mailbox with hundreds of thousands of messages doesn't slow down as it's unpacked.
+
 ## Next in Phase 2
-1. **Outlook .pst mailboxes** (large exports) and messages attached inside messages.
-2. **Near-duplicates and versions** (e.g. FINAL vs FINAL2 with edits).
-3. **Working copies**: annotate, highlight, redact and exhibit-stamp without touching the original.
-4. **Transcription provider** for audio/video (needs a provider decision with zero-data-retention terms).
+1. **Part 3b — working copies**: annotate, highlight, redact and exhibit-stamp without touching the original.
+2. **Transcription provider** for audio/video (needs a provider decision with zero-data-retention terms).
