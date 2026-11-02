@@ -6,6 +6,10 @@ import { NotFoundError } from "../../../../src/errors";
 import { listContacts } from "../../../../src/services/contacts";
 import { getMatter, listMatterFolders } from "../../../../src/services/matters";
 import { listUsers } from "../../../../src/services/users";
+import { listEvidence } from "../../../../src/services/evidence";
+import Link from "next/link";
+import EvidenceUploader from "./uploader";
+import { EvidenceStatus, formatBytes } from "../../../../lib/ui";
 import { can, INTERNAL_ROLES, type Role } from "../../../../src/security/permissions";
 
 export const dynamic = "force-dynamic";
@@ -49,6 +53,9 @@ export default async function MatterOverview({ params, searchParams }: {
       leadName: lead?.full_name ?? "—", clientName: client?.display_name,
       people: canManage ? (await listUsers(s)).filter((u) => u.status === "active") : [],
       allContacts: internal && can(s.actor.role, "contacts.view") ? await listContacts(s) : [],
+      evidence: await listEvidence(s, id),
+      canUpload: s.actor.role !== "read_only" && (internal || s.actor.role === "client"),
+      isClient: s.actor.role === "client",
     };
   });
   if (!data) notFound();
@@ -101,8 +108,40 @@ export default async function MatterOverview({ params, searchParams }: {
               confidential. It does not by itself create legal privilege — the attorney determines privilege status.
             </p>
           ) : null}
-          <p className="notice">Document upload arrives in Phase 2.</p>
         </div>
+      </div>
+
+      <div className="card">
+        <h2>Evidence &amp; documents</h2>
+        {data.canUpload ? (() => {
+          const uploadable = data.isClient ? data.folders.filter((f) => f.classification === "client_accessible" && !f.isPrivilegedArea) : data.folders;
+          const preferred = uploadable.find((f) => f.name === (data.isClient ? "Client Uploads" : "Evidence")) ?? uploadable[0];
+          return preferred ? (
+            <EvidenceUploader matterId={m.id} isClient={data.isClient} defaultFolderId={preferred.id}
+              folders={uploadable.map((f) => ({ id: f.id, name: f.name, isPrivilegedArea: f.isPrivilegedArea }))} />
+          ) : null;
+        })() : null}
+        {data.evidence.length === 0 ? <p className="notice" style={{ marginTop: 12 }}>Nothing uploaded yet.</p> : (
+          <table style={{ marginTop: 16 }}>
+            <thead><tr><th>File</th><th>Folder</th><th>Size</th><th>Security</th><th>Received from</th><th>Uploaded</th></tr></thead>
+            <tbody>
+              {data.evidence.map((e) => (
+                <tr key={e.id}>
+                  <td style={{ wordBreak: "break-word" }}>
+                    <Link href={`/evidence/${e.id}`}>{e.originalFilename}</Link>
+                    {e.relativePath ? <div className="notice">{e.relativePath}</div> : null}
+                    {e.duplicateOf ? <div><span className="badge">Duplicate</span></div> : null}
+                  </td>
+                  <td>{e.folderIsPrivileged ? <span className="badge privileged">{e.folderName}</span> : e.folderName}</td>
+                  <td style={{ whiteSpace: "nowrap" }}>{formatBytes(e.sizeBytes)}</td>
+                  <td><EvidenceStatus status={e.status} /></td>
+                  <td>{e.receivedFrom ?? "—"}</td>
+                  <td>{date(e.uploadedAt)}<div className="notice">{e.uploadedByName}</div></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
 
       <div className="card">

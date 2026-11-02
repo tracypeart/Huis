@@ -26,6 +26,8 @@ function withCredentials(url: string, user: string, password: string): string {
 export interface TestDatabase {
   /** Application connection: NOT superuser, NOT owner — row-level security applies. */
   db: HuisDb;
+  /** Background worker connection (huis_worker role). */
+  worker: pg.Pool;
   /** Superuser connection, used only to simulate attacks such as tampering. */
   admin: pg.Pool;
   drop(): Promise<void>;
@@ -50,17 +52,23 @@ export async function createTestDatabase(): Promise<TestDatabase> {
   await admin.query(`CREATE ROLE ${appUser} LOGIN PASSWORD '${appPassword}' NOSUPERUSER NOBYPASSRLS IN ROLE huis_app`);
 
   const db = HuisDb.fromUrl(withCredentials(adminUrl, appUser, appPassword));
+  const workerUser = `${name}_worker`;
+  await admin.query(`CREATE ROLE ${workerUser} LOGIN PASSWORD '${appPassword}' NOSUPERUSER NOBYPASSRLS IN ROLE huis_worker`);
+  const worker = new pg.Pool({ connectionString: withCredentials(adminUrl, workerUser, appPassword), max: 2 });
 
   return {
     db,
+    worker,
     admin,
     async drop() {
       await db.close();
+      await worker.end();
       await admin.end();
       const c = new pg.Client({ connectionString: ADMIN_URL });
       await c.connect();
       await c.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
       await c.query(`DROP ROLE IF EXISTS ${appUser}`);
+      await c.query(`DROP ROLE IF EXISTS ${workerUser}`);
       await c.end();
     },
   };

@@ -18,3 +18,6 @@ exports/
 .next/
 next-env.d.ts
 *.tsbuildinfo
+
+# Local encrypted evidence store
+.huis-storage/
