@@ -166,14 +166,15 @@ describe("upload, fingerprint, scan and download", () => {
 
     await expect(db.withFirm(x.owner, (s) => authorizeDownload(s, item.id))).rejects.toBeInstanceOf(PermissionDeniedError);
 
-    expect(await processor.drain()).toBe(1);
+    // One scan job, then (because it's clean) one text-extraction job.
+    expect(await processor.drain()).toBe(2);
     const done = await db.withFirm(x.owner, (s) => getEvidence(s, item.id));
     expect(done.status).toBe("clean");
     expect(done.scanDetail).toMatch(/ClamAV/);
 
     await db.withFirm(x.owner, (s) => authorizeDownload(s, item.id));
     const log = await db.withFirm(x.owner, (s) => custodyLog(s, item.id));
-    expect(log.events.map((e) => e.event)).toEqual(["received", "integrity_verified", "scanned_clean", "downloaded"]);
+    expect(log.events.map((e) => e.event)).toEqual(["received", "integrity_verified", "scanned_clean", "text_extracted", "downloaded"]);
     expect(log.events[0]!.details).toMatchObject({ sha256: sha(content), received_from: "Opposing counsel" });
     expect(log.brokenAt).toBeNull();
   });

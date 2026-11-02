@@ -16,6 +16,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <div className="logo">Huis Law IP<small>{firmName}</small></div>
         <Link href="/dashboard">Dashboard</Link>
         <Link href="/matters">Matters</Link>
+        <Link href="/search">Search</Link>
         {can(actor.role, "clients.view") ? <Link href="/clients">Clients</Link> : null}
         {can(actor.role, "contacts.view") ? <Link href="/contacts">People &amp; Contacts</Link> : null}
         {can(actor.role, "users.manage") ? <Link href="/users">Users &amp; Access</Link> : null}

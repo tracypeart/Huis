@@ -121,15 +121,21 @@ export default async function MatterOverview({ params, searchParams }: {
               folders={uploadable.map((f) => ({ id: f.id, name: f.name, isPrivilegedArea: f.isPrivilegedArea }))} />
           ) : null;
         })() : null}
-        {data.evidence.length === 0 ? <p className="notice" style={{ marginTop: 12 }}>Nothing uploaded yet.</p> : (
+        {data.evidence.length === 0 ? <p className="notice" style={{ marginTop: 12 }}>Nothing uploaded yet.</p> : (<>
+          <form className="row" method="get" action="/search" style={{ marginTop: 16 }}>
+            <input type="hidden" name="matter" value={m.id} />
+            <input name="q" placeholder="Search inside this matter's documents and emails" style={{ flex: 1, minWidth: 240 }} />
+            <button type="submit" className="secondary">Search</button>
+          </form>
           <table style={{ marginTop: 16 }}>
             <thead><tr><th>File</th><th>Folder</th><th>Size</th><th>Security</th><th>Received from</th><th>Uploaded</th></tr></thead>
             <tbody>
-              {data.evidence.map((e) => (
+              {data.evidence.filter((e) => !e.parentId).map((e) => (
                 <tr key={e.id}>
                   <td style={{ wordBreak: "break-word" }}>
                     <Link href={`/evidence/${e.id}`}>{e.originalFilename}</Link>
                     {e.relativePath ? <div className="notice">{e.relativePath}</div> : null}
+                    {e.childCount ? <div className="notice">+ {e.childCount} item(s) inside</div> : null}
                     {e.duplicateOf ? <div><span className="badge">Duplicate</span></div> : null}
                   </td>
                   <td>{e.folderIsPrivileged ? <span className="badge privileged">{e.folderName}</span> : e.folderName}</td>
@@ -141,7 +147,7 @@ export default async function MatterOverview({ params, searchParams }: {
               ))}
             </tbody>
           </table>
-        )}
+        </>)}
       </div>
 
       <div className="card">
