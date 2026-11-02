@@ -1,4 +1,4 @@
-import { PermissionDeniedError } from "../errors.js";
+import { PermissionDeniedError } from "../errors";
 
 /**
  * Role-based access control (application layer).

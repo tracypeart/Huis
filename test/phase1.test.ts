@@ -1,16 +1,16 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { PermissionDeniedError, NotFoundError, UnauthenticatedError } from "../src/errors.js";
-import type { HuisDb, RequestContext } from "../src/db/tenant.js";
-import { listAuditEvents, verifyAuditChain } from "../src/services/audit.js";
-import { createClient, listClients } from "../src/services/clients.js";
-import { createContact } from "../src/services/contacts.js";
-import { deriveMatterCode, resolveIdentity, signUpFirm } from "../src/services/firms.js";
+import { PermissionDeniedError, NotFoundError, UnauthenticatedError } from "../src/errors";
+import type { HuisDb, RequestContext } from "../src/db/tenant";
+import { listAuditEvents, verifyAuditChain } from "../src/services/audit";
+import { createClient, listClients } from "../src/services/clients";
+import { createContact } from "../src/services/contacts";
+import { acceptInvitation, deriveMatterCode, resolveIdentity, signUpFirm } from "../src/services/firms";
 import {
   addMatterMember, createMatter, getMatter, listMatterFolders, listMatters,
   PrivilegeWaiverAcknowledgementRequired, setCourtCaseNumber,
-} from "../src/services/matters.js";
-import { changeUserRole, disableUser, inviteUser } from "../src/services/users.js";
-import { createTestDatabase, newFirm, type TestDatabase } from "./helpers.js";
+} from "../src/services/matters";
+import { changeUserRole, disableUser, inviteUser, issueInvitation } from "../src/services/users";
+import { createTestDatabase, newFirm, type TestDatabase } from "./helpers";
 
 let t: TestDatabase;
 let db: HuisDb;
@@ -310,6 +310,46 @@ describe("audit log", () => {
       c.release();
     }
     expect(await db.withFirm(m.f.owner, (s) => verifyAuditChain(s))).not.toBeNull();
+  });
+});
+
+describe("invitations", () => {
+  it("links an invited person to their sign-in only through the one-time link", async () => {
+    const f = await newFirm(db);
+    const invited = await db.withFirm(f.owner, (s) =>
+      inviteUser(s, { email: `new@${f.slug}.example`, fullName: "New Associate", role: "attorney", locationId: f.locationId }));
+    expect(invited.signInLinked).toBe(false);
+    expect(invited.invitationToken.length).toBeGreaterThanOrEqual(43);
+
+    // Wrong token: nothing happens.
+    expect(await acceptInvitation(db, "x".repeat(43), "microsoft", "tenant:new")).toBeNull();
+    // Signing in with a matching email but no invitation finds no account.
+    expect(await resolveIdentity(db, "microsoft", "tenant:new")).toEqual([]);
+
+    const linked = await acceptInvitation(db, invited.invitationToken, "microsoft", "tenant:new");
+    expect(linked).toEqual({ firmId: f.firmId, userId: invited.id });
+    expect((await resolveIdentity(db, "microsoft", "tenant:new")).map((a) => a.userId)).toEqual([invited.id]);
+
+    // One-time: the same link cannot be used again by someone else.
+    expect(await acceptInvitation(db, invited.invitationToken, "microsoft", "tenant:attacker")).toBeNull();
+  });
+
+  it("reissuing an invitation revokes the old link; expired links fail", async () => {
+    const f = await newFirm(db);
+    const invited = await db.withFirm(f.owner, (s) =>
+      inviteUser(s, { email: `p@${f.slug}.example`, fullName: "Pat Para", role: "paralegal", locationId: f.locationId }));
+    const fresh = await db.withFirm(f.owner, (s) => issueInvitation(s, invited.id));
+    expect(await acceptInvitation(db, invited.invitationToken, "microsoft", "t:old")).toBeNull();
+
+    await t.admin.query("UPDATE huis.user_invitations SET expires_at = now() - interval '1 minute' WHERE user_id = $1 AND revoked_at IS NULL", [invited.id]);
+    expect(await acceptInvitation(db, fresh, "microsoft", "t:late")).toBeNull();
+  });
+
+  it("only admins can see invitation records", async () => {
+    const m = await firmWithMatter();
+    await db.withFirm(m.paralegalCtx, async (s) => {
+      expect((await s.client.query("SELECT count(*)::int AS n FROM huis.user_invitations")).rows[0].n).toBe(0);
+    });
   });
 });
 

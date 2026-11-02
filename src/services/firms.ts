@@ -1,6 +1,6 @@
 import { z } from "zod";
-import type { HuisDb } from "../db/tenant.js";
-import type { Role } from "../security/permissions.js";
+import type { HuisDb } from "../db/tenant";
+import type { Role } from "../security/permissions";
 
 const stateCode = z.string().trim().toUpperCase().regex(/^[A-Z]{2}$/, "Use a two-letter state code");
 
@@ -46,6 +46,22 @@ export async function signUpFirm(db: HuisDb, input: SignUpFirmInput): Promise<Si
     const row = rows[0];
     if (!row) throw new Error("Firm sign-up failed");
     return { firmId: row.firm_id, locationId: row.location_id, ownerUserId: row.owner_user_id };
+  });
+}
+
+/**
+ * Links a verified sign-in identity to an invited account using the one-time
+ * invitation token. Returns null if the token is invalid, used or expired.
+ */
+export async function acceptInvitation(
+  db: HuisDb, token: string, provider: string, subject: string,
+): Promise<{ firmId: string; userId: string } | null> {
+  return db.withoutFirm(async (client) => {
+    const { rows } = await client.query<{ firm_id: string; user_id: string }>(
+      "SELECT * FROM huis.accept_invitation($1, $2, $3)", [token, provider, subject],
+    );
+    const r = rows[0];
+    return r ? { firmId: r.firm_id, userId: r.user_id } : null;
   });
 }
 

@@ -38,8 +38,30 @@ Removing row-level security from the matters table makes 4 of these tests fail, 
 
 CI (`.github/workflows/ci.yml`) runs type checks, these tests and a dependency vulnerability scan on every pull request.
 
-## Next in Phase 1
+## Sign-in (Microsoft)
 
-1. **Sign-in:** Microsoft and Google single sign-on with MFA. Needs app registrations in Microsoft Entra and Google Cloud (Tracy's accounts).
-2. **Web app shell:** Next.js dashboard — firm setup, users, clients, matters list, matter overview with folders.
-3. **Production database:** managed PostgreSQL with encryption and backups (hosting decision O-2).
+| Piece | Where | Guarantee |
+|---|---|---|
+| Sign-in flow | `src/auth/microsoft.ts`, `app/api/auth/*` | OpenID Connect authorization code + PKCE, state and nonce; works for any Microsoft 365 organization or personal Microsoft account |
+| Token checks | `verifyMicrosoftIdToken` | Signature (Microsoft's published keys), audience = Huis app, issuer must match the token's own tenant, nonce, expiry |
+| Account key | `<tenant id>:<object id>` | **Never the email address.** Email claims are not a safe account key, so accounts are never found or linked by email |
+| Invitations | `db/migrations/0002_invitations.sql` | One-time link (only a hash stored), 7-day expiry, reissuing revokes the old link, audited |
+| Session | `src/auth/tokens.ts` | Encrypted cookie (AES-256-GCM), HttpOnly, SameSite=Lax, Secure on HTTPS, 8-hour lifetime; user re-checked as active on every request |
+| Multi-firm users | `/select-firm` | A person licensed at two firms picks one; firms stay fully separate |
+
+Sign-in asks Microsoft only for `openid profile email offline_access`. **No mailbox permissions yet** — those come in Phase 3.
+
+## Web app (Next.js)
+
+Pages: sign-in, firm set-up (7-day trial), choose firm, invitation, dashboard, matters (search), new matter (ethical wall option), matter overview (numbers, red Privileged & Confidential folder, access list with privilege-waiver acknowledgement, linked judges/witnesses), clients, people & contacts, users & access (invite, new link, change role, remove access), audit log with live integrity check.
+
+Security headers on every page: Content-Security-Policy, frame blocking, no-sniff, `Referrer-Policy: same-origin` (keeps invitation links out of other sites' logs), HSTS in production. Pages a role may not use return "not found".
+
+Settings are listed in `.env.example`. The Microsoft client secret goes only into Replit Secrets or the cloud vault.
+
+## Still to do in Phase 1
+
+1. **Google sign-in** (needs a Google Cloud OAuth client).
+2. **Production hosting and database** (decision O-2), then add the production redirect URI in Entra.
+3. **Move the Entra registration to a Huis Law IP business tenant and complete Microsoft publisher verification** before real firms sign in.
+4. **MFA enforcement check**: require Microsoft's MFA claim, or a Huis passkey, for every sign-in.

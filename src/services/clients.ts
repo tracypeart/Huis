@@ -1,7 +1,7 @@
 import { z } from "zod";
-import type { FirmSession } from "../db/tenant.js";
-import { assertCan } from "../security/permissions.js";
-import { recordAudit } from "./audit.js";
+import type { FirmSession } from "../db/tenant";
+import { assertCan } from "../security/permissions";
+import { recordAudit } from "./audit";
 
 export const CreateClientInput = z.object({
   kind: z.enum(["person", "organization"]),

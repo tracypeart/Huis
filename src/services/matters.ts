@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { FirmSession } from "../db/tenant.js";
-import { NotFoundError, PermissionDeniedError } from "../errors.js";
-import { assertCan, ATTORNEY_ROLES, INTERNAL_ROLES, type Role } from "../security/permissions.js";
-import { recordAudit } from "./audit.js";
+import type { FirmSession } from "../db/tenant";
+import { NotFoundError, PermissionDeniedError } from "../errors";
+import { assertCan, ATTORNEY_ROLES, INTERNAL_ROLES, type Role } from "../security/permissions";
+import { recordAudit } from "./audit";
 
 export const CreateMatterInput = z.object({
   title: z.string().trim().min(1).max(300),

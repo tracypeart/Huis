@@ -1,9 +1,10 @@
+import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
-import type { FirmSession } from "../db/tenant.js";
-import { NotFoundError } from "../errors.js";
-import { assertCan, INTERNAL_ROLES, ROLES, type Role } from "../security/permissions.js";
-import { recordAudit } from "./audit.js";
-import { deriveMatterCode } from "./firms.js";
+import type { FirmSession } from "../db/tenant";
+import { NotFoundError } from "../errors";
+import { assertCan, INTERNAL_ROLES, ROLES, type Role } from "../security/permissions";
+import { recordAudit } from "./audit";
+import { deriveMatterCode } from "./firms";
 
 export const InviteUserInput = z.object({
   email: z.email(),
@@ -22,12 +23,14 @@ export interface User {
   status: string;
   matterCode: string;
   locationId: string | null;
+  /** False until the person accepts their invitation and links a sign-in. */
+  signInLinked: boolean;
 }
 
 function toUser(r: Record<string, any>): User {
   return {
     id: r.id, email: r.email, fullName: r.full_name, role: r.role, status: r.status,
-    matterCode: r.matter_code, locationId: r.location_id,
+    matterCode: r.matter_code, locationId: r.location_id, signInLinked: Boolean(r.linked),
   };
 }
 
@@ -36,13 +39,13 @@ function toUser(r: Record<string, any>): User {
  * attorney or staff license; clients, co-counsel and experts use an external
  * license and can only ever see matters they are explicitly added to.
  */
-export async function inviteUser(s: FirmSession, input: InviteUserInput): Promise<User> {
+export async function inviteUser(s: FirmSession, input: InviteUserInput): Promise<InvitedUser> {
   assertCan(s.actor.role, "users.manage");
   const v = InviteUserInput.parse(input);
   const { rows } = await s.client.query(
     `INSERT INTO huis.users (firm_id, location_id, email, full_name, matter_code, role)
      VALUES ($1, $2, $3, $4, $5, $6)
-     RETURNING id, email, full_name, role, status, matter_code, location_id`,
+     RETURNING id, email, full_name, role, status, matter_code, location_id, (auth_subject IS NOT NULL) AS linked`,
     [s.actor.firmId, v.locationId, v.email, v.fullName, v.matterCode ?? deriveMatterCode(v.fullName), v.role],
   );
   const user = toUser(rows[0]!);
@@ -56,12 +59,48 @@ export async function inviteUser(s: FirmSession, input: InviteUserInput): Promis
   await recordAudit(s, "user.invited", {
     targetType: "user", targetId: user.id, metadata: { role: v.role, license: licenseKind },
   });
-  return user;
+  const invitationToken = await issueInvitation(s, user.id);
+  return { ...user, invitationToken };
+}
+
+export type InvitedUser = User & {
+  /** One-time secret for the invitation link. Shown once; only its hash is stored. */
+  invitationToken: string;
+};
+
+const INVITATION_DAYS = 7;
+
+/**
+ * Creates a one-time invitation link token for a user who has not linked a
+ * sign-in yet. Any earlier unused invitations for that user are revoked.
+ */
+export async function issueInvitation(s: FirmSession, userId: string): Promise<string> {
+  assertCan(s.actor.role, "users.manage");
+  const { rows } = await s.client.query<{ auth_subject: string | null; status: string }>(
+    "SELECT auth_subject, status FROM huis.users WHERE id = $1", [userId],
+  );
+  const target = rows[0];
+  if (!target) throw new NotFoundError("User");
+  if (target.auth_subject || target.status !== "active") {
+    throw new Error("This person already has access or is disabled.");
+  }
+  await s.client.query(
+    "UPDATE huis.user_invitations SET revoked_at = now() WHERE user_id = $1 AND accepted_at IS NULL AND revoked_at IS NULL",
+    [userId],
+  );
+  const token = randomBytes(32).toString("base64url");
+  await s.client.query(
+    `INSERT INTO huis.user_invitations (firm_id, user_id, token_hash, created_by, expires_at)
+     VALUES ($1, $2, $3, $4, now() + make_interval(days => $5))`,
+    [s.actor.firmId, userId, createHash("sha256").update(token).digest("hex"), s.actor.userId, INVITATION_DAYS],
+  );
+  await recordAudit(s, "user.invitation_issued", { targetType: "user", targetId: userId });
+  return token;
 }
 
 export async function listUsers(s: FirmSession): Promise<User[]> {
   const { rows } = await s.client.query(
-    `SELECT id, email, full_name, role, status, matter_code, location_id
+    `SELECT id, email, full_name, role, status, matter_code, location_id, (auth_subject IS NOT NULL) AS linked
        FROM huis.users ORDER BY full_name`,
   );
   return rows.map(toUser);

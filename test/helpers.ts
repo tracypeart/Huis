@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
 import pg from "pg";
-import { runMigrations } from "../src/db/migrate.js";
-import { HuisDb, type RequestContext } from "../src/db/tenant.js";
-import { signUpFirm } from "../src/services/firms.js";
+import { runMigrations } from "../src/db/migrate";
+import { HuisDb, type RequestContext } from "../src/db/tenant";
+import { signUpFirm } from "../src/services/firms";
 
 /**
  * Admin connection to an existing database on the test server. CI points this
