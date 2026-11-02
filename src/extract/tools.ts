@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { open } from "node:fs/promises";
+import path from "node:path";
 import { LIMITS } from "./types";
 
 /**
@@ -54,7 +55,9 @@ export function run(cmd: string, args: string[], opts: {
  * qpdf exits 3 when it had to repair the file but still read it.
  */
 export async function pdfPageCount(file: string): Promise<number> {
-  const out = (await run("qpdf", ["--show-npages", "--", file], { timeoutSec: 120, maxBytes: 64, okCodes: [0, 3] })).trim();
+  // Paths are always absolute ones Huis generated, so they can't be mistaken for options.
+  if (!path.isAbsolute(file)) throw new Error("expected an absolute path");
+  const out = (await run("qpdf", ["--show-npages", file], { timeoutSec: 120, maxBytes: 64, okCodes: [0, 3] })).trim();
   if (!/^\d{1,7}$/.test(out)) throw new Error("page count unreadable");
   const n = Number(out);
   if (n < 1) throw new Error("PDF has no pages");
