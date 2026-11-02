@@ -24,27 +24,27 @@ export function run(cmd: string, args: string[], opts: {
     let size = 0;
     let failed = false;
     const killGroup = () => { try { process.kill(-child.pid!, "SIGKILL"); } catch { /* gone */ } };
-    const fail = () => { if (!failed) { failed = true; killGroup(); reject(new Error(`${cmd} failed`)); } };
-    const timer = setTimeout(fail, (opts.timeoutSec ?? LIMITS.toolTimeoutSec) * 1000);
+    const fail = (why = "failed") => { if (!failed) { failed = true; killGroup(); reject(new Error(`${cmd} ${why}`)); } };
+    const timer = setTimeout(() => fail("timed out"), (opts.timeoutSec ?? LIMITS.toolTimeoutSec) * 1000);
     let checking = false;
     const watcher = opts.watch ? setInterval(() => {
       if (checking || failed) return;
       checking = true;
-      opts.watch!().then((ok) => { checking = false; if (!ok) fail(); }, () => { checking = false; fail(); });
+      opts.watch!().then((ok) => { checking = false; if (!ok) fail("stopped by watcher"); }, () => { checking = false; fail("stopped by watcher"); });
     }, opts.watchMs ?? 5000) : null;
     child.on("close", () => { if (watcher) clearInterval(watcher); });
     child.stdout!.on("data", (d: Buffer) => {
       size += d.length;
-      if (size > max) { fail(); return; }
+      if (size > max) { fail("produced too much output"); return; }
       chunks.push(d);
     });
-    child.on("error", () => { clearTimeout(timer); fail(); });
-    child.on("close", (code: number | null) => {
+    child.on("error", (e: NodeJS.ErrnoException) => { clearTimeout(timer); fail(`could not start (${e.code ?? "error"})`); });
+    child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
       clearTimeout(timer);
       killGroup();
       if (failed) return;
       if (code !== null && (opts.okCodes ?? [0]).includes(code)) resolve(Buffer.concat(chunks).toString("utf8"));
-      else fail();
+      else fail(code === null ? `killed by ${signal}` : `exited with code ${code}`);
     });
   });
 }
