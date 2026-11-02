@@ -1,6 +1,6 @@
 # Phase 2 — Universal Intake & Evidence Engine
 
-**Status:** Parts 1, 2 and 3a merged after independent security reviews. Part 3b (working copies) in progress.
+**Status:** Parts 1, 2 and 3a merged after independent security reviews. Part 3b (working copies) built and tested; under independent review.
 
 ## Deferred to the end of the build (Tracy, Nov 1 2026)
 Hosting, the production database, Replit Secrets, the production Microsoft redirect address and a real ClamAV server are set up together at the end. Until then everything runs and is tested locally.
@@ -85,6 +85,21 @@ Every item taken out of an email or archive gets its own fingerprint, virus scan
 
 **Status:** merged after independent security review 3 (see `SECURITY-REVIEW-2026-11.md`).
 
+## Part 3b — working copies (viewer, marks, redacted and exhibit copies)
+
+The original is never changed. Everything below happens on separate layers or new documents.
+
+| Feature | What Huis does |
+|---|---|
+| Page viewer | **Open in viewer** shows any PDF, Word, Excel, PowerPoint or photo page by page inside Huis. Office files and photos get a PDF *viewing copy*, made inside the sandbox and stored encrypted. The viewer (pdf.js) never runs scripts or forms inside documents. Opening a document is recorded in its chain of custody |
+| Highlights and notes | Drag on a page to highlight or attach a note. Marks are positioned as fractions of the page, so they line up at any zoom |
+| Redaction marks | Drag to mark areas to redact. Adding or removing a redaction mark is written to the audit log |
+| Work product | Highlights, notes, redaction marks and copy requests are **firm work product**: only firm staff who can see the document see them. Clients, co-counsel, experts and third parties never do, even on documents they can see. Read-only staff can view marks but not add them |
+| Redacted copies | **Produce copy** turns every page into an image, paints the marked areas solid black **in the image itself**, and writes a brand-new PDF containing only those images. The copy carries none of the original's text layer, hidden text, metadata, attachments or scripts, so nothing under a redaction can be recovered. The copy is then scanned and OCR'd like any document, so it stays searchable, minus the redacted words |
+| Exhibit and Bates | Optional exhibit label (stamped on page 1) and Bates numbering (stamped on every page). Bates numbers run continuously per matter and are reserved when the copy is requested, e.g. *SMITH-000101 – SMITH-000110* |
+| Linked custody | The copy is a new evidence item ("Produced by Huis from …") with its own fingerprint and chain of custody. The original's custody records the request and the finished copy. Saving a copy into a folder outsiders can see needs the same privilege-waiver acknowledgement as moving a document there, and it is recorded |
+
+Limits: copies up to 2,000 pages. Copies are image-based (150 dpi), the common format for productions; the OCR text makes them searchable.
+
 ## Next in Phase 2
-1. **Part 3b — working copies**: annotate, highlight, redact and exhibit-stamp without touching the original.
-2. **Transcription provider** for audio/video (needs a provider decision with zero-data-retention terms).
+1. **Transcription provider** for audio/video (needs a provider decision with zero-data-retention terms).

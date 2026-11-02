@@ -1,12 +1,13 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { moveEvidenceAction } from "../../../../lib/actions";
+import { moveEvidenceAction, requestCopyAction } from "../../../../lib/actions";
 import { getFlash, withSession } from "../../../../lib/server";
 import { CLASSIFICATION_LABELS, EvidenceStatus, FlashBanner, formatBytes } from "../../../../lib/ui";
 import { NotFoundError } from "../../../../src/errors";
 import { custodyLog, getEmailHeaders, getEvidence, getEvidenceText, listContainedItems, listSimilar } from "../../../../src/services/evidence";
 import { getMatter, listMatterFolders } from "../../../../src/services/matters";
 import { INTERNAL_ROLES } from "../../../../src/security/permissions";
+import { listCopies, producedFrom, viewablePdf } from "../../../../src/services/workingCopies";
 
 export const dynamic = "force-dynamic";
 
@@ -24,7 +25,14 @@ const EVENT_LABELS: Record<string, string> = {
   contained_item_extracted: "A contained file was taken out as its own item",
   text_extracted: "Text made readable and searchable",
   quarantined_contains_threat: "Quarantined: something inside it contains a threat",
+  copy_requested: "Copy requested (redacted / exhibit / Bates)",
+  copy_produced: "Copy produced",
+  produced_from: "Produced by Huis from another document",
 };
+
+const COPY_STATUS: Record<string, string> = { queued: "Waiting", running: "Being produced", done: "Ready", failed: "Failed" };
+const bates = (prefix: string | null, a: number | null, b: number | null) =>
+  prefix && a !== null ? `${prefix}-${String(a).padStart(6, "0")}${b !== null && b > a ? ` – ${prefix}-${String(b).padStart(6, "0")}` : ""}` : null;
 
 const EXTRACTION_LABELS: Record<string, string> = {
   pending: "Waiting to be read",
@@ -56,6 +64,10 @@ export default async function EvidenceDetail({ params, searchParams }: {
       email: await getEmailHeaders(s, id),
       contained: await listContainedItems(s, id),
       similar: await listSimilar(s, id),
+      viewable: (await viewablePdf(s, id)) !== null,
+      copies: await listCopies(s, id),
+      producedFrom: await producedFrom(s, id),
+      canWork: internal && s.actor.role !== "read_only",
       folders: internal && s.actor.role !== "read_only" ? await listMatterFolders(s, item.matterId) : [],
     };
   });
@@ -67,9 +79,12 @@ export default async function EvidenceDetail({ params, searchParams }: {
       <p className="notice"><Link href={`/matters/${m.id}`}>← {m.title}</Link></p>
       <h1 style={{ wordBreak: "break-word" }}>{e.originalFilename}</h1>
       <p className="sub">
-        {e.relativePath ?? (e.containerPath ? `Inside: ${e.containerPath}` : "Uploaded file")} · {formatBytes(e.sizeBytes)} · <EvidenceStatus status={e.status} />
+        {e.relativePath ?? (e.containerPath ? `Inside: ${e.containerPath}` : e.source === "produced_copy" ? "Copy produced by Huis" : "Uploaded file")} · {formatBytes(e.sizeBytes)} · <EvidenceStatus status={e.status} />
         {e.extractionStatus ? <> · <span className="badge">{EXTRACTION_LABELS[e.extractionStatus]}</span></> : null}
       </p>
+      {data.producedFrom ? (
+        <p className="notice">A copy produced by Huis from <Link href={`/evidence/${data.producedFrom.id}`}>{data.producedFrom.filename}</Link>. The original is unchanged.</p>
+      ) : null}
       {data.parent ? (
         <p className="notice">Found inside <Link href={`/evidence/${data.parent.id}`}>{data.parent.originalFilename}</Link>. It has its own fingerprint, scan and chain of custody.</p>
       ) : null}
@@ -155,13 +170,17 @@ export default async function EvidenceDetail({ params, searchParams }: {
           </tbody></table>
           <div style={{ marginTop: 16 }}>
             {e.status === "clean" ? (
-              <a className="button" href={`/api/evidence/${e.id}/download`}>Download original</a>
+              <div className="row">
+                {data.viewable ? <Link className="button" href={`/evidence/${e.id}/view`}>Open in viewer</Link> : null}
+                <a className={data.viewable ? "button secondary" : "button"} href={`/api/evidence/${e.id}/download`}>Download original</a>
+              </div>
             ) : (
               <p className="notice">This file cannot be opened until it passes its security scan.</p>
             )}
           </div>
           <p className="notice" style={{ marginTop: 12 }}>
-            The original is never changed. Annotation, redaction and exhibit copies arrive in a later step and are kept separately.
+            The original is never changed. Highlights, notes and redaction marks are kept separately as firm work product;
+            redacted and exhibit copies are new documents linked to this one.
           </p>
         </div>
 
@@ -206,6 +225,53 @@ export default async function EvidenceDetail({ params, searchParams }: {
           ) : null}
         </div>
       </div>
+
+      {data.internal && (data.copies.length || (data.canWork && data.viewable && e.status === "clean")) ? (
+        <div className="card">
+          <h2>Redacted and exhibit copies</h2>
+          {data.copies.length ? (
+            <table>
+              <thead><tr><th>Requested</th><th>Copy</th><th>Bates</th><th>Status</th></tr></thead>
+              <tbody>
+                {data.copies.map((c) => (
+                  <tr key={c.id}>
+                    <td style={{ whiteSpace: "nowrap" }}>{when(c.requestedAt)}<div className="notice">{c.requestedByName ?? ""}</div></td>
+                    <td>{[c.redact ? `Redacted (${c.redactionCount} area${c.redactionCount === 1 ? "" : "s"})` : null, c.exhibitLabel ? `Exhibit ${c.exhibitLabel}` : null].filter(Boolean).join(" · ") || "Bates-numbered"}</td>
+                    <td>{bates(c.batesPrefix, c.batesStart, c.batesEnd) ?? "—"}</td>
+                    <td>{c.producedId ? <Link href={`/evidence/${c.producedId}`}>{COPY_STATUS[c.status]}</Link> : COPY_STATUS[c.status]}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : null}
+          {data.canWork && data.viewable && e.status === "clean" && data.folders.length ? (
+            <form action={requestCopyAction} style={{ marginTop: 16 }}>
+              <input type="hidden" name="evidenceId" value={e.id} />
+              <p className="notice">
+                Pages are turned into images and marked areas are blacked out in the image itself, so nothing under a redaction
+                (and no hidden text) survives. Mark areas with <strong>Redact</strong> in the <Link href={`/evidence/${e.id}/view`}>viewer</Link> first.
+              </p>
+              <div className="row">
+                <label className="check"><input type="checkbox" name="redact" /> <span>Apply redactions</span></label>
+                <label>Exhibit label (optional)<input name="exhibitLabel" maxLength={40} placeholder="e.g. 12 or A-3" /></label>
+                <label>Bates prefix (optional)<input name="batesPrefix" maxLength={24} placeholder="e.g. SMITH" /></label>
+                <label>Save the copy in
+                  <select name="folderId" defaultValue={data.folders.find((f) => f.name === "Discovery")?.id ?? e.folderId}>
+                    {data.folders.map((f) => (
+                      <option key={f.id} value={f.id}>{f.isPrivilegedArea ? "🔴 " : ""}{f.name} ({CLASSIFICATION_LABELS[f.classification]})</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <label className="check" style={{ marginTop: 8 }}>
+                <input type="checkbox" name="acknowledge" />
+                <span>Required when saving into a folder people outside the firm can see: I understand this may waive privilege and I have reviewed this copy&apos;s redactions.</span>
+              </label>
+              <div style={{ marginTop: 12 }}><button type="submit">Produce copy</button></div>
+            </form>
+          ) : null}
+        </div>
+      ) : null}
 
       {data.text ? (
         <div className="card">

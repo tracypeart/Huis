@@ -543,9 +543,62 @@ export async function extractMedia(input: ExtractInput, provider: TranscriptionP
 }
 
 // ---------------------------------------------------------------------------
+// Viewing copies: Office files and photos become a PDF so every document can
+// be opened page by page (and annotated, redacted and stamped) in Huis.
+// ---------------------------------------------------------------------------
+const RENDITION_TYPES = /^(Word document|Excel workbook|PowerPoint|Rich text|Legacy Office)|image/i;
+
+export async function makeRendition(input: ExtractInput): Promise<{ path: string; pages: number | null } | null> {
+  const type = input.detectedType ?? "";
+  const e = ext(input.filename);
+  if (!RENDITION_TYPES.test(type) && !(type.startsWith("ZIP") && ["docx", "xlsx", "pptx"].includes(e))) return null;
+  if (type.startsWith("Legacy Office") && e === "msg") return null;
+  if (type === "HEIC photo") return null;
+  const work = path.join(input.outDir, "rendition-work");
+  await mkdir(work, { mode: 0o700 });
+  try {
+    // LibreOffice picks the converter from the file name, so give it a safe one with the right extension.
+    const safeExt = /^[a-z0-9]{1,5}$/.test(e) ? e : "bin";
+    const named = path.join(work, `document.${safeExt}`);
+    await writeFile(named, await readFile(input.inputPath), { mode: 0o600 });
+    await run("soffice", [`-env:UserInstallation=file://${path.join(work, "profile")}`, "--headless", "--norestore", "--nolockcheck",
+      "--convert-to", "pdf", "--outdir", work, named], { timeoutSec: 300 });
+    const pdf = path.join(work, "document.pdf");
+    const st = await lstat(pdf).catch(() => null);
+    if (!st?.isFile() || st.size === 0 || st.size > 2 * 1024 ** 3) return null;
+    const out = path.join(input.outDir, "rendition.pdf");
+    await rename(pdf, out);
+    let pages: number | null = null;
+    try {
+      const m = /^Pages:\s+(\d+)/m.exec(await run("pdfinfo", [out], { timeoutSec: 60 }));
+      pages = m ? Number(m[1]) : null;
+    } catch {
+      pages = null;
+    }
+    return { path: out, pages };
+  } catch {
+    return null;
+  } finally {
+    await rm(work, { recursive: true, force: true });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 export async function extract(input: ExtractInput, provider: TranscriptionProvider | null = null): Promise<ExtractResult> {
+  const result = await extractText(input, provider);
+  if (result.status !== "unsupported") {
+    try {
+      result.rendition = await makeRendition(input);
+    } catch {
+      result.rendition = null;
+    }
+  }
+  return result;
+}
+
+async function extractText(input: ExtractInput, provider: TranscriptionProvider | null): Promise<ExtractResult> {
   const type = input.detectedType ?? "";
   const e = ext(input.filename);
   if (input.depth >= LIMITS.maxDepth && (/ZIP|Email|Outlook/.test(type) || e === "msg" || e === "mbox")) {

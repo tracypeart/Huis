@@ -10,6 +10,7 @@ import { resolveIdentity, signUpFirm } from "../src/services/firms";
 import { addMatterMember, createMatter, linkContactToMatter, setCourtCaseNumber } from "../src/services/matters";
 import { changeUserRole, disableUser, endUserSessions, inviteUser, issueInvitation } from "../src/services/users";
 import { moveEvidence } from "../src/services/evidence";
+import { requestCopy } from "../src/services/workingCopies";
 import { ROLES } from "../src/security/permissions";
 import { act, db, getPending, setSessionCookie, withSession } from "./server";
 
@@ -172,6 +173,19 @@ export async function moveEvidenceAction(fd: FormData): Promise<void> {
   const evidenceId = text(fd, "evidenceId") ?? "";
   return act(`/evidence/${evidenceId}`, "Moved. The move is recorded in the chain of custody.", () => withSession(async (s) => {
     await moveEvidence(s, evidenceId, text(fd, "folderId") ?? "", { acknowledgePrivilegeWaiverRisk: fd.get("acknowledge") === "on" });
+  }));
+}
+
+export async function requestCopyAction(fd: FormData): Promise<void> {
+  const evidenceId = text(fd, "evidenceId") ?? "";
+  return act(`/evidence/${evidenceId}`, "Copy requested. Huis is producing it now; it will appear below and in the chosen folder.", () => withSession(async (s) => {
+    await requestCopy(s, evidenceId, {
+      redact: fd.get("redact") === "on",
+      exhibitLabel: text(fd, "exhibitLabel") ?? undefined,
+      batesPrefix: text(fd, "batesPrefix") ?? undefined,
+      folderId: text(fd, "folderId") ?? "",
+      acknowledgePrivilegeWaiverRisk: fd.get("acknowledge") === "on",
+    });
   }));
 }
 

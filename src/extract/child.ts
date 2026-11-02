@@ -6,13 +6,14 @@
  */
 import { readFile } from "node:fs/promises";
 import { extract } from "./formats";
+import { produceCopy, type ProduceInput } from "./produce";
 import type { ExtractInput } from "./types";
 
 async function main() {
   const jobFile = process.argv[2];
   if (!jobFile) throw new Error("missing job file");
-  const input = JSON.parse(await readFile(jobFile, "utf8")) as ExtractInput;
-  const result = await extract(input, null);
+  const job = JSON.parse(await readFile(jobFile, "utf8")) as ExtractInput | ProduceInput;
+  const result = "mode" in job && job.mode === "produce" ? await produceCopy(job) : await extract(job as ExtractInput, null);
   process.stdout.write(JSON.stringify(result));
 }
 

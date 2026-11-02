@@ -43,6 +43,8 @@ export interface ExtractResult {
   pages: number | null;
   email: EmailHeaders | null;
   children: ContainedFile[];
+  /** A PDF viewing copy (for Office files and photos), written inside outDir. */
+  rendition?: { path: string; pages: number | null } | null;
 }
 
 /** Hard limits applied to every file. */

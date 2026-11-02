@@ -6,7 +6,8 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import { finished, pipeline } from "node:stream/promises";
 import pg from "pg";
-import { extractInSandbox } from "../extract/sandbox";
+import { extractInSandbox, produceInSandbox } from "../extract/sandbox";
+import type { ProduceInput, ProduceResult } from "../extract/produce";
 import { fingerprint, nameStem } from "../similarity/fingerprint";
 import type { ExtractInput, ExtractResult } from "../extract/types";
 import { detectFileType, type DetectedType } from "../storage/filetype";
@@ -35,6 +36,24 @@ interface ClaimedJob {
 }
 
 export type Extractor = (input: ExtractInput, workDir: string) => Promise<ExtractResult>;
+export type Producer = (input: Omit<ProduceInput, "mode">) => Promise<ProduceResult>;
+
+interface ClaimedCopy {
+  request_id: string;
+  lock_token: string;
+  firm_id: string;
+  matter_id: string;
+  source_id: string;
+  source_key: string;
+  source_filename: string;
+  redact: boolean;
+  exhibit_label: string | null;
+  bates_prefix: string | null;
+  bates_start: string | null;
+  page_count: number;
+  redactions: { page: number; x: number; y: number; w: number; h: number }[];
+  attempts: number;
+}
 
 /**
  * Background processing for evidence. Two job kinds:
@@ -57,13 +76,14 @@ export class EvidenceProcessor {
     private readonly scanner: MalwareScanner,
     private readonly extractor: Extractor = extractInSandbox,
     private readonly leaseRenewMs: number = LEASE_RENEW_MS,
+    private readonly producer: Producer = produceInSandbox,
   ) {}
 
   /** Processes one job. Returns false when the queue is empty. */
   async runOnce(): Promise<boolean> {
     const { rows } = await this.pool.query<ClaimedJob>("SELECT * FROM huis.worker_claim_job()");
     const job = rows[0];
-    if (!job) return false;
+    if (!job) return this.runCopyOnce();
     try {
       if (job.kind === "evidence.extract") await this.extract(job);
       else await this.scan(job);
@@ -158,6 +178,14 @@ export class EvidenceProcessor {
         throw err;
       }
 
+      // The PDF viewing copy (Office files, photos), encrypted like everything else.
+      let rendition: { key: string; size: number; sha256: string; pages: number | null } | null = null;
+      if (result.rendition) {
+        const key = storageKeys.rendition(job.firm_id, job.matter_id, job.evidence_id);
+        const put = await this.vault.put(job.firm_id, key, createReadStream(result.rendition.path, { flags: (constants.O_RDONLY | constants.O_NOFOLLOW) as unknown as string }));
+        rendition = { key, size: put.size, sha256: put.sha256, pages: result.rendition.pages };
+      }
+
       const client = await this.pool.connect();
       let added = 0;
       try {
@@ -186,6 +214,19 @@ export class EvidenceProcessor {
             detail = `${detail} Some contained files were not unpacked because a safety limit was reached.`.trim();
           }
         }
+        if (rendition) {
+          await client.query("SAVEPOINT rendition");
+          try {
+            await client.query("SELECT huis.worker_save_rendition($1, $2, $3, $4, $5, $6)", [
+              job.job_id, job.lock_token, rendition.key, rendition.size, rendition.sha256, rendition.pages,
+            ]);
+            await client.query("RELEASE SAVEPOINT rendition");
+          } catch (err) {
+            if (/not held/.test(err instanceof Error ? err.message : "")) throw err;
+            await client.query("ROLLBACK TO SAVEPOINT rendition");
+            await this.vault.delete(rendition.key).catch(() => undefined);
+          }
+        }
         // Near-duplicates and versions (never blocks saving the text).
         if (result.text.trim() && !/\.(ics|vcf)$/i.test(job.original_filename)) {
           const fp = fingerprint(result.text);
@@ -207,6 +248,7 @@ export class EvidenceProcessor {
       } catch (err) {
         await client.query("ROLLBACK").catch(() => undefined);
         for (const c of stored) await this.vault.delete(c.key).catch(() => undefined);
+        if (rendition) await this.vault.delete(rendition.key).catch(() => undefined);
         throw err;
       } finally {
         client.release();
@@ -215,6 +257,41 @@ export class EvidenceProcessor {
       clearInterval(renew);
       await rm(workDir, { recursive: true, force: true });
     }
+  }
+
+  /** Produces one requested redacted / exhibit copy. Returns false when none is waiting. */
+  async runCopyOnce(): Promise<boolean> {
+    const { rows } = await this.pool.query<ClaimedCopy>("SELECT * FROM huis.worker_claim_copy()");
+    const req = rows[0];
+    if (!req) return false;
+    const workDir = await mkdtemp(path.join(os.tmpdir(), "huis-x-"));
+    const newId = randomUUID();
+    const key = storageKeys.original(req.firm_id, req.matter_id, newId);
+    let stored = false;
+    try {
+      const inputPath = path.join(workDir, "input.pdf");
+      const outDir = path.join(workDir, "out");
+      await mkdir(outDir, { mode: 0o700 });
+      await pipeline(await this.vault.get(req.firm_id, req.source_key), createWriteStream(inputPath, { mode: 0o600 }));
+      const made = await this.producer({
+        inputPath, outPath: path.join(outDir, "copy.pdf"), workDir, pageCount: req.page_count,
+        redactions: req.redactions, exhibitLabel: req.exhibit_label, batesPrefix: req.bates_prefix,
+        batesStart: req.bates_start === null ? null : Number(req.bates_start),
+      });
+      const { size, sha256 } = await this.vault.put(req.firm_id, key,
+        createReadStream(made.path, { flags: (constants.O_RDONLY | constants.O_NOFOLLOW) as unknown as string }));
+      stored = true;
+      await this.pool.query("SELECT huis.worker_complete_copy($1, $2, $3, $4, $5, $6, $7, $8)", [
+        req.request_id, req.lock_token, newId, copyFilename(req), size, sha256, key, made.pages,
+      ]);
+    } catch (err) {
+      if (stored) await this.vault.delete(key).catch(() => undefined);
+      const message = err instanceof Error ? err.message : "copy failed";
+      await this.pool.query("SELECT huis.worker_fail_copy($1, $2, $3, $4)", [req.request_id, req.lock_token, message, req.attempts >= MAX_ATTEMPTS]);
+    } finally {
+      await rm(workDir, { recursive: true, force: true });
+    }
+    return true;
   }
 
   /**
@@ -242,4 +319,18 @@ export class EvidenceProcessor {
     while (await this.runOnce()) n += 1;
     return n;
   }
+}
+
+/** "Contract (REDACTED, EXHIBIT 12, ABC-000101–000110).pdf" */
+function copyFilename(req: ClaimedCopy): string {
+  const stem = req.source_filename.replace(/\.[A-Za-z0-9]{1,8}$/, "").slice(0, 150);
+  const tags: string[] = [];
+  if (req.redact) tags.push("REDACTED");
+  if (req.exhibit_label) tags.push(`EXHIBIT ${req.exhibit_label}`);
+  if (req.bates_prefix && req.bates_start !== null) {
+    const start = Number(req.bates_start);
+    const end = start + req.page_count - 1;
+    tags.push(`${req.bates_prefix}-${String(start).padStart(6, "0")}${end > start ? `–${String(end).padStart(6, "0")}` : ""}`);
+  }
+  return `${stem} (${tags.join(", ")}).pdf`;
 }

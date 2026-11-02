@@ -114,6 +114,8 @@ export function evidenceVault(): EvidenceVault {
 export const storageKeys = {
   original: (firmId: string, matterId: string, evidenceId: string) =>
     `firm/${firmId}/matter/${matterId}/evidence/${evidenceId}/original`,
+  rendition: (firmId: string, matterId: string, evidenceId: string) =>
+    `firm/${firmId}/matter/${matterId}/evidence/${evidenceId}/rendition.pdf`,
   stagingChunk: (firmId: string, sessionId: string, index: number) =>
     `firm/${firmId}/staging/${sessionId}/${String(index).padStart(6, "0")}`,
 };
