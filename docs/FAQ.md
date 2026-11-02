@@ -47,6 +47,7 @@ Yes, at every stage. After each part is built, a separate reviewer that did not 
 
 - **Review 1** (sign-in, firms, matters, secure intake): 9 issues confirmed, all fixed.
 - **Review 2** (reading files and search): 7 security issues plus 7 reliability issues, all fixed. These included the protections above for privileged attachments, attachment names, the sealed-off file reader and the reading and search records.
+- **Review 3** (Outlook mailboxes and similar documents): no privilege or ethical-wall leak found. 4 robustness issues and 1 suspected issue, all fixed, so very large or deliberately crafted mailboxes can't slow Huis down or fill its disks.
 
 ### Who owns our data?
 Your firm does. You can export everything at any time.

@@ -32,6 +32,17 @@ CREATE TABLE huis.evidence_lsh (
   PRIMARY KEY (evidence_id, band)
 );
 CREATE INDEX evidence_lsh_lookup ON huis.evidence_lsh (matter_id, band, hash);
+
+-- How many items share each band value in a matter. A value shared by very
+-- many items (automated emails, boilerplate) says nothing useful and would
+-- make every new item slower to compare, so crowded buckets are skipped.
+CREATE TABLE huis.evidence_lsh_buckets (
+  matter_id uuid NOT NULL,
+  band      smallint NOT NULL,
+  hash      bigint NOT NULL,
+  n         int NOT NULL,
+  PRIMARY KEY (matter_id, band, hash)
+);
 CREATE INDEX evidence_fingerprints_stem ON huis.evidence_fingerprints (matter_id, name_stem) WHERE name_stem IS NOT NULL;
 
 CREATE TABLE huis.evidence_similarity (
@@ -51,14 +62,16 @@ CREATE INDEX evidence_similarity_b ON huis.evidence_similarity (item_b);
 
 ALTER TABLE huis.evidence_fingerprints ENABLE ROW LEVEL SECURITY;
 ALTER TABLE huis.evidence_lsh          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE huis.evidence_lsh_buckets  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE huis.evidence_lsh_buckets  FORCE ROW LEVEL SECURITY;
 ALTER TABLE huis.evidence_similarity   ENABLE ROW LEVEL SECURITY;
 ALTER TABLE huis.evidence_fingerprints FORCE ROW LEVEL SECURITY;
 ALTER TABLE huis.evidence_lsh          FORCE ROW LEVEL SECURITY;
 ALTER TABLE huis.evidence_similarity   FORCE ROW LEVEL SECURITY;
 
 -- Fingerprints are internal: the app can't read or write them at all.
-REVOKE ALL ON huis.evidence_fingerprints, huis.evidence_lsh, huis.evidence_similarity FROM PUBLIC;
-GRANT SELECT, INSERT, UPDATE, DELETE ON huis.evidence_fingerprints, huis.evidence_lsh, huis.evidence_similarity TO huis_security;
+REVOKE ALL ON huis.evidence_fingerprints, huis.evidence_lsh, huis.evidence_lsh_buckets, huis.evidence_similarity FROM PUBLIC;
+GRANT SELECT, INSERT, UPDATE, DELETE ON huis.evidence_fingerprints, huis.evidence_lsh, huis.evidence_lsh_buckets, huis.evidence_similarity TO huis_security;
 GRANT SELECT ON huis.evidence_similarity TO huis_app;
 
 -- Visible only when BOTH items are visible to this person (evidence RLS applies inside).
@@ -99,23 +112,31 @@ BEGIN
   -- Too little text to compare meaningfully (a few words, a blank scan).
   IF p_phrase_count < 20 THEN RETURN 0; END IF;
 
+  INSERT INTO huis.evidence_lsh_buckets (matter_id, band, hash, n)
+    SELECT matter_id, band, hash, 1 FROM huis.evidence_lsh WHERE evidence_id = v_item.id
+    ON CONFLICT (matter_id, band, hash) DO UPDATE SET n = huis.evidence_lsh_buckets.n + 1;
+
   FOR c IN
     WITH cand AS (
       SELECT l.evidence_id, count(*) AS shared
         FROM huis.evidence_lsh me
+        JOIN huis.evidence_lsh_buckets bk ON bk.matter_id = me.matter_id AND bk.band = me.band AND bk.hash = me.hash
         JOIN huis.evidence_lsh l ON l.matter_id = me.matter_id AND l.band = me.band AND l.hash = me.hash
        WHERE me.evidence_id = v_item.id AND l.evidence_id <> v_item.id
+         AND bk.n <= 200  -- crowded buckets are skipped (bounded work per item)
        GROUP BY l.evidence_id
        ORDER BY count(*) DESC
-       LIMIT 500
+       LIMIT 200
     )
-    SELECT f.evidence_id, f.name_stem, f.is_email, o.duplicate_of AS other_dup, o.sha256 AS other_sha,
+    SELECT f.evidence_id, f.name_stem, f.is_email, o.sha256 AS other_sha,
            (SELECT count(*) FROM generate_subscripts(p_minhash, 1) k WHERE p_minhash[k] = f.minhash[k])::real / 64 AS score
       FROM cand
       JOIN huis.evidence_fingerprints f ON f.evidence_id = cand.evidence_id
       JOIN huis.evidence_items o ON o.id = f.evidence_id
      WHERE f.phrase_count >= 20 AND o.firm_id = v_item.firm_id AND o.matter_id = v_item.matter_id
+     ORDER BY score DESC
   LOOP
+    EXIT WHEN v_links >= 50;  -- at most 50 links per item
     -- Exact copies are already linked as duplicates.
     CONTINUE WHEN c.other_sha = v_item.sha256;
     IF v_stem IS NOT NULL AND c.name_stem = v_stem AND NOT p_is_email AND NOT c.is_email AND c.score >= 0.3 THEN
@@ -212,3 +233,40 @@ BEGIN
       p_size, p_sha256, p_storage_key, 'extracted', v_parent.received_from, v_parent.date_received,
       v_parent.uploaded_by, now(), v_parent.id, v_root.id, left(p_container_path, 4096), v_parent.depth + 1);
 END $$;
+
+-- ---------------------------------------------------------------------------
+-- Long jobs (large mailboxes) renew their lease so no second worker picks
+-- them up while they're still running.
+-- ---------------------------------------------------------------------------
+CREATE FUNCTION huis.worker_renew_lease(p_job_id bigint, p_lock_token uuid) RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = huis, pg_temp AS $$
+BEGIN
+  UPDATE huis.jobs SET locked_until = now() + interval '6 hours'
+   WHERE id = p_job_id AND status = 'running' AND lock_token = p_lock_token;
+  RETURN FOUND;
+END $$;
+ALTER FUNCTION huis.worker_renew_lease(bigint, uuid) OWNER TO huis_security;
+REVOKE ALL ON FUNCTION huis.worker_renew_lease(bigint, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION huis.worker_renew_lease(bigint, uuid) TO huis_worker;
+
+-- What an upload may still unpack, so the worker stops encrypting and
+-- storing contained files once the budget is used up (instead of storing
+-- everything and discarding the excess).
+CREATE FUNCTION huis.worker_unpack_remaining(p_job_id bigint, p_lock_token uuid, OUT items bigint, OUT bytes bigint)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = huis, pg_temp AS $$
+DECLARE
+  v_job  huis.jobs;
+  v_item huis.evidence_items;
+  v_root huis.evidence_items;
+  v_used huis.unpack_counters;
+BEGIN
+  v_job := huis.worker_held_extract_job(p_job_id, p_lock_token);
+  SELECT * INTO v_item FROM huis.evidence_items WHERE id = v_job.evidence_id;
+  SELECT * INTO v_root FROM huis.evidence_items WHERE id = coalesce(v_item.root_id, v_item.id);
+  SELECT * INTO v_used FROM huis.unpack_counters WHERE item_id = v_root.id;
+  items := greatest(0, 250000 - coalesce(v_used.items, 0));
+  bytes := greatest(0, least(greatest(20 * v_root.size_bytes, 1073741824), 53687091200) - coalesce(v_used.bytes, 0));
+END $$;
+ALTER FUNCTION huis.worker_unpack_remaining(bigint, uuid) OWNER TO huis_security;
+REVOKE ALL ON FUNCTION huis.worker_unpack_remaining(bigint, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION huis.worker_unpack_remaining(bigint, uuid) TO huis_worker;

@@ -1,6 +1,6 @@
 # Phase 2 — Universal Intake & Evidence Engine
 
-**Status:** Part 1 (secure intake) and Part 2 (readable & searchable) merged after independent security reviews. Part 3 in progress.
+**Status:** Parts 1, 2 and 3a merged after independent security reviews. Part 3b (working copies) in progress.
 
 ## Deferred to the end of the build (Tracy, Nov 1 2026)
 Hosting, the production database, Replit Secrets, the production Microsoft redirect address and a real ClamAV server are set up together at the end. Until then everything runs and is tested locally.
@@ -81,7 +81,9 @@ Every item taken out of an email or archive gets its own fingerprint, virus scan
 
 **How similarity works:** each document's wording is reduced to a 64-number fingerprint of its five-word phrases. Matching fingerprints estimate the share of wording two documents have in common, without storing any extra copy of the text. Exact byte-for-byte copies are still shown as duplicates. Documents with very little text aren't compared.
 
-**Scale:** the unpacking limits per upload (size and item count) are now kept as running totals, so a mailbox with hundreds of thousands of messages doesn't slow down as it's unpacked.
+**Scale:** the unpacking limits per upload (size and item count) are kept as running totals, so a mailbox with hundreds of thousands of messages doesn't slow down as it's unpacked. Disk use is watched while a mailbox unpacks, long jobs renew their lease, and very common look-alike text (automated emails, boilerplate) is skipped when matching so it can't slow things down.
+
+**Status:** merged after independent security review 3 (see `SECURITY-REVIEW-2026-11.md`).
 
 ## Next in Phase 2
 1. **Part 3b — working copies**: annotate, highlight, redact and exhibit-stamp without touching the original.

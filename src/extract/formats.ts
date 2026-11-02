@@ -353,6 +353,12 @@ export async function extractMbox(input: ExtractInput): Promise<ExtractResult> {
 /** Outlook mailboxes can hold far more items than an archive. */
 export const PST_MAX_ITEMS = 200_000;
 
+/** Bytes used by everything under a folder (via du, which is fast on large trees). */
+async function diskUse(dir: string): Promise<number> {
+  const out = await run("du", ["-sb", "--", dir], { timeoutSec: 120, maxBytes: 4096 });
+  return Number.parseInt(out, 10) || 0;
+}
+
 /**
  * Splits an Outlook data file into one item per message (.eml), calendar
  * entry (.ics) and contact (.vcf), recording the mailbox folder each came
@@ -364,12 +370,23 @@ export const PST_MAX_ITEMS = 200_000;
 export async function extractPst(input: ExtractInput): Promise<ExtractResult> {
   const scratch = path.join(input.outDir, "pst-raw");
   await mkdir(scratch, { mode: 0o700 });
+  let overLimit = false;
   try {
     try {
       // -e one file per item, -b skip duplicate RTF bodies, -q quiet, -j 0 single-threaded.
-      await run("readpst", ["-e", "-b", "-q", "-j", "0", "-o", scratch, input.inputPath], { timeoutSec: 3 * 3600, maxBytes: 1024 * 1024 });
+      // A crafted mailbox can expand far beyond its own size, so disk use is
+      // watched while it unpacks and the tool is stopped past the limit.
+      const limit = Math.min(50 * 1024 ** 3, Math.max(LIMITS.maxUnpackedBytes, 3 * (await stat(input.inputPath)).size));
+      await run("readpst", ["-e", "-b", "-q", "-j", "0", "-o", scratch, input.inputPath], {
+        timeoutSec: 3 * 3600, maxBytes: 1024 * 1024,
+        watch: async () => {
+          if ((await diskUse(scratch)) <= limit) return true;
+          overLimit = true;
+          return false;
+        },
+      });
     } catch {
-      // A damaged mailbox may still have produced items; keep what was read.
+      // A damaged (or oversized) mailbox may still have produced items; keep what was read.
     }
     const children: ContainedFile[] = [];
     let truncated = false;
@@ -399,9 +416,9 @@ export async function extractPst(input: ExtractInput): Promise<ExtractResult> {
     };
     await walk(scratch, []);
     return empty({
-      status: children.length ? (truncated ? "partial" : "done") : "no_text",
+      status: children.length ? (truncated || overLimit ? "partial" : "done") : "no_text",
       detail: children.length
-        ? `Outlook mailbox split into ${children.length} item(s) (emails, calendar entries, contacts); each is a separate item.${truncated ? ` Stopped at ${PST_MAX_ITEMS.toLocaleString("en-US")} items.` : ""}`
+        ? `Outlook mailbox split into ${children.length} item(s) (emails, calendar entries, contacts); each is a separate item.${truncated ? ` Stopped at ${PST_MAX_ITEMS.toLocaleString("en-US")} items.` : ""}${overLimit ? " Unpacking stopped because the mailbox expanded beyond the safe size limit." : ""}`
         : "No items could be read from this Outlook data file (it may be damaged).",
       children,
     });

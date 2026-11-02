@@ -21,6 +21,8 @@ import {
 import { addMatterMember, createMatter, listMatterFolders } from "../src/services/matters";
 import { HIT_END, HIT_START, searchEvidence } from "../src/services/search";
 import { fingerprint, nameStem, similarity } from "../src/similarity/fingerprint";
+import { diffLines } from "../src/similarity/diff";
+import { run as runTool } from "../src/extract/tools";
 import { inviteUser } from "../src/services/users";
 import { MasterKeyProvider } from "../src/storage/encryption";
 import { detectFileType } from "../src/storage/filetype";
@@ -754,5 +756,86 @@ describe("part 3a: near-duplicates and versions", () => {
       "SELECT huis.worker_save_similarity(1, gen_random_uuid(), array_fill(1, ARRAY[64]), 'x', false, 100)"))).rejects.toThrow(/permission/);
     await expect(t.worker.query(
       "SELECT huis.worker_save_similarity(1, gen_random_uuid(), array_fill(1, ARRAY[64]), 'x', false, 100)")).rejects.toThrow(/not held/);
+  });
+});
+
+describe("security review 3 regressions", () => {
+  it("crowded fingerprint buckets are skipped, so look-alike floods can't slow matching", async () => {
+    const x = await setup();
+    const text = prose(555, 800);
+    // Pretend this matter already holds hundreds of items sharing every band of this text.
+    const fp = fingerprint(text).minhash;
+    for (let b = 0; b < 32; b++) {
+      const hash = (BigInt(fp[b * 2]!) << 32n) | (BigInt(fp[b * 2 + 1]!) & 0xffffffffn);
+      await t.admin.query("INSERT INTO huis.evidence_lsh_buckets (matter_id, band, hash, n) VALUES ($1, $2, $3, 500)",
+        [x.matter.id, b, BigInt.asIntN(64, hash).toString()]);
+    }
+    const a = await upload(x.owner, x.matter.id, await (async () => { const f = path.join(dir, "flood-a.txt"); await writeFile(f, text); return f; })());
+    await upload(x.owner, x.matter.id, await (async () => { const f = path.join(dir, "flood-b.txt"); await writeFile(f, `${text}\nextra`); return f; })());
+    await processor.drain();
+    expect(await db.withFirm(x.owner, (s) => listSimilar(s, a.id))).toEqual([]);
+  });
+
+  it("a job whose lease is lost fails loudly instead of being recorded as 'partial'", async () => {
+    const x = await setup();
+    const zip = await upload(x.owner, x.matter.id, files.zip!);
+    const stealing = async (input: ExtractInput) => {
+      const r = await extract(input);
+      await t.admin.query("UPDATE huis.jobs SET lock_token = gen_random_uuid() WHERE evidence_id = $1 AND kind = 'evidence.extract'", [zip.id]);
+      return r;
+    };
+    const p = new EvidenceProcessor(t.worker, vault, scanner, stealing);
+    await p.runOnce(); // scan
+    await p.runOnce(); // extract — loses its job mid-way
+    expect((await db.withFirm(x.owner, (s) => getEvidence(s, zip.id)))?.childCount).toBe(0);
+    expect((await t.admin.query("SELECT count(*)::int n FROM huis.evidence_items WHERE parent_id = $1", [zip.id])).rows[0].n).toBe(0);
+    const ok = await t.worker.query("SELECT huis.worker_renew_lease(1, gen_random_uuid()) AS ok");
+    expect(ok.rows[0].ok).toBe(false);
+  });
+
+  it("stops storing contained files once the upload's unpacking budget is used up", async () => {
+    const x = await setup();
+    const zip = await upload(x.owner, x.matter.id, files.zip!);
+    await processor.runOnce(); // scan only
+    await t.admin.query("INSERT INTO huis.unpack_counters (item_id, items, bytes) VALUES ($1, 249999, 0)", [zip.id]);
+    await processor.drain();
+    const z = await db.withFirm(x.owner, (s) => getEvidence(s, zip.id));
+    expect(z).toMatchObject({ childCount: 1, extractionStatus: "partial" });
+    expect(z?.extractionDetail).toMatch(/unpacking limit/);
+  });
+
+  it("text comparison stays fast on crafted input and refuses oversized text", () => {
+    const L = "x".repeat(320);
+    const a = Array.from({ length: 3000 }, (_, i) => L + i).join("\n");
+    const b = Array.from({ length: 3000 }, (_, i) => L + (i + 5000)).join("\n");
+    const t0 = Date.now();
+    expect(diffLines(a, b).tooLarge).toBe(false);
+    expect(Date.now() - t0).toBeLessThan(400);
+    expect(diffLines("y".repeat(1_000_001), "z").tooLarge).toBe(true);
+  });
+
+  it("a tool can be stopped by its watcher (used to cap mailbox unpacking on disk)", async () => {
+    const t0 = Date.now();
+    await expect(runTool("sh", ["-c", "sleep 20"], { watch: async () => false, watchMs: 100 })).rejects.toThrow();
+    expect(Date.now() - t0).toBeLessThan(5000);
+  });
+});
+
+describe("security review 3: lease renewal", () => {
+  it("a long-running extract job keeps renewing its lease", async () => {
+    const x = await setup();
+    const item = await upload(x.owner, x.matter.id, files.pdf!);
+    let observed: number | null = null;
+    const slow = async (input: ExtractInput) => {
+      // Simulate a lease about to run out, then a long job.
+      await t.admin.query("UPDATE huis.jobs SET locked_until = now() + interval '1 second' WHERE evidence_id = $1 AND kind = 'evidence.extract'", [item.id]);
+      await new Promise((r) => setTimeout(r, 1500));
+      observed = Number((await t.admin.query(
+        "SELECT extract(epoch FROM locked_until - now()) AS s FROM huis.jobs WHERE evidence_id = $1 AND kind = 'evidence.extract'", [item.id])).rows[0].s);
+      return extract(input);
+    };
+    await new EvidenceProcessor(t.worker, vault, scanner, slow, 200).drain();
+    expect(observed).toBeGreaterThan(5 * 3600);
+    expect((await db.withFirm(x.owner, (s) => getEvidence(s, item.id)))?.extractionStatus).toBe("done");
   });
 });

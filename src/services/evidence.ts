@@ -438,6 +438,8 @@ export async function compareEvidence(s: FirmSession, leftId: string, rightId: s
   const rt = right.status === "clean" ? await getEvidenceText(s, rightId) : null;
   if (!lt || !rt) return { left, right, diff: null, tooLarge: false };
   const { diffLines } = await import("../similarity/diff");
-  const d = diffLines(lt.content.slice(0, 2_000_000), rt.content.slice(0, 2_000_000));
+  const { DIFF_MAX_CHARS } = await import("../similarity/diff");
+  if (lt.content.length > DIFF_MAX_CHARS || rt.content.length > DIFF_MAX_CHARS) return { left, right, diff: null, tooLarge: true };
+  const d = diffLines(lt.content, rt.content);
   return { left, right, diff: d.lines, tooLarge: d.tooLarge };
 }

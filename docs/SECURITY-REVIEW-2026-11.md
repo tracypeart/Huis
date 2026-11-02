@@ -36,6 +36,19 @@
 | F7 | Low | On timeout, LibreOffice's helper process survived | Every tool runs in its own process group, killed as a whole |
 | Correctness | — | OCR timeouts lost all text; very large PDFs and mailboxes could exhaust memory; an infected attachment left its email marked clean; .ppt files weren't read; crashed workers left decrypted copies in temp folders; a move during unpacking could split a family | Partial OCR results kept; large outputs streamed and capped; infected children quarantine their parents; .ppt converted via PDF; stale work folders swept on start-up; unpacking locks the parent so a concurrent move waits and then moves everything |
 
+## Third review — Phase 2 part 3a (mailboxes, attached messages, similarity)
+
+**Scope:** Outlook .pst/.ost splitting, emails attached inside emails, near-duplicate and version detection, the compare page.
+**Result:** no privilege, ethical-wall or cross-firm leak. The reviewer tried to reach privileged and walled items through similarity links, comparisons, error messages, query plans and moves in and out of the red folder; every attempt failed. It found 4 confirmed problems and 1 suspected, about robustness and the repository. **All fixed**, each with a regression test ("security review 3" in `test/extraction.test.ts`, plus `test/repo-hygiene.test.ts`).
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| R3-1 | Medium | Ignore rules meant for evidence *data* (`uploads/`, `evidence/`) also matched source folders, so the evidence pages, download route and upload API had never been committed to GitHub (they had been reviewed on disk) | Rules anchored to data folders at the project root; the files are committed; a test now fails if any source file is ever ignored |
+| R3-2 | Medium | Near-duplicate matching slowed down with every look-alike in a matter (e.g. thousands of automated emails in a mailbox) | Crowded fingerprint buckets (over 200 items) are skipped, candidates capped at 200 and links at 50 per item, calendar entries and contacts not fingerprinted |
+| R3-3 | Medium/Low | Very long mailbox jobs could outlive their 6-hour lease and be picked up twice, with results silently discarded as "partial" | The worker renews its lease every 10 minutes and keeps its work folder fresh; a lost lease is a real failure, never "partial"; stored files are cleaned up if storing is interrupted |
+| R3-4 | Low | Comparing two crafted files could stall the web server for ~0.7 s per request | Lines compared as integers, 1 million characters per side; the crafted case now takes 74 ms or is refused as too large |
+| R3-5 | Suspected Medium | A crafted mailbox could expand to fill the worker's disk before any limit applied | Disk use is watched while a mailbox unpacks and unpacking stops past the limit; the worker checks the upload's remaining budget *before* encrypting and storing contained files |
+
 ## Still open (tracked, not code defects)
 1. **MFA enforcement** — Microsoft sign-in doesn't yet require proof of MFA. Plan: require the firm's Microsoft MFA (Conditional Access) or a Huis passkey. Part of the end-of-build Azure/hosting step.
 2. **Administrator-level tampering** — someone with full database superuser access could switch off the protective rules and rewrite history consistently. The hash chains make ordinary tampering detectable, but defeating a superuser needs the chain's latest fingerprint stored outside the database (e.g. a daily signed export). Planned with production hosting.

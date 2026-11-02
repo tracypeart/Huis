@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants, createReadStream, createWriteStream } from "node:fs";
-import { mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, stat, utimes } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -14,6 +14,10 @@ import type { MalwareScanner } from "../storage/scanner";
 import { storageKeys, type EvidenceVault } from "../storage/store";
 
 const MAX_ATTEMPTS = 5;
+/** How often a running extract job renews its 6-hour lease. */
+export const LEASE_RENEW_MS = 10 * 60_000;
+/** Database errors that mean "a safety limit was reached" (anything else is a real failure). */
+const LIMIT_ERRORS = /quota|nested too deeply|too many items/;
 
 interface ClaimedJob {
   job_id: string;
@@ -52,6 +56,7 @@ export class EvidenceProcessor {
     private readonly vault: EvidenceVault,
     private readonly scanner: MalwareScanner,
     private readonly extractor: Extractor = extractInSandbox,
+    private readonly leaseRenewMs: number = LEASE_RENEW_MS,
   ) {}
 
   /** Processes one job. Returns false when the queue is empty. */
@@ -103,6 +108,15 @@ export class EvidenceProcessor {
 
   private async extract(job: ClaimedJob): Promise<void> {
     const workDir = await mkdtemp(path.join(os.tmpdir(), "huis-x-"));
+    // Keep the job (and its working folder) alive while a long file is processed.
+    let leaseLost = false;
+    const renew = setInterval(() => {
+      this.pool.query("SELECT huis.worker_renew_lease($1, $2) AS ok", [job.job_id, job.lock_token])
+        .then((r) => { if (!r.rows[0]?.ok) leaseLost = true; }, () => undefined);
+      const now = new Date();
+      utimes(workDir, now, now).catch(() => undefined);
+    }, this.leaseRenewMs);
+    renew.unref();
     try {
       const inputPath = path.join(workDir, "input");
       const outDir = path.join(workDir, "out");
@@ -114,14 +128,34 @@ export class EvidenceProcessor {
         inputPath, outDir, filename: job.original_filename, detectedType: job.detected_content_type, depth: job.depth,
       }, workDir);
 
+      if (leaseLost) throw new Error("job lease lost");
+
+      // Only store what the upload's unpacking budget still allows.
+      const budget = (await this.pool.query<{ items: string; bytes: string }>(
+        "SELECT items, bytes FROM huis.worker_unpack_remaining($1, $2)", [job.job_id, job.lock_token])).rows[0]!;
+      let itemsLeft = Number(budget.items);
+      let bytesLeft = Number(budget.bytes);
+      let overBudget = 0;
+
       // Store contained files (encrypted) first, then record everything in one transaction.
       const stored: { id: string; key: string; size: number; sha256: string; filename: string; containerPath: string; declaredType: string | null }[] = [];
+      try {
       for (const child of result.children) {
+        const onDisk = (await stat(child.path)).size;
+        if (itemsLeft <= 0 || onDisk > bytesLeft) { overBudget += 1; continue; }
+        itemsLeft -= 1;
+        bytesLeft -= onDisk;
+        if (leaseLost) throw new Error("job lease lost");
         const id = randomUUID();
         const key = storageKeys.original(job.firm_id, job.matter_id, id);
         // O_NOFOLLOW: never follow a link the extractor might have planted.
         const { size, sha256 } = await this.vault.put(job.firm_id, key, createReadStream(child.path, { flags: (constants.O_RDONLY | constants.O_NOFOLLOW) as unknown as string }));
         stored.push({ id, key, size, sha256, filename: child.filename, containerPath: child.containerPath, declaredType: child.declaredType });
+      }
+      } catch (err) {
+        // Don't leave encrypted copies of files that were never recorded.
+        for (const c of stored) await this.vault.delete(c.key).catch(() => undefined);
+        throw err;
       }
 
       const client = await this.pool.connect();
@@ -130,6 +164,10 @@ export class EvidenceProcessor {
         await client.query("BEGIN");
         let status = result.status;
         let detail = result.detail;
+        if (overBudget) {
+          status = "partial";
+          detail = `${detail} ${overBudget} contained file(s) were not unpacked because this upload's unpacking limit was reached.`.trim();
+        }
         for (const c of stored) {
           await client.query("SAVEPOINT child");
           try {
@@ -138,8 +176,10 @@ export class EvidenceProcessor {
             ]);
             await client.query("RELEASE SAVEPOINT child");
             added += 1;
-          } catch {
-            // A limit was reached (nesting, count): keep what fits, report partial.
+          } catch (err) {
+            // A safety limit was reached: keep what fits, report partial.
+            // Anything else (e.g. the job was taken over) is a real failure.
+            if (!LIMIT_ERRORS.test(err instanceof Error ? err.message : "")) throw err;
             await client.query("ROLLBACK TO SAVEPOINT child");
             await this.vault.delete(c.key).catch(() => undefined);
             status = "partial";
@@ -147,7 +187,7 @@ export class EvidenceProcessor {
           }
         }
         // Near-duplicates and versions (never blocks saving the text).
-        if (result.text.trim()) {
+        if (result.text.trim() && !/\.(ics|vcf)$/i.test(job.original_filename)) {
           const fp = fingerprint(result.text);
           await client.query("SAVEPOINT similarity");
           try {
@@ -172,6 +212,7 @@ export class EvidenceProcessor {
         client.release();
       }
     } finally {
+      clearInterval(renew);
       await rm(workDir, { recursive: true, force: true });
     }
   }
