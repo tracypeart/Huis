@@ -36,18 +36,7 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends poppler-utils tesseract-ocr tesseract-ocr-eng \
             libreoffice-writer libreoffice-calc libreoffice-impress ffmpeg pst-utils qpdf
-      - name: Diagnose qpdf (temporary)
-        run: |
-          qpdf --version | head -1
-          printf '%%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%%%EOF\n' > /tmp/t.pdf
-          set +e
-          qpdf --no-warn --show-npages /tmp/t.pdf; echo "exit=$?"
-          qpdf --show-npages /tmp/t.pdf; echo "exit=$?"
       - run: npm ci
-      - name: Diagnose page count (temporary)
-        run: |
-          set +e
-          HUIS_DEBUG_EXTRACT=1 npx vitest run test/extraction.test.ts -t "keeps renewing its lease" 2>&1 | grep -vE "^\s*$" | head -60
       - name: Type check
         run: npm run typecheck
       - name: Security and privilege tests

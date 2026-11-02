@@ -44,7 +44,7 @@ After a file scans clean, Huis reads it inside a **sandbox**. Each file is opene
 - can only read and write its own private temporary folder, which is always deleted afterwards (and swept on start-up if a worker crashed);
 - has memory, time and output limits, and is killed together with every helper it started (LibreOffice, OCR) if it overruns.
 
-Anything it hands back is checked: contained files must be plain files in its own folder (never links to elsewhere on the machine). Damaged or malicious files fail safely. **Production requirement:** the worker must run as root inside its own container so it can create the sandbox; it refuses to start otherwise. Development machines and CI that can't create sandboxes run unsandboxed only when `HUIS_ALLOW_UNSANDBOXED_EXTRACTION=1` is set, and the worker logs a warning.
+Anything it hands back is checked: contained files must be plain files in its own folder (never links to elsewhere on the machine). Damaged or malicious files fail safely. **Production requirement:** the worker must run as root inside its own container so it can create the sandbox; it refuses to start otherwise. Working copies are named with their type's extension (e.g. `input.pdf`) because some systems' security profiles (Ubuntu's AppArmor profile for qpdf) only let tools open files named like their type. Development machines and CI that can't create sandboxes run unsandboxed only when `HUIS_ALLOW_UNSANDBOXED_EXTRACTION=1` is set, and the worker logs a warning.
 
 | File | What Huis does |
 |---|---|

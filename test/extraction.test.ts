@@ -290,8 +290,8 @@ describe("extractors (real files)", () => {
     const work = await mkdtemp(path.join(os.tmpdir(), "huis-x-test-"));
     const out = path.join(work, "out");
     await mkdir(out);
-    await copyFile(files.pdf!, path.join(work, "input"));
-    const r = await extractInSandbox({ inputPath: path.join(work, "input"), outDir: out, filename: "a.pdf", detectedType: "PDF", depth: 0 }, work);
+    await copyFile(files.pdf!, path.join(work, "input.pdf"));
+    const r = await extractInSandbox({ inputPath: path.join(work, "input.pdf"), outDir: out, filename: "a.pdf", detectedType: "PDF", depth: 0 }, work);
     expect(r.text).toMatch(/Notice of termination/);
 
     // Probe the sandbox directly with a secret in this (parent) process.

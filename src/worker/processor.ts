@@ -138,7 +138,10 @@ export class EvidenceProcessor {
     }, this.leaseRenewMs);
     renew.unref();
     try {
-      const inputPath = path.join(workDir, "input");
+      // Give the working copy its type's extension: some systems' security
+      // profiles (e.g. Ubuntu's AppArmor profile for qpdf) only let tools
+      // open files named like their type.
+      const inputPath = path.join(workDir, `input${workingExtension(job.original_filename, job.detected_content_type)}`);
       const outDir = path.join(workDir, "out");
       await mkdir(outDir, { mode: 0o700 });
       // Decrypting also re-verifies the stored file has not been altered.
@@ -333,4 +336,11 @@ function copyFilename(req: ClaimedCopy): string {
     tags.push(`${req.bates_prefix}-${String(start).padStart(6, "0")}${end > start ? `–${String(end).padStart(6, "0")}` : ""}`);
   }
   return `${stem} (${tags.join(", ")}).pdf`;
+}
+
+/** A safe extension for the decrypted working copy (".pdf" for PDFs, else the original's, if simple). */
+function workingExtension(filename: string, detected: string | null): string {
+  if (detected === "PDF") return ".pdf";
+  const m = /\.([A-Za-z0-9]{1,5})$/.exec(filename);
+  return m ? `.${m[1]!.toLowerCase()}` : "";
 }
