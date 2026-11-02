@@ -13,6 +13,9 @@ evidence/
 exports/
 *.pst
 *.mbox
+*.ost
+# The one exception: a public open-source sample mailbox used by tests (no client data; see its README).
+!test/fixtures/pst/dist-list.pst
 
 # Next.js
 .next/
