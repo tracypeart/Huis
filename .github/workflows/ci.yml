@@ -47,7 +47,7 @@ jobs:
       - name: Diagnose page count (temporary)
         run: |
           set +e
-          HUIS_DEBUG_EXTRACT=1 npx vitest run test/extraction.test.ts -t "reads text PDFs" 2>&1 | grep -E "DEBUG|Error|errno|code|path|Tests " | head -20
+          HUIS_DEBUG_EXTRACT=1 npx vitest run test/extraction.test.ts -t "keeps renewing its lease" 2>&1 | grep -vE "^\s*$" | head -60
       - name: Type check
         run: npm run typecheck
       - name: Security and privilege tests
