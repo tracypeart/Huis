@@ -2,15 +2,16 @@
  * Phase 2 part 2: text extraction, OCR, email and archive splitting, search.
  * Uses real sample files generated here (and public sample Outlook files).
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { HuisDb, RequestContext } from "../src/db/tenant";
 import { extract } from "../src/extract/formats";
-import { extractInSandbox } from "../src/extract/sandbox";
+import { extractInSandbox, isolationArgs, sandboxMode, verifyChildren } from "../src/extract/sandbox";
 import type { ExtractInput } from "../src/extract/types";
 import { createClient } from "../src/services/clients";
 import {
@@ -275,13 +276,46 @@ describe("extractors (real files)", () => {
     expect(result.status).toBe("needs_provider");
   });
 
-  it("runs in an isolated process with no access to secrets", async () => {
-    const out = await mkdtemp(path.join(os.tmpdir(), "huis-sb-"));
-    process.env.HUIS_STORAGE_MASTER_KEY = "SHOULD-NOT-LEAK";
-    const input: ExtractInput = { inputPath: files.pdf!, outDir: path.join(out), filename: "a.pdf", detectedType: "PDF", depth: 0 };
-    const r = await extractInSandbox(input, out);
+  it("runs each file in a sandbox: unprivileged, no network, can't see the worker or its secrets", async () => {
+    const mode = sandboxMode();
+    if (mode !== "namespaces") {
+      // Development/CI machines without namespace support run unsandboxed only when explicitly allowed.
+      expect(process.env.HUIS_ALLOW_UNSANDBOXED_EXTRACTION).toBe("1");
+      return;
+    }
+    const work = await mkdtemp(path.join(os.tmpdir(), "huis-x-test-"));
+    const out = path.join(work, "out");
+    await mkdir(out);
+    await copyFile(files.pdf!, path.join(work, "input"));
+    const r = await extractInSandbox({ inputPath: path.join(work, "input"), outDir: out, filename: "a.pdf", detectedType: "PDF", depth: 0 }, work);
     expect(r.text).toMatch(/Notice of termination/);
+
+    // Probe the sandbox directly with a secret in this (parent) process.
+    process.env.HUIS_STORAGE_MASTER_KEY = "SHOULD-NOT-LEAK";
+    const secretFile = path.join(vaultDir, "secret-probe.txt");
+    await writeFile(secretFile, "root-only", { mode: 0o600 });
+    const probe = spawnSync("unshare", [...isolationArgs(), "sh", "-c",
+      `id -u; cat /proc/*/environ 2>/dev/null | tr '\\0' '\\n' | grep -c SHOULD-NOT-LEAK; ls /proc | grep -cE '^[0-9]+$'; cat ${secretFile} 2>&1 | head -1; getent hosts github.com >/dev/null && echo NET || echo NONET`,
+    ], { encoding: "utf8", env: { PATH: process.env.PATH ?? "/usr/bin:/bin" } as unknown as NodeJS.ProcessEnv });
     delete process.env.HUIS_STORAGE_MASTER_KEY;
+    const [uid, leaks, procs, fileRead, net] = probe.stdout.trim().split("\n");
+    expect(uid).toBe("65534");
+    expect(leaks).toBe("0");
+    expect(Number(procs)).toBeLessThan(10);
+    expect(fileRead).toMatch(/Permission denied/);
+    expect(net).toBe("NONET");
+    await rm(work, { recursive: true, force: true });
+  });
+
+  it("rejects contained files that are links pointing elsewhere", async () => {
+    const out = await mkdtemp(path.join(os.tmpdir(), "huis-link-"));
+    await symlink("/etc/passwd", path.join(out, "att-1"));
+    await expect(verifyChildren({ status: "done", detail: "", text: "", method: "native", pages: null, email: null,
+      children: [{ path: path.join(out, "att-1"), filename: "passwd", containerPath: "x", declaredType: null }] }, out))
+      .rejects.toThrow(/unexpected/);
+    await expect(verifyChildren({ status: "done", detail: "", text: "", method: "native", pages: null, email: null,
+      children: [{ path: "/etc/passwd", filename: "passwd", containerPath: "x", declaredType: null }] }, out))
+      .rejects.toThrow(/unexpected/);
     await rm(out, { recursive: true, force: true });
   });
 });
@@ -411,5 +445,148 @@ describe("pipeline: upload, scan, extract, split, search", () => {
     await expect(t.worker.query(
       "SELECT huis.worker_add_derived(1, gen_random_uuid(), gen_random_uuid(), 'x', 'x', null, 1, repeat('a', 64), 'k')"))
       .rejects.toThrow(/not held/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression tests for the second independent security review (PR #4).
+// ---------------------------------------------------------------------------
+describe("security review 2 regressions", () => {
+  it("F1: the app can't plant 'contained' items or fake extraction results", async () => {
+    const x = await setup();
+    const item = await upload(x.owner, x.matter.id, files.pdf!);
+    const folder = (await db.withFirm(x.owner, (s) => listMatterFolders(s, x.matter.id))).find((f) => f.name === "Evidence")!;
+    const base = "id, firm_id, matter_id, folder_id, original_filename, size_bytes, sha256, storage_key, source";
+    const vals = `gen_random_uuid(), $1, $2, $3, 'x.txt', 1, repeat('a', 64), 'firm/x', 'upload'`;
+    for (const [col, v] of [["parent_id", `'${item.id}'`], ["container_path", "'a/b'"], ["depth", "1"], ["extraction_status", "'done'"], ["root_id", `'${item.id}'`]]) {
+      await expect(db.withFirm(x.owner, (s) => s.client.query(
+        `INSERT INTO huis.evidence_items (${base}, ${col}) VALUES (${vals}, ${v})`, [x.firmId, x.matter.id, folder.id]))).rejects.toThrow();
+    }
+    await expect(db.withFirm(x.owner, (s) => s.client.query(
+      `INSERT INTO huis.evidence_items (${base}) VALUES (gen_random_uuid(), $1, $2, $3, 'x.txt', 1, repeat('a', 64), 'firm/x', 'extracted')`,
+      [x.firmId, x.matter.id, folder.id]))).rejects.toThrow();
+  });
+
+  it("F2: moving an email never pulls an attachment out of the privileged area", async () => {
+    const x = await setup();
+    const email = await upload(x.owner, x.matter.id, files.eml!);
+    await processor.drain();
+    const folders = await db.withFirm(x.owner, (s) => listMatterFolders(s, x.matter.id));
+    const red = folders.find((f) => f.isPrivilegedArea)!;
+    const corr = folders.find((f) => f.name === "Correspondence")!;
+    const kids = await db.withFirm(x.owner, (s) => listContainedItems(s, email.id));
+    const notes = kids.find((k) => k.originalFilename === "notes.txt")!;
+    await db.withFirm(x.owner, (s) => moveEvidence(s, notes.id, red.id));
+    await db.withFirm(x.owner, (s) => moveEvidence(s, email.id, corr.id));
+    expect((await db.withFirm(x.owner, (s) => getEvidence(s, notes.id)))?.folderIsPrivileged).toBe(true);
+    const letter = kids.find((k) => k.originalFilename === "letter.pdf")!;
+    expect((await db.withFirm(x.owner, (s) => getEvidence(s, letter.id)))?.folderName).toBe("Correspondence");
+  });
+
+  it("F4: an archive can't unpack more than its size budget", async () => {
+    const x = await setup();
+    const item = await upload(x.owner, x.matter.id, files.zip!);
+    // Run only the scan, then hold the extract job by hand.
+    await processor.runOnce();
+    const job = (await t.worker.query("SELECT * FROM huis.worker_claim_job()")).rows[0];
+    expect(job.kind).toBe("evidence.extract");
+    const add = (size: number) => {
+      const id = newEvidenceId();
+      return t.worker.query(
+        "SELECT huis.worker_add_derived($1, $2, $3, 'big.bin', 'big.bin', null, $4, repeat('a', 64), $5)",
+        [job.job_id, job.lock_token, id, size, `firm/${x.firmId}/matter/${x.matter.id}/evidence/${id}/original`]);
+    };
+    await add(1000);
+    await expect(add(2 * 1024 ** 3)).rejects.toThrow(/quota/i);
+    expect(item.id).toBeTruthy();
+  });
+
+  it("F5: reading extracted text and searching are recorded", async () => {
+    const x = await setup();
+    const item = await upload(x.owner, x.matter.id, files.pdf!);
+    await processor.drain();
+    await db.withFirm(x.owner, (s) => getEvidenceText(s, item.id));
+    await db.withFirm(x.owner, (s) => searchEvidence(s, { q: "FMLA" }));
+    const custody = (await t.admin.query("SELECT event, actor_user_id FROM huis.evidence_custody_events WHERE evidence_id = $1", [item.id])).rows;
+    expect(custody).toContainEqual({ event: "viewed", actor_user_id: x.ownerUserId });
+    const audit = (await t.admin.query("SELECT action, metadata FROM huis.audit_events WHERE firm_id = $1 AND action IN ('evidence.viewed','evidence.searched')", [x.firmId])).rows;
+    expect(audit.map((a) => a.action).sort()).toEqual(["evidence.searched", "evidence.viewed"]);
+    expect(audit.find((a) => a.action === "evidence.searched")!.metadata).toMatchObject({ query: "FMLA" });
+  });
+
+  it("F6: an email's searchable text doesn't reveal its attachments' names", async () => {
+    const { result } = await run(files.eml!);
+    expect(result.text).not.toMatch(/letter\.pdf|notes\.txt/);
+    expect(result.children.map((c) => c.filename).sort()).toEqual(["letter.pdf", "notes.txt"]);
+  });
+
+  it("an infected file inside an archive quarantines the archive", async () => {
+    const x = await setup();
+    const zipPath = path.join(dir, "infected.zip");
+    execFileSync("python3", ["-c", `
+import zipfile, sys
+with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
+    z.writestr("ok.txt", "nothing to see")
+    z.writestr("bad.txt", "EICAR-TEST " * 50)
+`, zipPath]);
+    const zip = await upload(x.owner, x.matter.id, zipPath);
+    await processor.drain();
+    expect((await db.withFirm(x.owner, (s) => getEvidence(s, zip.id)))?.status).toBe("infected");
+    const events = (await t.admin.query("SELECT event FROM huis.evidence_custody_events WHERE evidence_id = $1", [zip.id])).rows.map((r) => r.event);
+    expect(events).toContain("quarantined_contains_threat");
+  });
+
+  it("reads old-format PowerPoint (.ppt) files", async () => {
+    const { result } = await run(path.join(__dirname, "fixtures/ppt/settlement.ppt"));
+    expect(result.status).toBe("done");
+    expect(result.text).toMatch(/Settlement offer slide/);
+  });
+
+  it("cleans up decrypted working folders left behind by a crash", async () => {
+    const stale = await mkdtemp(path.join(os.tmpdir(), "huis-x-"));
+    await writeFile(path.join(stale, "input"), "decrypted evidence");
+    const old = new Date(Date.now() - 8 * 3600_000);
+    const { utimes } = await import("node:fs/promises");
+    await utimes(stale, old, old);
+    expect(await EvidenceProcessor.sweepStaleWorkDirs()).toBeGreaterThanOrEqual(1);
+    await expect(readFile(path.join(stale, "input"))).rejects.toThrow();
+  });
+});
+
+describe("security review 2: move vs. unpacking race", () => {
+  it("F3: an email moved to the privileged area while it is being unpacked takes all its attachments with it", async () => {
+    const x = await setup();
+    const shared = (await db.withFirm(x.owner, (s) => listMatterFolders(s, x.matter.id))).find((f) => f.name === "Client Uploads")!;
+    const red = (await db.withFirm(x.owner, (s) => listMatterFolders(s, x.matter.id))).find((f) => f.isPrivilegedArea)!;
+    const email = await upload(x.owner, x.matter.id, files.eml!, "mail.eml", shared.id);
+
+    // Start the move at the worst moment: attachments recorded, transaction not yet committed.
+    let move: Promise<unknown> | null = null;
+    const racingPool = {
+      query: t.worker.query.bind(t.worker),
+      connect: async () => {
+        const c = await t.worker.connect();
+        const original = c.query;
+        const q = original.bind(c) as (...a: unknown[]) => Promise<unknown>;
+        (c as unknown as { query: unknown }).query = async (...args: unknown[]) => {
+          if (!move && typeof args[0] === "string" && args[0].includes("worker_save_extraction")) {
+            move = db.withFirm(x.owner, (s) => moveEvidence(s, email.id, red.id));
+            await new Promise((r) => setTimeout(r, 300)); // the move is now waiting on the unpacking lock
+          }
+          return q(...args);
+        };
+        const release = c.release.bind(c);
+        c.release = (err?: Error | boolean) => { c.query = original; return release(err); };
+        return c;
+      },
+    } as unknown as pg.Pool;
+    await new EvidenceProcessor(racingPool, vault, scanner).drain();
+    expect(move).not.toBeNull();
+    await move;
+
+    const kids = await db.withFirm(x.owner, (s) => listContainedItems(s, email.id));
+    expect(kids.length).toBe(2);
+    for (const k of kids) expect(k.folderIsPrivileged).toBe(true);
+    expect(await db.withFirm(x.portalCtx, (s) => searchEvidence(s, { q: "PTO" }))).toHaveLength(0);
   });
 });

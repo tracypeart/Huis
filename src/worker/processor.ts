@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { constants, createReadStream, createWriteStream } from "node:fs";
+import { mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -118,7 +118,8 @@ export class EvidenceProcessor {
       for (const child of result.children) {
         const id = randomUUID();
         const key = storageKeys.original(job.firm_id, job.matter_id, id);
-        const { size, sha256 } = await this.vault.put(job.firm_id, key, createReadStream(child.path));
+        // O_NOFOLLOW: never follow a link the extractor might have planted.
+        const { size, sha256 } = await this.vault.put(job.firm_id, key, createReadStream(child.path, { flags: (constants.O_RDONLY | constants.O_NOFOLLOW) as unknown as string }));
         stored.push({ id, key, size, sha256, filename: child.filename, containerPath: child.containerPath, declaredType: child.declaredType });
       }
 
@@ -159,6 +160,25 @@ export class EvidenceProcessor {
     } finally {
       await rm(workDir, { recursive: true, force: true });
     }
+  }
+
+  /**
+   * Deletes decrypted working folders left behind if a worker was killed
+   * mid-job. Run at worker start-up.
+   */
+  static async sweepStaleWorkDirs(maxAgeMs = 7 * 60 * 60_000): Promise<number> {
+    let removed = 0;
+    const tmp = os.tmpdir();
+    for (const name of await readdir(tmp).catch(() => [] as string[])) {
+      if (!name.startsWith("huis-x-")) continue;
+      const full = path.join(tmp, name);
+      const st = await stat(full).catch(() => null);
+      if (st && Date.now() - st.mtimeMs > maxAgeMs) {
+        await rm(full, { recursive: true, force: true });
+        removed += 1;
+      }
+    }
+    return removed;
   }
 
   /** Processes until the queue is empty. */

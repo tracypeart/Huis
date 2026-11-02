@@ -1,10 +1,11 @@
-import { createWriteStream } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";
+import readline from "node:readline";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Transform } from "node:stream";
 import yauzl from "yauzl";
-import { cleanText, decodeText, htmlToText, run, safeName } from "./tools";
+import { cleanText, decodeText, htmlToText, readHead, run, safeName } from "./tools";
 import { LIMITS, type ContainedFile, type EmailHeaders, type ExtractInput, type ExtractResult } from "./types";
 
 const empty = (over: Partial<ExtractResult>): ExtractResult => ({
@@ -27,7 +28,9 @@ export async function extractPdf(input: ExtractInput): Promise<ExtractResult> {
   }
   let text = "";
   try {
-    text = await run("pdftotext", ["-layout", "-enc", "UTF-8", input.inputPath, "-"]);
+    const out = path.join(input.outDir, "pdftext.txt");
+    await run("pdftotext", ["-layout", "-enc", "UTF-8", input.inputPath, out], { timeoutSec: 900 });
+    text = (await readHead(out, LIMITS.maxTextChars * 2)).toString("utf8");
   } catch {
     text = "";
   }
@@ -40,7 +43,7 @@ export async function extractPdf(input: ExtractInput): Promise<ExtractResult> {
       return empty({
         status: ocr.complete ? "done" : "partial",
         detail: ocr.complete ? `Scanned document read with OCR (${pages} pages).`
-          : `First ${LIMITS.maxOcrPages} of ${pages} pages read with OCR.`,
+          : `Only part of this ${pages}-page scan was read with OCR (size or time limit).`,
         text: cleanText(`${text}\n${ocr.text}`), method, pages,
       });
     }
@@ -57,7 +60,13 @@ async function ocrPdf(input: ExtractInput, pages: number): Promise<{ text: strin
   const last = Math.min(pages, LIMITS.maxOcrPages);
   const parts: string[] = [];
   const prefix = path.join(input.outDir, "ocrpage");
+  // Stop in time to save what was read, well before the sandbox time limit.
+  const deadline = Date.now() + LIMITS.ocrBudgetSec * 1000;
   for (let p = 1; p <= last; p++) {
+    if (Date.now() > deadline) {
+      parts.push(`\n--- Pages ${p}–${pages} not yet read (time limit) ---\n`);
+      return { text: parts.join(""), complete: false };
+    }
     try {
       await run("pdftoppm", ["-r", "200", "-gray", "-png", "-f", String(p), "-l", String(p), "-singlefile", input.inputPath, prefix], { timeoutSec: 120 });
       parts.push(`\n--- Page ${p} ---\n` + (await run("tesseract", [`${prefix}.png`, "-", "-l", "eng"], { timeoutSec: 180 })));
@@ -155,13 +164,25 @@ export async function extractWithLibreOffice(input: ExtractInput, target: "txt:T
   return empty({ status: text.trim() ? "done" : "no_text", detail: "Document text extracted.", text });
 }
 
+/** Presentations: convert to PDF with LibreOffice, then read the PDF. */
+export async function extractViaPdf(input: ExtractInput): Promise<ExtractResult> {
+  const profile = path.join(input.outDir, "lo-profile");
+  try {
+    await run("soffice", [`-env:UserInstallation=file://${profile}`, "--headless", "--norestore", "--nolockcheck",
+      "--convert-to", "pdf", "--outdir", input.outDir, input.inputPath], { timeoutSec: 300 });
+  } catch {
+    return empty({ status: "unsupported", detail: "This presentation could not be converted." });
+  }
+  const pdf = (await readdir(input.outDir)).find((f) => f.endsWith(".pdf"));
+  if (!pdf) return empty({ status: "unsupported", detail: "This presentation could not be converted." });
+  return extractPdf({ ...input, inputPath: path.join(input.outDir, pdf) });
+}
+
 // ---------------------------------------------------------------------------
 // Plain text, HTML, CSV
 // ---------------------------------------------------------------------------
 export async function extractPlain(input: ExtractInput, html: boolean): Promise<ExtractResult> {
-  const size = (await stat(input.inputPath)).size;
-  const buf = await readFile(input.inputPath);
-  let text = decodeText(buf.subarray(0, Math.min(size, 50 * 1024 * 1024)));
+  let text = decodeText(await readHead(input.inputPath, 50 * 1024 * 1024));
   if (html) text = htmlToText(text);
   text = cleanText(text);
   return empty({ status: text.trim() ? "done" : "no_text", detail: "Text extracted.", text });
@@ -176,18 +197,22 @@ function addrs(a: AddrLike): string[] {
   return list.map((v) => (v.name && v.address ? `${v.name} <${v.address}>` : v.address ?? v.name ?? "")).filter(Boolean).slice(0, 500);
 }
 
-function emailText(h: EmailHeaders, body: string, attachments: string[]): string {
+/**
+ * The searchable text of an email. Attachment names are deliberately left
+ * out: each attachment is its own item with its own visibility, so its name
+ * must not be findable through the email (e.g. if it's moved to the red area).
+ */
+function emailText(h: EmailHeaders, body: string): string {
   return cleanText([
     `From: ${h.from ?? ""}`,
     `To: ${h.to.join(", ")}`,
-    h.cc.length ? `Cc: ${h.cc.join(", ")}` : "",
-    h.bcc.length ? `Bcc: ${h.bcc.join(", ")}` : "",
+    ...(h.cc.length ? [`Cc: ${h.cc.join(", ")}`] : []),
+    ...(h.bcc.length ? [`Bcc: ${h.bcc.join(", ")}`] : []),
     `Date: ${h.date ?? ""}`,
     `Subject: ${h.subject ?? ""}`,
-    attachments.length ? `Attachments: ${attachments.join("; ")}` : "",
     "",
     body,
-  ].filter((l, i) => l !== "" || i === 7).join("\n"));
+  ].join("\n"));
 }
 
 export async function extractEml(input: ExtractInput): Promise<ExtractResult> {
@@ -204,7 +229,6 @@ export async function extractEml(input: ExtractInput): Promise<ExtractResult> {
     inReplyTo: typeof mail.inReplyTo === "string" ? mail.inReplyTo : null,
   };
   const children: ContainedFile[] = [];
-  const names: string[] = [];
   let i = 0;
   for (const att of mail.attachments.slice(0, LIMITS.maxChildren)) {
     i += 1;
@@ -212,12 +236,11 @@ export async function extractEml(input: ExtractInput): Promise<ExtractResult> {
     const out = path.join(input.outDir, `att-${i}`);
     await writeFile(out, att.content, { mode: 0o600 });
     children.push({ path: out, filename, containerPath: `Attachment ${i}: ${filename}`, declaredType: att.contentType ?? null });
-    names.push(filename);
   }
   const body = mail.text ?? (typeof mail.html === "string" ? htmlToText(mail.html) : "");
   return empty({
     detail: children.length ? `Email with ${children.length} attachment(s); each attachment is a separate item.` : "Email read.",
-    text: emailText(headers, body, names), email: headers, children,
+    text: emailText(headers, body), email: headers, children,
   });
 }
 
@@ -248,7 +271,6 @@ export async function extractMsg(input: ExtractInput): Promise<ExtractResult> {
     inReplyTo: info.inReplyToId ?? null,
   };
   const children: ContainedFile[] = [];
-  const names: string[] = [];
   let skippedEmbedded = 0;
   const attachments = (info.attachments ?? []).slice(0, LIMITS.maxChildren);
   for (let idx = 0; idx < attachments.length; idx++) {
@@ -260,7 +282,6 @@ export async function extractMsg(input: ExtractInput): Promise<ExtractResult> {
     const out = path.join(input.outDir, `att-${idx + 1}`);
     await writeFile(out, got.content, { mode: 0o600 });
     children.push({ path: out, filename, containerPath: `Attachment ${idx + 1}: ${filename}`, declaredType: att.attachMimeTag ?? null });
-    names.push(filename);
   }
   const body = info.body ?? (info.bodyHtml ? htmlToText(info.bodyHtml) : "");
   return empty({
@@ -269,32 +290,36 @@ export async function extractMsg(input: ExtractInput): Promise<ExtractResult> {
       children.length ? `Outlook message with ${children.length} attachment(s); each attachment is a separate item.` : "Outlook message read.",
       skippedEmbedded ? `${skippedEmbedded} message(s) attached inside this one can't be opened yet.` : "",
     ].filter(Boolean).join(" "),
-    text: emailText(headers, body, names), email: headers, children,
+    text: emailText(headers, body), email: headers, children,
   });
 }
 
-/** Splits an .mbox mailbox export into one .eml item per message. */
+/** Splits an .mbox mailbox export into one .eml item per message, reading it as a stream. */
 export async function extractMbox(input: ExtractInput): Promise<ExtractResult> {
   const children: ContainedFile[] = [];
-  const data = await readFile(input.inputPath);
-  if (data.length > 4 * 1024 ** 3) return empty({ status: "unsupported", detail: "Mailbox file is too large to split yet." });
-  const text = data.toString("latin1");
-  const starts: number[] = [];
-  const re = /^From .*$/gm;
-  for (let m = re.exec(text); m; m = re.exec(text)) {
-    if (m.index === 0 || text[m.index - 1] === "\n") starts.push(m.index);
-    if (starts.length > LIMITS.maxChildren) break;
+  const rl = readline.createInterface({ input: createReadStream(input.inputPath, { encoding: "latin1" }), crlfDelay: Infinity });
+  let current: ReturnType<typeof createWriteStream> | null = null;
+  let previousBlank = true;
+  let truncated = false;
+  const close = () => new Promise<void>((res) => (current ? current.end(res) : res()));
+  for await (const line of rl) {
+    if (line.startsWith("From ") && previousBlank) {
+      await close();
+      current = null;
+      if (children.length >= LIMITS.maxChildren) { truncated = true; break; }
+      const n = children.length + 1;
+      const out = path.join(input.outDir, `msg-${n}.eml`);
+      current = createWriteStream(out, { mode: 0o600, encoding: "latin1" });
+      children.push({ path: out, filename: `message-${String(n).padStart(5, "0")}.eml`, containerPath: `Message ${n}`, declaredType: "message/rfc822" });
+    } else if (current) {
+      if (!current.write(`${line.startsWith(">From ") ? line.slice(1) : line}\r\n`)) await new Promise((r) => current!.once("drain", r));
+    }
+    previousBlank = line.trim() === "";
   }
-  for (let i = 0; i < starts.length && i < LIMITS.maxChildren; i++) {
-    const start = text.indexOf("\n", starts[i]!) + 1;
-    const end = i + 1 < starts.length ? starts[i + 1]! : text.length;
-    const out = path.join(input.outDir, `msg-${i + 1}.eml`);
-    const body = data.subarray(start, end).toString("latin1").replace(/^>From /gm, "From ");
-    await writeFile(out, Buffer.from(body, "latin1"), { mode: 0o600 });
-    children.push({ path: out, filename: `message-${String(i + 1).padStart(5, "0")}.eml`, containerPath: `Message ${i + 1}`, declaredType: "message/rfc822" });
-  }
+  await close();
+  rl.close();
   return empty({
-    status: children.length ? "done" : "no_text",
+    status: children.length ? (truncated ? "partial" : "done") : "no_text",
     detail: children.length ? `Mailbox split into ${children.length} message(s); each is a separate item.` : "No messages found in this mailbox.",
     children,
   });
@@ -333,17 +358,17 @@ function forEachZipEntry(file: string, fn: (e: ZipEntry, open: () => Promise<Nod
 export async function extractZip(input: ExtractInput): Promise<ExtractResult> {
   const children: ContainedFile[] = [];
   const skipped: string[] = [];
-  const listing: string[] = [];
+  let entries = 0;
   let unpacked = 0;
   let n = 0;
   try {
     await forEachZipEntry(input.inputPath, async (entry, open) => {
       if (entry.fileName.endsWith("/")) return;
-      listing.push(entry.fileName);
+      entries += 1;
       if (children.length >= LIMITS.maxChildren) { skipped.push(`${entry.fileName} (too many files)`); return; }
       const ratio = entry.compressedSize > 0 ? entry.uncompressedSize / entry.compressedSize : Infinity;
       if (entry.uncompressedSize > LIMITS.maxChildBytes
-          || (entry.uncompressedSize > 100 * 1024 * 1024 && ratio > LIMITS.maxCompressionRatio)
+          || (entry.uncompressedSize > 1024 * 1024 && ratio > LIMITS.maxCompressionRatio)
           || unpacked + entry.uncompressedSize > LIMITS.maxUnpackedBytes) {
         skipped.push(`${entry.fileName} (unsafe size)`);
         return;
@@ -368,14 +393,16 @@ export async function extractZip(input: ExtractInput): Promise<ExtractResult> {
   } catch {
     return empty({
       status: children.length ? "partial" : "unsupported",
-      detail: children.length ? `Archive partly unpacked (${children.length} files); the rest is damaged.` : "This archive could not be opened (damaged or encrypted).",
-      text: cleanText(listing.join("\n")), children,
+      detail: children.length ? `Archive partly unpacked (${children.length} of ${entries} files); the rest is damaged.` : "This archive could not be opened (damaged or encrypted).",
+      children,
     });
   }
   return empty({
     status: skipped.length ? "partial" : "done",
     detail: `Archive unpacked: ${children.length} file(s), each a separate item.${skipped.length ? ` ${skipped.length} skipped for safety.` : ""}`,
-    text: cleanText(["Archive contents:", ...listing, ...(skipped.length ? ["", "Skipped:", ...skipped] : [])].join("\n")),
+    // Contents are searchable through their own items (each with its own
+    // visibility), so the archive's own text lists only what was skipped.
+    text: skipped.length ? cleanText(["Not unpacked (safety limits):", ...skipped].join("\n")) : "",
     children,
   });
 }
@@ -442,6 +469,7 @@ export async function extract(input: ExtractInput, provider: TranscriptionProvid
   if (type.startsWith("Legacy Office")) {
     if (e === "msg") return extractMsg(input);
     if (e === "xls") return extractWithLibreOffice(input, "csv");
+    if (e === "ppt" || e === "pps") return extractViaPdf(input);
     return extractWithLibreOffice(input, "txt:Text");
   }
   if (type === "Rich text") return extractWithLibreOffice(input, "txt:Text");

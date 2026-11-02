@@ -1,25 +1,50 @@
-import { execFile } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
+import { open } from "node:fs/promises";
 import { LIMITS } from "./types";
 
 /**
  * Runs a trusted command-line tool (pdftotext, tesseract, …) on a file.
  * Never uses a shell, so file names can't inject commands. Output and run
- * time are capped.
+ * time are capped, and on timeout the tool and everything it started (for
+ * example LibreOffice's helper processes) are killed together.
  */
 export function run(cmd: string, args: string[], opts: { timeoutSec?: number; maxBytes?: number } = {}): Promise<string> {
+  const max = opts.maxBytes ?? 64 * 1024 * 1024;
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, {
-      timeout: (opts.timeoutSec ?? LIMITS.toolTimeoutSec) * 1000,
-      maxBuffer: opts.maxBytes ?? 64 * 1024 * 1024,
-      encoding: "utf8",
-      killSignal: "SIGKILL",
-      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", OMP_THREAD_LIMIT: "1", LANG: "C.UTF-8", HOME: "/tmp" } as unknown as NodeJS.ProcessEnv,
-      windowsHide: true,
-    }, (err: Error | null, stdout: string) => {
-      if (err) reject(new Error(`${cmd} failed`));
-      else resolve(stdout);
+    const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", OMP_THREAD_LIMIT: "1", LANG: "C.UTF-8", HOME: process.env.HOME ?? "/tmp", TMPDIR: process.env.TMPDIR ?? "/tmp" };
+    const child: ChildProcess = spawn(cmd, args, { detached: true, stdio: ["ignore", "pipe", "ignore"], env: env as unknown as NodeJS.ProcessEnv });
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let failed = false;
+    const killGroup = () => { try { process.kill(-child.pid!, "SIGKILL"); } catch { /* gone */ } };
+    const fail = () => { if (!failed) { failed = true; killGroup(); reject(new Error(`${cmd} failed`)); } };
+    const timer = setTimeout(fail, (opts.timeoutSec ?? LIMITS.toolTimeoutSec) * 1000);
+    child.stdout!.on("data", (d: Buffer) => {
+      size += d.length;
+      if (size > max) { fail(); return; }
+      chunks.push(d);
+    });
+    child.on("error", () => { clearTimeout(timer); fail(); });
+    child.on("close", (code: number | null) => {
+      clearTimeout(timer);
+      killGroup();
+      if (failed) return;
+      if (code === 0) resolve(Buffer.concat(chunks).toString("utf8"));
+      else fail();
     });
   });
+}
+
+/** Reads at most `max` bytes from the start of a file. */
+export async function readHead(file: string, max: number): Promise<Buffer> {
+  const fh = await open(file, "r");
+  try {
+    const buf = Buffer.alloc(max);
+    const { bytesRead } = await fh.read(buf, 0, max, 0);
+    return buf.subarray(0, bytesRead);
+  } finally {
+    await fh.close();
+  }
 }
 
 /** Normalizes extracted text: no NUL bytes, tidy whitespace, length cap. */

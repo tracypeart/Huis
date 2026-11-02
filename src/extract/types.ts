@@ -53,8 +53,8 @@ export const LIMITS = {
   maxOcrPages: 300,
   /** Files taken out of one archive or email. */
   maxChildren: 10_000,
-  /** Total bytes unpacked from one archive. */
-  maxUnpackedBytes: 20 * 1024 ** 3,
+  /** Total bytes unpacked from one archive (the database also caps everything unpacked from one upload). */
+  maxUnpackedBytes: 5 * 1024 ** 3,
   /** Largest single unpacked file. */
   maxChildBytes: 10 * 1024 ** 3,
   /** Unpacked/packed size ratio above which an entry is treated as a zip bomb. */
@@ -63,4 +63,6 @@ export const LIMITS = {
   maxDepth: 4,
   /** Seconds per external tool run. */
   toolTimeoutSec: 300,
+  /** Seconds of OCR per file before saving what was read (below the sandbox limit). */
+  ocrBudgetSec: 35 * 60,
 };

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { FirmSession } from "../db/tenant";
+import { recordAudit } from "./audit";
 
 /** Markers wrapped around matched words in snippets (rendered as highlights, never as HTML). */
 export const HIT_START = "\u0002";
@@ -57,6 +58,10 @@ export async function searchEvidence(s: FirmSession, input: SearchInput): Promis
       LIMIT $4`,
     [v.q, v.matterId ?? null, like, v.limit],
   );
+  // Searches are part of the firm's audit trail (visible to firm admins only).
+  await recordAudit(s, "evidence.searched", {
+    matterId: v.matterId, metadata: { query: v.q, results: rows.length },
+  });
   return rows.map((r) => ({
     evidenceId: r.id, matterId: r.matter_id, matterTitle: r.title, huisNumber: r.huis_number,
     filename: r.original_filename, containerPath: r.container_path, folderName: r.folder_name,

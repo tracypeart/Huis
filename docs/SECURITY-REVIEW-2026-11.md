@@ -1,4 +1,4 @@
-# Independent security review — Phases 1 & 2 (November 2026)
+# Independent security reviews — Phases 1 & 2 (November 2026)
 
 **Scope:** everything in Phase 1 (firms, roles, matters, sign-in, invitations, web app) and Phase 2 part 1 (evidence intake, encryption, scanning, chain of custody).
 **Method:** a separate reviewer that did not write the code attacked it with working exploit tests against a real database, assuming an attacker who can run any query through the app's own database connection (so a single app bug can't become a breach).
@@ -18,6 +18,23 @@
 | F3 / F4 / G2 | Low–Med | Read-only users and clients could link or edit matter contacts | Outsiders can't see or change them; read-only users can't write |
 | Suspected | Low | Sessions couldn't be revoked | Sessions carry a version; **signing out ends the session on every device**; admins can "Sign out everywhere" for any user; disabling a user is immediate |
 | Suspected | Low | Forwarded IP headers trusted blindly; admins could edit plan/trial; error text could leak; cross-site download could write fake custody; folder lookup answered for walled matters; long scans could be double-processed | Proxy IPs trusted only when configured; billing fields locked; only user-written messages shown; cross-site requests blocked; lookups respect walls; job locks with tokens |
+
+## Second review — Phase 2 part 2 (reading files and search)
+
+**Scope:** text extraction, OCR, email and archive splitting, search, and the worker that opens untrusted files.
+**Method:** the same independent, attack-first approach, with working exploits against a real database and real malicious files.
+**Result:** 7 issues (one a regression of an earlier fix) plus 7 correctness problems. **All fixed** in `db/migrations/0006_extraction_hardening.sql` and the extraction code, each with a regression test (`test/extraction.test.ts`, "security review 2"). The reviewer's exploit scripts now fail.
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| F1 | High (regression) | The app's own database connection could insert fake "taken out of an email" items, bypassing the worker-only rule | The database only lets the app insert ordinary uploads, column by column; contained items can only come from the worker role |
+| F2 | High (privilege) | Moving an email dragged an attachment someone had filed in the red privileged area back out with it, where a client could see it | Moving a parent only carries along contained items still in the parent's folder |
+| F3 | High | The file-reading process wasn't truly isolated: it could read the worker's secrets and follow planted links | Real sandbox: unprivileged user, no network, separate process space; returned files are checked to be plain files in its own folder |
+| F4 | Medium | Highly compressed archives could unpack far more than the bomb check allowed, filling the disk | Per-entry compression check on anything over 1 MB, plus a database-enforced total unpacking budget per upload |
+| F5 | Medium | Reading extracted text and searching left no trace | Recorded in custody and the audit log |
+| F6 | Medium (privilege) | An email's searchable text listed attachment names, so a privileged attachment's name could be found by a client through the parent | Attachment names are no longer part of the parent's text |
+| F7 | Low | On timeout, LibreOffice's helper process survived | Every tool runs in its own process group, killed as a whole |
+| Correctness | — | OCR timeouts lost all text; very large PDFs and mailboxes could exhaust memory; an infected attachment left its email marked clean; .ppt files weren't read; crashed workers left decrypted copies in temp folders; a move during unpacking could split a family | Partial OCR results kept; large outputs streamed and capped; infected children quarantine their parents; .ppt converted via PDF; stale work folders swept on start-up; unpacking locks the parent so a concurrent move waits and then moves everything |
 
 ## Still open (tracked, not code defects)
 1. **MFA enforcement** — Microsoft sign-in doesn't yet require proof of MFA. Plan: require the firm's Microsoft MFA (Conditional Access) or a Huis passkey. Part of the end-of-build Azure/hosting step.

@@ -265,14 +265,21 @@ export interface EvidenceText {
   truncated: boolean;
 }
 
-/** Extracted text, if any, for an item the user may see. Recorded as "viewed" in custody. */
+/**
+ * Extracted text for an item the user may see. Reading a document on screen
+ * is the same as opening it, so it is recorded in the chain of custody and
+ * the audit log, exactly like a download.
+ */
 export async function getEvidenceText(s: FirmSession, evidenceId: string): Promise<EvidenceText | null> {
-  await getEvidence(s, evidenceId);
+  const item = await getEvidence(s, evidenceId);
   const { rows } = await s.client.query(
     "SELECT content, method, char_count, truncated FROM huis.evidence_text WHERE evidence_id = $1", [evidenceId],
   );
   const r = rows[0];
-  return r ? { content: r.content, method: r.method, charCount: r.char_count, truncated: r.truncated } : null;
+  if (!r) return null;
+  await s.client.query("SELECT huis.record_evidence_view($1)", [evidenceId]);
+  await recordAudit(s, "evidence.viewed", { targetType: "evidence", targetId: evidenceId, matterId: item.matterId });
+  return { content: r.content, method: r.method, charCount: r.char_count, truncated: r.truncated };
 }
 
 export interface EmailHeaders {
