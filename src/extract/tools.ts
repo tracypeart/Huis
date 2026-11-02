@@ -19,7 +19,10 @@ export function run(cmd: string, args: string[], opts: {
   const max = opts.maxBytes ?? 64 * 1024 * 1024;
   return new Promise((resolve, reject) => {
     const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", OMP_THREAD_LIMIT: "1", LANG: "C.UTF-8", HOME: process.env.HOME ?? "/tmp", TMPDIR: process.env.TMPDIR ?? "/tmp" };
-    const child: ChildProcess = spawn(cmd, args, { detached: true, stdio: ["ignore", "pipe", "ignore"], env: env as unknown as NodeJS.ProcessEnv });
+    const debug = Boolean(process.env.HUIS_DEBUG_EXTRACT);
+    const child: ChildProcess = spawn(cmd, args, { detached: true, stdio: ["ignore", "pipe", debug ? "pipe" : "ignore"], env: env as unknown as NodeJS.ProcessEnv });
+    let errText = "";
+    if (debug) child.stderr!.on("data", (d: Buffer) => { errText = (errText + d.toString()).slice(-2000); });
     const chunks: Buffer[] = [];
     let size = 0;
     let failed = false;
@@ -44,7 +47,7 @@ export function run(cmd: string, args: string[], opts: {
       killGroup();
       if (failed) return;
       if (code !== null && (opts.okCodes ?? [0]).includes(code)) resolve(Buffer.concat(chunks).toString("utf8"));
-      else fail(code === null ? `killed by ${signal}` : `exited with code ${code}`);
+      else fail((code === null ? `killed by ${signal}` : `exited with code ${code}`) + (debug ? ` [${args.join(" ")}] ${errText}` : ""));
     });
   });
 }
