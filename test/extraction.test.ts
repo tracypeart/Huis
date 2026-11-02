@@ -763,17 +763,36 @@ describe("security review 3 regressions", () => {
   it("crowded fingerprint buckets are skipped, so look-alike floods can't slow matching", async () => {
     const x = await setup();
     const text = prose(555, 800);
-    // Pretend this matter already holds hundreds of items sharing every band of this text.
     const fp = fingerprint(text).minhash;
-    for (let b = 0; b < 32; b++) {
-      const hash = (BigInt(fp[b * 2]!) << 32n) | (BigInt(fp[b * 2 + 1]!) & 0xffffffffn);
-      await t.admin.query("INSERT INTO huis.evidence_lsh_buckets (matter_id, band, hash, n) VALUES ($1, $2, $3, 500)",
-        [x.matter.id, b, BigInt.asIntN(64, hash).toString()]);
+    const folder = (await db.withFirm(x.owner, (s) => listMatterFolders(s, x.matter.id))).find((f) => f.name === "Evidence")!;
+    // Plant 300 look-alikes directly (bypassing everything), as an attacker flooding a matter would.
+    const c = await t.admin.connect();
+    try {
+      await c.query("BEGIN");
+      await c.query("SET LOCAL session_replication_role = replica");
+      await c.query(`
+        WITH items AS (
+          INSERT INTO huis.evidence_items (id, firm_id, matter_id, folder_id, original_filename, size_bytes, sha256, storage_key, source, uploaded_by, status)
+          SELECT gen_random_uuid(), $1, $2, $3, 'flood-' || g || '.txt', 10, md5(g::text) || md5(g::text), 'k' || g, 'upload', $4, 'clean'
+            FROM generate_series(1, 300) g RETURNING id),
+        fps AS (
+          INSERT INTO huis.evidence_fingerprints (evidence_id, firm_id, matter_id, minhash, name_stem, is_email, phrase_count)
+          SELECT id, $1, $2, $5::int[], 'flood', false, 500 FROM items RETURNING evidence_id)
+        INSERT INTO huis.evidence_lsh (evidence_id, matter_id, band, hash)
+          SELECT f.evidence_id, $2, b, ((($5::int[])[b * 2 + 1])::bigint << 32) | ((($5::int[])[b * 2 + 2])::bigint & 4294967295)
+            FROM fps f, generate_series(0, 31) b`,
+        [x.firmId, x.matter.id, folder.id, x.ownerUserId, fp]);
+      await c.query("COMMIT");
+    } finally {
+      c.release();
     }
-    const a = await upload(x.owner, x.matter.id, await (async () => { const f = path.join(dir, "flood-a.txt"); await writeFile(f, text); return f; })());
-    await upload(x.owner, x.matter.id, await (async () => { const f = path.join(dir, "flood-b.txt"); await writeFile(f, `${text}\nextra`); return f; })());
+    const writeText = async (name: string, body: string) => { const f = path.join(dir, name); await writeFile(f, body); return f; };
+    const a = await upload(x.owner, x.matter.id, await writeText("flood-a.txt", text));
+    await upload(x.owner, x.matter.id, await writeText("flood-b.txt", `${text}\nextra`));
     await processor.drain();
+    // Every band value is shared by 300+ items, so nothing is matched (and no work done on them).
     expect(await db.withFirm(x.owner, (s) => listSimilar(s, a.id))).toEqual([]);
+    expect((await t.admin.query("SELECT count(*)::int n FROM huis.evidence_similarity WHERE matter_id = $1", [x.matter.id])).rows[0].n).toBe(0);
   });
 
   it("a job whose lease is lost fails loudly instead of being recorded as 'partial'", async () => {

@@ -33,16 +33,9 @@ CREATE TABLE huis.evidence_lsh (
 );
 CREATE INDEX evidence_lsh_lookup ON huis.evidence_lsh (matter_id, band, hash);
 
--- How many items share each band value in a matter. A value shared by very
--- many items (automated emails, boilerplate) says nothing useful and would
--- make every new item slower to compare, so crowded buckets are skipped.
-CREATE TABLE huis.evidence_lsh_buckets (
-  matter_id uuid NOT NULL,
-  band      smallint NOT NULL,
-  hash      bigint NOT NULL,
-  n         int NOT NULL,
-  PRIMARY KEY (matter_id, band, hash)
-);
+-- A band value shared by very many items (automated emails, boilerplate)
+-- says nothing useful, so matching reads at most 201 entries per band value
+-- and skips crowded ones: the work per item is bounded however big the matter.
 CREATE INDEX evidence_fingerprints_stem ON huis.evidence_fingerprints (matter_id, name_stem) WHERE name_stem IS NOT NULL;
 
 CREATE TABLE huis.evidence_similarity (
@@ -62,16 +55,14 @@ CREATE INDEX evidence_similarity_b ON huis.evidence_similarity (item_b);
 
 ALTER TABLE huis.evidence_fingerprints ENABLE ROW LEVEL SECURITY;
 ALTER TABLE huis.evidence_lsh          ENABLE ROW LEVEL SECURITY;
-ALTER TABLE huis.evidence_lsh_buckets  ENABLE ROW LEVEL SECURITY;
-ALTER TABLE huis.evidence_lsh_buckets  FORCE ROW LEVEL SECURITY;
 ALTER TABLE huis.evidence_similarity   ENABLE ROW LEVEL SECURITY;
 ALTER TABLE huis.evidence_fingerprints FORCE ROW LEVEL SECURITY;
 ALTER TABLE huis.evidence_lsh          FORCE ROW LEVEL SECURITY;
 ALTER TABLE huis.evidence_similarity   FORCE ROW LEVEL SECURITY;
 
 -- Fingerprints are internal: the app can't read or write them at all.
-REVOKE ALL ON huis.evidence_fingerprints, huis.evidence_lsh, huis.evidence_lsh_buckets, huis.evidence_similarity FROM PUBLIC;
-GRANT SELECT, INSERT, UPDATE, DELETE ON huis.evidence_fingerprints, huis.evidence_lsh, huis.evidence_lsh_buckets, huis.evidence_similarity TO huis_security;
+REVOKE ALL ON huis.evidence_fingerprints, huis.evidence_lsh, huis.evidence_similarity FROM PUBLIC;
+GRANT SELECT, INSERT, UPDATE, DELETE ON huis.evidence_fingerprints, huis.evidence_lsh, huis.evidence_similarity TO huis_security;
 GRANT SELECT ON huis.evidence_similarity TO huis_app;
 
 -- Visible only when BOTH items are visible to this person (evidence RLS applies inside).
@@ -112,18 +103,19 @@ BEGIN
   -- Too little text to compare meaningfully (a few words, a blank scan).
   IF p_phrase_count < 20 THEN RETURN 0; END IF;
 
-  INSERT INTO huis.evidence_lsh_buckets (matter_id, band, hash, n)
-    SELECT matter_id, band, hash, 1 FROM huis.evidence_lsh WHERE evidence_id = v_item.id
-    ON CONFLICT (matter_id, band, hash) DO UPDATE SET n = huis.evidence_lsh_buckets.n + 1;
-
   FOR c IN
     WITH cand AS (
       SELECT l.evidence_id, count(*) AS shared
         FROM huis.evidence_lsh me
-        JOIN huis.evidence_lsh_buckets bk ON bk.matter_id = me.matter_id AND bk.band = me.band AND bk.hash = me.hash
-        JOIN huis.evidence_lsh l ON l.matter_id = me.matter_id AND l.band = me.band AND l.hash = me.hash
-       WHERE me.evidence_id = v_item.id AND l.evidence_id <> v_item.id
-         AND bk.n <= 200  -- crowded buckets are skipped (bounded work per item)
+        CROSS JOIN LATERAL (
+          SELECT array_agg(x.evidence_id) AS ids FROM (
+            SELECT o.evidence_id FROM huis.evidence_lsh o
+             WHERE o.matter_id = me.matter_id AND o.band = me.band AND o.hash = me.hash AND o.evidence_id <> me.evidence_id
+             LIMIT 201) x
+        ) bucket
+        -- crowded band values (over 200 items) are skipped
+        CROSS JOIN LATERAL unnest(CASE WHEN coalesce(cardinality(bucket.ids), 0) <= 200 THEN bucket.ids ELSE '{}'::uuid[] END) AS l(evidence_id)
+       WHERE me.evidence_id = v_item.id
        GROUP BY l.evidence_id
        ORDER BY count(*) DESC
        LIMIT 200
