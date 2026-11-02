@@ -47,10 +47,10 @@ jobs:
       - name: Diagnose page count (temporary)
         run: |
           set +e
-          mkdir -p /tmp/w
-          env -i PATH="$PATH" HOME=/tmp/w TMPDIR=/tmp/w LANG=C.UTF-8 OMP_THREAD_LIMIT=1 qpdf --no-warn --show-npages /tmp/t.pdf; echo "minimal-env exit=$?"
-          env -i PATH="$PATH" HOME=/tmp/w TMPDIR=/tmp/w LANG=C.UTF-8 NODE_ENV=production node --import tsx -e 'import("./src/extract/tools.ts").then(async (t) => { try { console.log("count", await t.pdfPageCount("/tmp/t.pdf")); } catch (e) { console.log("ERR", e && e.message); } })'
-          env -i PATH="$PATH" HOME=/tmp/w TMPDIR=/tmp/w LANG=C.UTF-8 NODE_ENV=production node --import tsx -e 'import("./src/extract/formats.ts").then(async (f) => { const r = await f.extract({ inputPath: "/tmp/t.pdf", outDir: "/tmp/w", filename: "t.pdf", detectedType: "PDF", depth: 0 }); console.log("extract", r.status, r.detail, r.pages); })'
+          echo 'JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gPj4gPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCAyMDQgPj4Kc3RyZWFtCkJUCi9GMSAxNCBUZgo3MiA3MjAgVGQKMTggVEwKKE5vdGljZSBvZiB0ZXJtaW5hdGlvbikgVGogVCoKKFRoZSBlbXBsb3llZSB3YXMgaW5mb3JtZWQgb24gQXByaWwgMTggdGhhdCkgVGogVCoKKGhlciBwb3NpdGlvbiB3YXMgZWxpbWluYXRlZCBhZnRlciB0aGUgRk1MQSByZXF1ZXN0LikgVGogVCoKKFNpZ25lZCwgSHVtYW4gUmVzb3VyY2VzKSBUaiBUKgpFVAplbmRzdHJlYW0KZW5kb2JqCjUgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDEgMDAwMDAgbiAKMDAwMDAwMDQ5NiAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjU2NgolJUVPRgo=' | base64 -d > /tmp/letter.pdf
+          qpdf --no-warn --show-npages /tmp/letter.pdf; echo "letter exit=$?"
+          qpdf --show-npages /tmp/letter.pdf; echo "letter exit2=$?"
+          qpdf --check /tmp/letter.pdf 2>&1 | tail -5
       - name: Type check
         run: npm run typecheck
       - name: Security and privilege tests
