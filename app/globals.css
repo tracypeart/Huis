@@ -93,3 +93,27 @@ mark { background: #fff1a8; color: inherit; padding: 0 1px; border-radius: 2px; 
 .diff .added { background: #e9f7ee; color: #14532d; }
 .diff .added::before { content: "+"; }
 .diff .gap { color: var(--muted, #667); background: #f4f5f7; font-style: italic; }
+
+/* Page viewer */
+.viewer-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+.viewer-sep { width: 1px; height: 24px; background: var(--line); margin: 0 4px; }
+.viewer-body { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; align-items: start; }
+@media (max-width: 900px) { .viewer-body { grid-template-columns: 1fr; } }
+.viewer-stage { overflow: auto; background: #e9ebef; border-radius: 8px; padding: 16px; max-height: 80vh; }
+.viewer-page { position: relative; width: max-content; margin: 0 auto; box-shadow: 0 1px 4px rgba(0,0,0,.25); background: #fff; }
+.viewer-page canvas { display: block; }
+.viewer-overlay { position: absolute; inset: 0; touch-action: none; }
+.mark { position: absolute; box-sizing: border-box; }
+.mark-highlight { background: rgba(255, 214, 0, .38); mix-blend-mode: multiply; }
+.mark-note { border: 2px solid #2563eb; background: rgba(37, 99, 235, .08); }
+.mark-redaction { background: repeating-linear-gradient(45deg, rgba(0,0,0,.72) 0 6px, rgba(0,0,0,.55) 6px 12px); outline: 2px solid #000; }
+.mark-draft { opacity: .7; }
+.viewer-side h2 { margin-top: 0; }
+.viewer-marks { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+.viewer-marks li { border-top: 1px solid var(--line); padding-top: 8px; }
+.swatch { display: inline-block; width: 12px; height: 12px; border-radius: 2px; vertical-align: -1px; }
+.swatch-highlight { background: #ffd600; }
+.swatch-note { background: #2563eb; }
+.swatch-redaction { background: #000; }
+button.link { background: none; border: 0; padding: 0; color: var(--accent, #2563eb); text-decoration: underline; cursor: pointer; }
+.viewer-note-form textarea { width: 100%; }

@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { open } from "node:fs/promises";
+import path from "node:path";
 import { LIMITS } from "./types";
 
 /**
@@ -10,6 +11,8 @@ import { LIMITS } from "./types";
  */
 export function run(cmd: string, args: string[], opts: {
   timeoutSec?: number; maxBytes?: number;
+  /** Exit codes that count as success (default: only 0). */
+  okCodes?: number[];
   /** Checked every few seconds while the tool runs; returning false stops it (e.g. disk use too high). */
   watch?: () => Promise<boolean>; watchMs?: number;
 } = {}): Promise<string> {
@@ -21,29 +24,46 @@ export function run(cmd: string, args: string[], opts: {
     let size = 0;
     let failed = false;
     const killGroup = () => { try { process.kill(-child.pid!, "SIGKILL"); } catch { /* gone */ } };
-    const fail = () => { if (!failed) { failed = true; killGroup(); reject(new Error(`${cmd} failed`)); } };
-    const timer = setTimeout(fail, (opts.timeoutSec ?? LIMITS.toolTimeoutSec) * 1000);
+    const fail = (why = "failed") => { if (!failed) { failed = true; killGroup(); reject(new Error(`${cmd} ${why}`)); } };
+    const timer = setTimeout(() => fail("timed out"), (opts.timeoutSec ?? LIMITS.toolTimeoutSec) * 1000);
     let checking = false;
     const watcher = opts.watch ? setInterval(() => {
       if (checking || failed) return;
       checking = true;
-      opts.watch!().then((ok) => { checking = false; if (!ok) fail(); }, () => { checking = false; fail(); });
+      opts.watch!().then((ok) => { checking = false; if (!ok) fail("stopped by watcher"); }, () => { checking = false; fail("stopped by watcher"); });
     }, opts.watchMs ?? 5000) : null;
     child.on("close", () => { if (watcher) clearInterval(watcher); });
     child.stdout!.on("data", (d: Buffer) => {
       size += d.length;
-      if (size > max) { fail(); return; }
+      if (size > max) { fail("produced too much output"); return; }
       chunks.push(d);
     });
-    child.on("error", () => { clearTimeout(timer); fail(); });
-    child.on("close", (code: number | null) => {
+    child.on("error", (e: NodeJS.ErrnoException) => { clearTimeout(timer); fail(`could not start (${e.code ?? "error"})`); });
+    child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
       clearTimeout(timer);
       killGroup();
       if (failed) return;
-      if (code === 0) resolve(Buffer.concat(chunks).toString("utf8"));
-      else fail();
+      if (code !== null && (opts.okCodes ?? [0]).includes(code)) resolve(Buffer.concat(chunks).toString("utf8"));
+      else fail(code === null ? `killed by ${signal}` : `exited with code ${code}`);
     });
   });
+}
+
+/**
+ * A PDF's page count from its actual page tree (qpdf). Never parsed from
+ * pdfinfo's text output, where a crafted title can fake a "Pages:" line.
+ * qpdf exits 3 when it had to repair the file but still read it.
+ */
+export async function pdfPageCount(file: string): Promise<number> {
+  // Paths are always absolute ones Huis generated, so they can't be mistaken for options.
+  if (!path.isAbsolute(file)) throw new Error("expected an absolute path");
+  const out = await run("qpdf", ["--no-warn", "--show-npages", file], { timeoutSec: 120, maxBytes: 64 * 1024, okCodes: [0, 3] });
+  // The count is the only line that is just a number (ignore any notices).
+  const line = out.split(/\r?\n/).map((l) => l.trim()).filter((l) => /^\d{1,7}$/.test(l)).pop();
+  if (!line) throw new Error("page count unreadable");
+  const n = Number(line);
+  if (n < 1) throw new Error("PDF has no pages");
+  return n;
 }
 
 /** Reads at most `max` bytes from the start of a file. */

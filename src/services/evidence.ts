@@ -215,7 +215,8 @@ export interface EvidenceItem {
   sha256: string;
   status: "pending_scan" | "clean" | "infected" | "scan_failed";
   scanDetail: string | null;
-  source: EvidenceSource;
+  /** Uploads use one of SOURCES; Huis processing creates "extracted" and "produced_copy" items. */
+  source: EvidenceSource | "extracted" | "produced_copy";
   receivedFrom: string | null;
   dateReceived: string | null;
   duplicateOf: string | null;

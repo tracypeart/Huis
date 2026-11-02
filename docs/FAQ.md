@@ -22,7 +22,13 @@ Not if you don't want them to. Any matter can be put behind an **ethical wall**:
 Every file is encrypted with its own key, and those keys are locked with a separate key for each firm. Files are stored in tamper-evident pieces. If a stored file is altered, cut short, swapped for another file, or opened with the wrong firm's key, Huis detects it and refuses to use it.
 
 ### Can evidence be changed or deleted?
-No. Originals are never altered. The original record (file name, size, digital fingerprint, who uploaded it, when, who it was received from and when) is locked by the database. Highlighting, redacting and exhibit-stamping will always happen on a separate working copy.
+No. Originals are never altered. The original record (file name, size, digital fingerprint, who uploaded it, when, who it was received from and when) is locked by the database. Highlights, notes and redaction marks are kept as a separate layer, and redacted or exhibit copies are new documents linked to the original.
+
+### Are Huis redactions safe?
+Yes. Some tools just draw a black box over the text, and the words underneath can still be copied out. Huis turns every page into an image, paints the redacted areas solid black **into the image itself**, and builds a brand-new PDF from those images. Nothing from the original file comes along: not its text, hidden text, metadata, attachments or scripts. Nothing under a redaction can be recovered, and the original stays untouched.
+
+### Who can see our highlights and notes?
+Only firm staff who can see the document. Highlights, notes, redaction marks and copy requests are attorney work product. Clients, co-counsel, experts and other outsiders never see them, even on documents shared with them.
 
 ### Is there a chain of custody?
 Yes, for every item. It records when the item was received, by whom and from whom, its digital fingerprint, integrity checks, virus scan results, every move, every download, and every time someone reads its text. The log is append-only and chained together, so a removed or altered entry is detectable. Huis shows on screen whether the chain is intact.
@@ -48,6 +54,7 @@ Yes, at every stage. After each part is built, a separate reviewer that did not 
 - **Review 1** (sign-in, firms, matters, secure intake): 9 issues confirmed, all fixed.
 - **Review 2** (reading files and search): 7 security issues plus 7 reliability issues, all fixed. These included the protections above for privileged attachments, attachment names, the sealed-off file reader and the reading and search records.
 - **Review 3** (Outlook mailboxes and similar documents): no privilege or ethical-wall leak found. 4 robustness issues and 1 suspected issue, all fixed, so very large or deliberately crafted mailboxes can't slow Huis down or fill its disks.
+- **Review 4** (viewer, redactions and exhibit copies): marks and copy requests stayed firm-only. 5 issues fixed, the most important making sure a redaction always lands exactly where it was drawn, even on cropped PDFs, and that nothing appears in a copy that the attorney couldn't see in the viewer.
 
 ### Who owns our data?
 Your firm does. You can export everything at any time.
@@ -92,6 +99,12 @@ The words inside every document, email, scan and attachment you're allowed to se
 
 ### Will search ever show me something I shouldn't see?
 No. Search follows the same rules as everything else, enforced by the database: firm separation, ethical walls, the red privileged folder and client restrictions. A client searching only ever finds what's in their shared folders.
+
+### Can I view and mark up documents inside Huis?
+Yes. **Open in viewer** shows PDFs, Word, Excel, PowerPoint files and photos page by page. You can highlight, add notes and mark areas to redact. Opening a document is recorded in its chain of custody.
+
+### Can Huis make exhibits and Bates-numbered productions?
+Yes. From any document you can produce a copy that is redacted, stamped with an exhibit label, Bates-numbered, or any combination. Bates numbers run continuously within a matter. Each copy is a new document with its own chain of custody, linked to the original, and it is searchable. Saving a copy into a folder the client can see asks you to confirm you've reviewed it, because sharing may affect privilege.
 
 ### What if a file can't be fully read?
 Huis tells you. Each item shows whether its text was read completely, partly (for example, a very long scan or an oversized archive), or not at all, and why. The original is always safely stored either way.
