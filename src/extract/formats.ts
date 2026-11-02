@@ -1,5 +1,5 @@
 import { createReadStream, createWriteStream } from "node:fs";
-import { readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import readline from "node:readline";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -17,6 +17,12 @@ const ext = (name: string) => path.extname(name).toLowerCase().replace(/^\./, ""
 // ---------------------------------------------------------------------------
 // PDF: real text first; scanned pages are OCR'd.
 // ---------------------------------------------------------------------------
+/** Makes sure a display name ends with the given extension (when one is required). */
+function withExt(name: string, required: string | null): string {
+  if (!required || name.toLowerCase().endsWith(`.${required}`)) return name;
+  return `${name.slice(0, 250)}.${required}`;
+}
+
 export async function extractPdf(input: ExtractInput): Promise<ExtractResult> {
   let pages: number | null = null;
   try {
@@ -232,10 +238,15 @@ export async function extractEml(input: ExtractInput): Promise<ExtractResult> {
   let i = 0;
   for (const att of mail.attachments.slice(0, LIMITS.maxChildren)) {
     i += 1;
-    const filename = safeName(att.filename, `attachment-${i}`);
+    const embedded = /^message\/rfc822$/i.test(att.contentType ?? "");
+    const filename = withExt(safeName(att.filename, embedded ? `attached-message-${i}` : `attachment-${i}`), embedded ? "eml" : null);
     const out = path.join(input.outDir, `att-${i}`);
     await writeFile(out, att.content, { mode: 0o600 });
-    children.push({ path: out, filename, containerPath: `Attachment ${i}: ${filename}`, declaredType: att.contentType ?? null });
+    children.push({
+      path: out, filename,
+      containerPath: embedded ? `Attached message ${i}` : `Attachment ${i}: ${filename}`,
+      declaredType: att.contentType ?? null,
+    });
   }
   const body = mail.text ?? (typeof mail.html === "string" ? htmlToText(mail.html) : "");
   return empty({
@@ -271,24 +282,35 @@ export async function extractMsg(input: ExtractInput): Promise<ExtractResult> {
     inReplyTo: info.inReplyToId ?? null,
   };
   const children: ContainedFile[] = [];
-  let skippedEmbedded = 0;
+  let unreadable = 0;
   const attachments = (info.attachments ?? []).slice(0, LIMITS.maxChildren);
   for (let idx = 0; idx < attachments.length; idx++) {
     const att = attachments[idx]!;
-    if (att.innerMsgContent) { skippedEmbedded += 1; continue; }
-    const got = reader.getAttachment(att as never) as { fileName?: string; content?: Uint8Array };
-    if (!got?.content) continue;
-    const filename = safeName(got.fileName ?? att.fileName ?? att.name, `attachment-${idx + 1}`);
+    let got: { fileName?: string; content?: Uint8Array } | null = null;
+    try {
+      got = reader.getAttachment(att as never) as { fileName?: string; content?: Uint8Array };
+    } catch {
+      got = null;
+    }
+    if (!got?.content) { unreadable += 1; continue; }
+    const embedded = att.innerMsgContent === true;
+    // Embedded Outlook messages are rebuilt as standalone .msg files so they
+    // are read (and their own attachments split out) like any other message.
+    const filename = withExt(safeName(got.fileName ?? att.fileName ?? att.name, embedded ? `attached-message-${idx + 1}` : `attachment-${idx + 1}`), embedded ? "msg" : null);
     const out = path.join(input.outDir, `att-${idx + 1}`);
     await writeFile(out, got.content, { mode: 0o600 });
-    children.push({ path: out, filename, containerPath: `Attachment ${idx + 1}: ${filename}`, declaredType: att.attachMimeTag ?? null });
+    children.push({
+      path: out, filename,
+      containerPath: embedded ? `Attached message ${idx + 1}` : `Attachment ${idx + 1}: ${filename}`,
+      declaredType: embedded ? "application/vnd.ms-outlook" : att.attachMimeTag ?? null,
+    });
   }
   const body = info.body ?? (info.bodyHtml ? htmlToText(info.bodyHtml) : "");
   return empty({
-    status: skippedEmbedded ? "partial" : "done",
+    status: unreadable ? "partial" : "done",
     detail: [
       children.length ? `Outlook message with ${children.length} attachment(s); each attachment is a separate item.` : "Outlook message read.",
-      skippedEmbedded ? `${skippedEmbedded} message(s) attached inside this one can't be opened yet.` : "",
+      unreadable ? `${unreadable} attachment(s) could not be read.` : "",
     ].filter(Boolean).join(" "),
     text: emailText(headers, body), email: headers, children,
   });
@@ -323,6 +345,69 @@ export async function extractMbox(input: ExtractInput): Promise<ExtractResult> {
     detail: children.length ? `Mailbox split into ${children.length} message(s); each is a separate item.` : "No messages found in this mailbox.",
     children,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Outlook data files (.pst / .ost): every email, calendar entry and contact
+// ---------------------------------------------------------------------------
+/** Outlook mailboxes can hold far more items than an archive. */
+export const PST_MAX_ITEMS = 200_000;
+
+/**
+ * Splits an Outlook data file into one item per message (.eml), calendar
+ * entry (.ics) and contact (.vcf), recording the mailbox folder each came
+ * from ("Inbox/Smith matter"). readpst writes into a scratch folder using
+ * folder names taken from the mailbox; those names are only ever used as
+ * labels — every file is moved to a generated name, and anything that isn't
+ * a plain file (links, devices) is ignored.
+ */
+export async function extractPst(input: ExtractInput): Promise<ExtractResult> {
+  const scratch = path.join(input.outDir, "pst-raw");
+  await mkdir(scratch, { mode: 0o700 });
+  try {
+    try {
+      // -e one file per item, -b skip duplicate RTF bodies, -q quiet, -j 0 single-threaded.
+      await run("readpst", ["-e", "-b", "-q", "-j", "0", "-o", scratch, input.inputPath], { timeoutSec: 3 * 3600, maxBytes: 1024 * 1024 });
+    } catch {
+      // A damaged mailbox may still have produced items; keep what was read.
+    }
+    const children: ContainedFile[] = [];
+    let truncated = false;
+    const walk = async (dir: string, rel: string[]): Promise<void> => {
+      const names = (await readdir(dir)).sort((a, b) => a.localeCompare(b, "en", { numeric: true }));
+      for (const name of names) {
+        if (truncated) return;
+        const full = path.join(dir, name);
+        const st = await lstat(full);
+        if (st.isDirectory()) { if (rel.length < 64) await walk(full, [...rel, name]); continue; }
+        if (!st.isFile()) continue;
+        if (children.length >= PST_MAX_ITEMS) { truncated = true; return; }
+        const n = children.length + 1;
+        const kind = path.extname(name).toLowerCase();
+        const target = path.join(input.outDir, `pst-${n}${kind === ".eml" || kind === ".ics" || kind === ".vcf" ? kind : ""}`);
+        await rename(full, target);
+        // The top folder is the mailbox's own name; show the path inside it.
+        const folder = rel.slice(1).join("/") || rel[0] || "";
+        const label = kind === ".ics" ? "calendar-entry" : kind === ".vcf" ? "contact" : "message";
+        children.push({
+          path: target,
+          filename: `${label}-${String(n).padStart(6, "0")}${kind === ".ics" || kind === ".vcf" || kind === ".eml" ? kind : ""}`,
+          containerPath: `${folder.slice(0, 2000)}${folder ? "/" : ""}${name.slice(0, 255)}`,
+          declaredType: kind === ".eml" ? "message/rfc822" : kind === ".ics" ? "text/calendar" : kind === ".vcf" ? "text/vcard" : null,
+        });
+      }
+    };
+    await walk(scratch, []);
+    return empty({
+      status: children.length ? (truncated ? "partial" : "done") : "no_text",
+      detail: children.length
+        ? `Outlook mailbox split into ${children.length} item(s) (emails, calendar entries, contacts); each is a separate item.${truncated ? ` Stopped at ${PST_MAX_ITEMS.toLocaleString("en-US")} items.` : ""}`
+        : "No items could be read from this Outlook data file (it may be damaged).",
+      children,
+    });
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -446,7 +531,7 @@ export async function extractMedia(input: ExtractInput, provider: TranscriptionP
 export async function extract(input: ExtractInput, provider: TranscriptionProvider | null = null): Promise<ExtractResult> {
   const type = input.detectedType ?? "";
   const e = ext(input.filename);
-  if (input.depth >= LIMITS.maxDepth && /ZIP|Email|Outlook/.test(type)) {
+  if (input.depth >= LIMITS.maxDepth && (/ZIP|Email|Outlook/.test(type) || e === "msg" || e === "mbox")) {
     return empty({ status: "unsupported", detail: "Nested too deeply to unpack further." });
   }
   if (type.includes("program") || /executable/i.test(type)) {
@@ -475,7 +560,8 @@ export async function extract(input: ExtractInput, provider: TranscriptionProvid
   if (type === "Rich text") return extractWithLibreOffice(input, "txt:Text");
   if (e === "mbox") return extractMbox(input);
   if (type === "Email (.eml)" || e === "eml") return extractEml(input);
-  if (type.includes(".pst")) return empty({ status: "unsupported", detail: "Outlook .pst mailboxes are supported in the next step." });
+  if (type.includes(".pst")) return extractPst(input);
+  if (e === "ics" || e === "vcf") return extractPlain(input, false);
   if (/audio|video/i.test(type)) return extractMedia(input, provider);
   if (type === "Web page (HTML)") return extractPlain(input, true);
   if (type === "Text") return extractPlain(input, e === "html" || e === "htm");

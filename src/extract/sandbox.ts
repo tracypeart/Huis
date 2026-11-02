@@ -9,6 +9,10 @@ const CHILD = path.join(ROOT, "src/extract/child.ts");
 
 /** Wall-clock limit for one file. Extraction saves partial OCR before this. */
 export const SANDBOX_TIMEOUT_MS = 45 * 60_000;
+/** Outlook data files can be tens of gigabytes. */
+export const SANDBOX_MAILBOX_TIMEOUT_MS = 4 * 60 * 60_000;
+/** Largest result the extractor may hand back (text plus the list of contained items). */
+const MAX_RESULT_BYTES = 128 * 1024 * 1024;
 /** Unprivileged account the extractor runs as. */
 const SANDBOX_UID = 65534;
 const SANDBOX_GID = 65534;
@@ -72,11 +76,12 @@ export async function extractInSandbox(input: ExtractInput, workDir: string): Pr
     let out = "";
     let size = 0;
     const killGroup = () => { try { process.kill(-child.pid!, "SIGKILL"); } catch { /* already gone */ } };
-    const timer = setTimeout(() => { killGroup(); reject(new Error("extraction timed out")); }, SANDBOX_TIMEOUT_MS);
+    const limit = /\.pst/.test(input.detectedType ?? "") ? SANDBOX_MAILBOX_TIMEOUT_MS : SANDBOX_TIMEOUT_MS;
+    const timer = setTimeout(() => { killGroup(); reject(new Error("extraction timed out")); }, limit);
     child.stdout!.setEncoding("utf8");
     child.stdout!.on("data", (d: string) => {
       size += d.length;
-      if (size > 64 * 1024 * 1024) { killGroup(); reject(new Error("extraction output too large")); return; }
+      if (size > MAX_RESULT_BYTES) { killGroup(); reject(new Error("extraction output too large")); return; }
       out += d;
     });
     child.on("error", () => { clearTimeout(timer); reject(new Error("extraction process failed")); });

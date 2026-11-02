@@ -7,6 +7,7 @@ import { PassThrough } from "node:stream";
 import { finished, pipeline } from "node:stream/promises";
 import pg from "pg";
 import { extractInSandbox } from "../extract/sandbox";
+import { fingerprint, nameStem } from "../similarity/fingerprint";
 import type { ExtractInput, ExtractResult } from "../extract/types";
 import { detectFileType, type DetectedType } from "../storage/filetype";
 import type { MalwareScanner } from "../storage/scanner";
@@ -143,6 +144,19 @@ export class EvidenceProcessor {
             await this.vault.delete(c.key).catch(() => undefined);
             status = "partial";
             detail = `${detail} Some contained files were not unpacked because a safety limit was reached.`.trim();
+          }
+        }
+        // Near-duplicates and versions (never blocks saving the text).
+        if (result.text.trim()) {
+          const fp = fingerprint(result.text);
+          await client.query("SAVEPOINT similarity");
+          try {
+            await client.query("SELECT huis.worker_save_similarity($1, $2, $3, $4, $5, $6)", [
+              job.job_id, job.lock_token, fp.minhash, nameStem(job.original_filename), result.email !== null, fp.phraseCount,
+            ]);
+            await client.query("RELEASE SAVEPOINT similarity");
+          } catch {
+            await client.query("ROLLBACK TO SAVEPOINT similarity");
           }
         }
         await client.query("SELECT huis.worker_save_extraction($1, $2, $3, $4, $5, $6, $7, $8, $9)", [

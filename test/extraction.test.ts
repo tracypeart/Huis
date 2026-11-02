@@ -15,11 +15,12 @@ import { extractInSandbox, isolationArgs, sandboxMode, verifyChildren } from "..
 import type { ExtractInput } from "../src/extract/types";
 import { createClient } from "../src/services/clients";
 import {
-  assembleOriginal, getEmailHeaders, getEvidence, getEvidenceText, getUploadSession, listContainedItems,
+  assembleOriginal, compareEvidence, getEmailHeaders, listSimilar, getEvidence, getEvidenceText, getUploadSession, listContainedItems,
   listEvidence, markChunkReceived, moveEvidence, newEvidenceId, recordEvidence, startUpload, storeChunk,
 } from "../src/services/evidence";
 import { addMatterMember, createMatter, listMatterFolders } from "../src/services/matters";
 import { HIT_END, HIT_START, searchEvidence } from "../src/services/search";
+import { fingerprint, nameStem, similarity } from "../src/similarity/fingerprint";
 import { inviteUser } from "../src/services/users";
 import { MasterKeyProvider } from "../src/storage/encryption";
 import { detectFileType } from "../src/storage/filetype";
@@ -588,5 +589,170 @@ describe("security review 2: move vs. unpacking race", () => {
     expect(kids.length).toBe(2);
     for (const k of kids) expect(k.folderIsPrivileged).toBe(true);
     expect(await db.withFirm(x.portalCtx, (s) => searchEvidence(s, { q: "PTO" }))).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 2 part 3a: Outlook mailboxes, attached messages, versions
+// ---------------------------------------------------------------------------
+const VOCAB = "agreement party shall payment release claims employer employee settlement confidential terms notice court dismiss wages benefits days within signed effective date parties hereby".split(" ");
+function prose(seed: number, words: number): string {
+  let x = seed;
+  const out: string[] = [];
+  for (let i = 0; i < words; i++) {
+    x = (x * 1103515245 + 12345) & 0x7fffffff;
+    out.push(VOCAB[x % VOCAB.length]!);
+    if (i % 12 === 11) out.push("\n");
+  }
+  return out.join(" ");
+}
+
+describe("part 3a: Outlook mailboxes and attached messages", () => {
+  it("splits an Outlook .pst into separate, searchable items with their mailbox folders", async () => {
+    const x = await setup();
+    const pst = await upload(x.owner, x.matter.id, path.join(__dirname, "fixtures/pst/dist-list.pst"));
+    await processor.drain();
+    const p = await db.withFirm(x.owner, (s) => getEvidence(s, pst.id));
+    expect(p).toMatchObject({ detectedContentType: "Outlook data file (.pst)", extractionStatus: "done", childCount: 2 });
+    const kids = await db.withFirm(x.owner, (s) => listContainedItems(s, pst.id));
+    expect(kids.map((k) => k.containerPath).sort()).toEqual(["Calendar/1.ics", "Contacts/1.vcf"]);
+    for (const k of kids) expect(k).toMatchObject({ status: "clean", source: "extracted", extractionStatus: "done" });
+    const hits = await db.withFirm(x.owner, (s) => searchEvidence(s, { q: '"test appointment"' }));
+    expect(hits.map((h) => h.evidenceId)).toContain(kids.find((k) => k.containerPath === "Calendar/1.ics")!.id);
+  });
+
+  it("opens Outlook messages attached inside Outlook messages, with their own attachments", async () => {
+    const x = await setup();
+    const outer = await upload(x.owner, x.matter.id, path.join(__dirname, "fixtures/msg/outer-mail.msg"));
+    await processor.drain();
+    expect((await db.withFirm(x.owner, (s) => getEvidence(s, outer.id)))?.extractionStatus).toBe("done");
+    const kids = await db.withFirm(x.owner, (s) => listContainedItems(s, outer.id));
+    const inner = kids.find((k) => k.originalFilename === "Inner mail.msg")!;
+    expect(inner).toMatchObject({ containerPath: "Attached message 3", extractionStatus: "done" });
+    expect(await db.withFirm(x.owner, (s) => getEmailHeaders(s, inner.id))).toMatchObject({ subject: "Inner mail" });
+    const innerKids = await db.withFirm(x.owner, (s) => listContainedItems(s, inner.id));
+    expect(innerKids.length).toBeGreaterThan(0);
+    for (const k of innerKids) expect(k.status).toBe("clean");
+  });
+
+  it("opens emails attached inside .eml emails", async () => {
+    const x = await setup();
+    const file = path.join(dir, "forward.eml");
+    await writeFile(file, [
+      "From: Tracy <tracy@example.com>", "To: Counsel <counsel@example.com>", "Subject: Fwd: offer",
+      "Date: Tue, 1 Apr 2025 09:00:00 -0600", "MIME-Version: 1.0", 'Content-Type: multipart/mixed; boundary="B"', "",
+      "--B", "Content-Type: text/plain", "", "See the attached message.", "",
+      "--B", "Content-Type: message/rfc822", "Content-Disposition: attachment", "",
+      "From: Boss <boss@acme.example>", "To: Tracy <tracy@example.com>", "Subject: Your severance offer",
+      "Date: Mon, 31 Mar 2025 17:00:00 -0600", "", "We can offer twelve weeks of pay in exchange for a release.", "",
+      "--B--", "",
+    ].join("\r\n"));
+    const fwd = await upload(x.owner, x.matter.id, file);
+    await processor.drain();
+    const [att] = await db.withFirm(x.owner, (s) => listContainedItems(s, fwd.id));
+    expect(att).toMatchObject({ containerPath: "Attached message 1", extractionStatus: "done" });
+    expect(att!.originalFilename.endsWith(".eml")).toBe(true);
+    expect(await db.withFirm(x.owner, (s) => getEmailHeaders(s, att!.id))).toMatchObject({ subject: "Your severance offer", from: "Boss <boss@acme.example>" });
+    const hits = await db.withFirm(x.owner, (s) => searchEvidence(s, { q: "twelve weeks" }));
+    expect(hits.map((h) => h.evidenceId)).toContain(att!.id);
+  });
+});
+
+describe("part 3a: near-duplicates and versions", () => {
+  it("names version families sensibly", () => {
+    expect(nameStem("Settlement Agreement v2 FINAL (1).docx")).toBe("settlement agreement");
+    expect(nameStem("settlement agreement - draft 2025-03-01.pdf")).toBe("settlement agreement");
+    expect(nameStem("Settlement_Agreement_redline_v3.docx")).toBe("settlement agreement");
+    expect(nameStem("FINAL.docx")).toBeNull();
+    expect(nameStem("Lease.pdf")).toBe("lease");
+  });
+
+  it("estimates shared wording", () => {
+    const a = prose(1, 600);
+    const edited = a.replace(/payment/g, "compensation");
+    expect(similarity(fingerprint(a).minhash, fingerprint(a).minhash)).toBe(1);
+    expect(similarity(fingerprint(a).minhash, fingerprint(prose(99, 600)).minhash)).toBeLessThan(0.2);
+    const s = similarity(fingerprint(a).minhash, fingerprint(edited).minhash);
+    expect(s).toBeGreaterThan(0.2);
+    expect(s).toBeLessThan(0.95);
+  });
+
+  async function textFile(name: string, content: string) {
+    const f = path.join(dir, name);
+    await writeFile(f, content);
+    return f;
+  }
+
+  it("links versions and near-duplicates in a matter, compares them, and records the reading", async () => {
+    const x = await setup();
+    const base = prose(7, 800);
+    const lines = base.split("\n");
+    const v2 = [...lines.slice(0, 20), "The employer shall pay 48000 dollars in back wages.", ...lines.slice(20)].join("\n");
+    const draft = await upload(x.owner, x.matter.id, await textFile("Settlement Agreement DRAFT.txt", base));
+    const final = await upload(x.owner, x.matter.id, await textFile("Settlement Agreement FINAL v2.txt", v2));
+    const renamed = await upload(x.owner, x.matter.id, await textFile("scan-0042.txt", base + "\nPage 7"));
+    const exact = await upload(x.owner, x.matter.id, await textFile("Settlement Agreement copy.txt", base));
+    const other = await upload(x.owner, x.matter.id, await textFile("Settlement Agreement notes.txt", prose(1234, 800)));
+    const tiny = await upload(x.owner, x.matter.id, await textFile("Settlement Agreement.txt", "ok"));
+    await processor.drain();
+
+    const sim = await db.withFirm(x.owner, (s) => listSimilar(s, draft.id));
+    const byId = new Map(sim.map((r) => [r.id, r]));
+    expect(byId.get(final.id)?.kind).toBe("version");
+    expect(byId.get(renamed.id)?.kind).toBe("near_duplicate");
+    expect(byId.has(exact.id)).toBe(false); // exact copies are duplicates, not "similar"
+    expect(byId.has(other.id)).toBe(false); // same name, different wording
+    expect(byId.has(tiny.id)).toBe(false);  // too little text to compare
+    expect((await db.withFirm(x.owner, (s) => getEvidence(s, exact.id)))?.duplicateOf).toBe(draft.id);
+
+    const before = Number((await t.admin.query("SELECT count(*) FROM huis.evidence_custody_events WHERE event = 'viewed' AND evidence_id = ANY($1)", [[draft.id, final.id]])).rows[0].count);
+    const cmp = await db.withFirm(x.owner, (s) => compareEvidence(s, draft.id, final.id));
+    expect(cmp.diff!.filter((l) => l.kind === "added").map((l) => l.text)).toEqual(["The employer shall pay 48000 dollars in back wages."]);
+    expect(cmp.diff!.filter((l) => l.kind === "removed")).toHaveLength(0);
+    const after = Number((await t.admin.query("SELECT count(*) FROM huis.evidence_custody_events WHERE event = 'viewed' AND evidence_id = ANY($1)", [[draft.id, final.id]])).rows[0].count);
+    expect(after - before).toBe(2);
+  });
+
+  it("never reveals that a shared document resembles a privileged or walled one", async () => {
+    const x = await setup();
+    await db.withFirm(x.owner, (s) => addMatterMember(s, { matterId: x.matter.id, userId: x.portal.id, access: "view", acknowledgePrivilegeWaiverRisk: true }));
+    const folders = await db.withFirm(x.owner, (s) => listMatterFolders(s, x.matter.id));
+    const shared = folders.find((f) => f.name === "Client Uploads")!;
+    const red = folders.find((f) => f.isPrivilegedArea)!;
+    const text = prose(42, 800);
+    const sharedItem = await upload(x.owner, x.matter.id, await textFile("Demand Letter.txt", text), "Demand Letter.txt", shared.id);
+    const privItem = await upload(x.owner, x.matter.id, await textFile("Demand Letter attorney notes.txt", `${text}\nOur real bottom line is 60000.`), "Demand Letter attorney notes.txt", red.id);
+    await processor.drain();
+
+    expect((await db.withFirm(x.owner, (s) => listSimilar(s, sharedItem.id))).map((r) => r.id)).toContain(privItem.id);
+    expect(await db.withFirm(x.portalCtx, (s) => listSimilar(s, sharedItem.id))).toEqual([]);
+    await db.withFirm(x.portalCtx, async (s) => {
+      expect((await s.client.query("SELECT count(*)::int n FROM huis.evidence_similarity")).rows[0].n).toBe(0);
+    });
+    await expect(db.withFirm(x.portalCtx, (s) => compareEvidence(s, sharedItem.id, privItem.id))).rejects.toThrow();
+
+    // Walled matter: a paralegal outside the wall sees nothing.
+    const w1 = await upload(x.owner, x.walled.id, await textFile("Walled A.txt", text));
+    await upload(x.owner, x.walled.id, await textFile("Walled A final.txt", `${text}\nchange`));
+    await processor.drain();
+    await expect(db.withFirm(x.paraCtx, (s) => listSimilar(s, w1.id))).rejects.toThrow();
+    await db.withFirm(x.paraCtx, async (s) => {
+      expect((await s.client.query("SELECT count(*)::int n FROM huis.evidence_similarity WHERE matter_id = $1", [x.walled.id])).rows[0].n).toBe(0);
+    });
+  });
+
+  it("the app can't read fingerprints or forge similarity links; only the job holder can fingerprint", async () => {
+    const x = await setup();
+    const a = await upload(x.owner, x.matter.id, files.pdf!);
+    await processor.drain();
+    await expect(db.withFirm(x.owner, (s) => s.client.query("SELECT * FROM huis.evidence_fingerprints"))).rejects.toThrow(/permission/);
+    await expect(db.withFirm(x.owner, (s) => s.client.query("SELECT * FROM huis.evidence_lsh"))).rejects.toThrow(/permission/);
+    await expect(db.withFirm(x.owner, (s) => s.client.query(
+      "INSERT INTO huis.evidence_similarity (item_a, item_b, firm_id, matter_id, kind, score) VALUES ($1, $1, $2, $3, 'version', 1)",
+      [a.id, x.firmId, x.matter.id]))).rejects.toThrow(/permission/);
+    await expect(db.withFirm(x.owner, (s) => s.client.query(
+      "SELECT huis.worker_save_similarity(1, gen_random_uuid(), array_fill(1, ARRAY[64]), 'x', false, 100)"))).rejects.toThrow(/permission/);
+    await expect(t.worker.query(
+      "SELECT huis.worker_save_similarity(1, gen_random_uuid(), array_fill(1, ARRAY[64]), 'x', false, 100)")).rejects.toThrow(/not held/);
   });
 });
