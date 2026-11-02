@@ -15,11 +15,14 @@ import { extractInSandbox, isolationArgs, sandboxMode, verifyChildren } from "..
 import type { ExtractInput } from "../src/extract/types";
 import { createClient } from "../src/services/clients";
 import {
-  assembleOriginal, getEmailHeaders, getEvidence, getEvidenceText, getUploadSession, listContainedItems,
+  assembleOriginal, compareEvidence, getEmailHeaders, listSimilar, getEvidence, getEvidenceText, getUploadSession, listContainedItems,
   listEvidence, markChunkReceived, moveEvidence, newEvidenceId, recordEvidence, startUpload, storeChunk,
 } from "../src/services/evidence";
 import { addMatterMember, createMatter, listMatterFolders } from "../src/services/matters";
 import { HIT_END, HIT_START, searchEvidence } from "../src/services/search";
+import { fingerprint, nameStem, similarity } from "../src/similarity/fingerprint";
+import { diffLines } from "../src/similarity/diff";
+import { run as runTool } from "../src/extract/tools";
 import { inviteUser } from "../src/services/users";
 import { MasterKeyProvider } from "../src/storage/encryption";
 import { detectFileType } from "../src/storage/filetype";
@@ -588,5 +591,270 @@ describe("security review 2: move vs. unpacking race", () => {
     expect(kids.length).toBe(2);
     for (const k of kids) expect(k.folderIsPrivileged).toBe(true);
     expect(await db.withFirm(x.portalCtx, (s) => searchEvidence(s, { q: "PTO" }))).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 2 part 3a: Outlook mailboxes, attached messages, versions
+// ---------------------------------------------------------------------------
+const VOCAB = "agreement party shall payment release claims employer employee settlement confidential terms notice court dismiss wages benefits days within signed effective date parties hereby".split(" ");
+function prose(seed: number, words: number): string {
+  let x = seed;
+  const out: string[] = [];
+  for (let i = 0; i < words; i++) {
+    x = (x * 1103515245 + 12345) & 0x7fffffff;
+    out.push(VOCAB[x % VOCAB.length]!);
+    if (i % 12 === 11) out.push("\n");
+  }
+  return out.join(" ");
+}
+
+describe("part 3a: Outlook mailboxes and attached messages", () => {
+  it("splits an Outlook .pst into separate, searchable items with their mailbox folders", async () => {
+    const x = await setup();
+    const pst = await upload(x.owner, x.matter.id, path.join(__dirname, "fixtures/pst/dist-list.pst"));
+    await processor.drain();
+    const p = await db.withFirm(x.owner, (s) => getEvidence(s, pst.id));
+    expect(p).toMatchObject({ detectedContentType: "Outlook data file (.pst)", extractionStatus: "done", childCount: 2 });
+    const kids = await db.withFirm(x.owner, (s) => listContainedItems(s, pst.id));
+    expect(kids.map((k) => k.containerPath).sort()).toEqual(["Calendar/1.ics", "Contacts/1.vcf"]);
+    for (const k of kids) expect(k).toMatchObject({ status: "clean", source: "extracted", extractionStatus: "done" });
+    const hits = await db.withFirm(x.owner, (s) => searchEvidence(s, { q: '"test appointment"' }));
+    expect(hits.map((h) => h.evidenceId)).toContain(kids.find((k) => k.containerPath === "Calendar/1.ics")!.id);
+  });
+
+  it("opens Outlook messages attached inside Outlook messages, with their own attachments", async () => {
+    const x = await setup();
+    const outer = await upload(x.owner, x.matter.id, path.join(__dirname, "fixtures/msg/outer-mail.msg"));
+    await processor.drain();
+    expect((await db.withFirm(x.owner, (s) => getEvidence(s, outer.id)))?.extractionStatus).toBe("done");
+    const kids = await db.withFirm(x.owner, (s) => listContainedItems(s, outer.id));
+    const inner = kids.find((k) => k.originalFilename === "Inner mail.msg")!;
+    expect(inner).toMatchObject({ containerPath: "Attached message 3", extractionStatus: "done" });
+    expect(await db.withFirm(x.owner, (s) => getEmailHeaders(s, inner.id))).toMatchObject({ subject: "Inner mail" });
+    const innerKids = await db.withFirm(x.owner, (s) => listContainedItems(s, inner.id));
+    expect(innerKids.length).toBeGreaterThan(0);
+    for (const k of innerKids) expect(k.status).toBe("clean");
+  });
+
+  it("opens emails attached inside .eml emails", async () => {
+    const x = await setup();
+    const file = path.join(dir, "forward.eml");
+    await writeFile(file, [
+      "From: Tracy <tracy@example.com>", "To: Counsel <counsel@example.com>", "Subject: Fwd: offer",
+      "Date: Tue, 1 Apr 2025 09:00:00 -0600", "MIME-Version: 1.0", 'Content-Type: multipart/mixed; boundary="B"', "",
+      "--B", "Content-Type: text/plain", "", "See the attached message.", "",
+      "--B", "Content-Type: message/rfc822", "Content-Disposition: attachment", "",
+      "From: Boss <boss@acme.example>", "To: Tracy <tracy@example.com>", "Subject: Your severance offer",
+      "Date: Mon, 31 Mar 2025 17:00:00 -0600", "", "We can offer twelve weeks of pay in exchange for a release.", "",
+      "--B--", "",
+    ].join("\r\n"));
+    const fwd = await upload(x.owner, x.matter.id, file);
+    await processor.drain();
+    const [att] = await db.withFirm(x.owner, (s) => listContainedItems(s, fwd.id));
+    expect(att).toMatchObject({ containerPath: "Attached message 1", extractionStatus: "done" });
+    expect(att!.originalFilename.endsWith(".eml")).toBe(true);
+    expect(await db.withFirm(x.owner, (s) => getEmailHeaders(s, att!.id))).toMatchObject({ subject: "Your severance offer", from: "Boss <boss@acme.example>" });
+    const hits = await db.withFirm(x.owner, (s) => searchEvidence(s, { q: "twelve weeks" }));
+    expect(hits.map((h) => h.evidenceId)).toContain(att!.id);
+  });
+});
+
+describe("part 3a: near-duplicates and versions", () => {
+  it("names version families sensibly", () => {
+    expect(nameStem("Settlement Agreement v2 FINAL (1).docx")).toBe("settlement agreement");
+    expect(nameStem("settlement agreement - draft 2025-03-01.pdf")).toBe("settlement agreement");
+    expect(nameStem("Settlement_Agreement_redline_v3.docx")).toBe("settlement agreement");
+    expect(nameStem("FINAL.docx")).toBeNull();
+    expect(nameStem("Lease.pdf")).toBe("lease");
+  });
+
+  it("estimates shared wording", () => {
+    const a = prose(1, 600);
+    const edited = a.replace(/payment/g, "compensation");
+    expect(similarity(fingerprint(a).minhash, fingerprint(a).minhash)).toBe(1);
+    expect(similarity(fingerprint(a).minhash, fingerprint(prose(99, 600)).minhash)).toBeLessThan(0.2);
+    const s = similarity(fingerprint(a).minhash, fingerprint(edited).minhash);
+    expect(s).toBeGreaterThan(0.2);
+    expect(s).toBeLessThan(0.95);
+  });
+
+  async function textFile(name: string, content: string) {
+    const f = path.join(dir, name);
+    await writeFile(f, content);
+    return f;
+  }
+
+  it("links versions and near-duplicates in a matter, compares them, and records the reading", async () => {
+    const x = await setup();
+    const base = prose(7, 800);
+    const lines = base.split("\n");
+    const v2 = [...lines.slice(0, 20), "The employer shall pay 48000 dollars in back wages.", ...lines.slice(20)].join("\n");
+    const draft = await upload(x.owner, x.matter.id, await textFile("Settlement Agreement DRAFT.txt", base));
+    const final = await upload(x.owner, x.matter.id, await textFile("Settlement Agreement FINAL v2.txt", v2));
+    const renamed = await upload(x.owner, x.matter.id, await textFile("scan-0042.txt", base + "\nPage 7"));
+    const exact = await upload(x.owner, x.matter.id, await textFile("Settlement Agreement copy.txt", base));
+    const other = await upload(x.owner, x.matter.id, await textFile("Settlement Agreement notes.txt", prose(1234, 800)));
+    const tiny = await upload(x.owner, x.matter.id, await textFile("Settlement Agreement.txt", "ok"));
+    await processor.drain();
+
+    const sim = await db.withFirm(x.owner, (s) => listSimilar(s, draft.id));
+    const byId = new Map(sim.map((r) => [r.id, r]));
+    expect(byId.get(final.id)?.kind).toBe("version");
+    expect(byId.get(renamed.id)?.kind).toBe("near_duplicate");
+    expect(byId.has(exact.id)).toBe(false); // exact copies are duplicates, not "similar"
+    expect(byId.has(other.id)).toBe(false); // same name, different wording
+    expect(byId.has(tiny.id)).toBe(false);  // too little text to compare
+    expect((await db.withFirm(x.owner, (s) => getEvidence(s, exact.id)))?.duplicateOf).toBe(draft.id);
+
+    const before = Number((await t.admin.query("SELECT count(*) FROM huis.evidence_custody_events WHERE event = 'viewed' AND evidence_id = ANY($1)", [[draft.id, final.id]])).rows[0].count);
+    const cmp = await db.withFirm(x.owner, (s) => compareEvidence(s, draft.id, final.id));
+    expect(cmp.diff!.filter((l) => l.kind === "added").map((l) => l.text)).toEqual(["The employer shall pay 48000 dollars in back wages."]);
+    expect(cmp.diff!.filter((l) => l.kind === "removed")).toHaveLength(0);
+    const after = Number((await t.admin.query("SELECT count(*) FROM huis.evidence_custody_events WHERE event = 'viewed' AND evidence_id = ANY($1)", [[draft.id, final.id]])).rows[0].count);
+    expect(after - before).toBe(2);
+  });
+
+  it("never reveals that a shared document resembles a privileged or walled one", async () => {
+    const x = await setup();
+    await db.withFirm(x.owner, (s) => addMatterMember(s, { matterId: x.matter.id, userId: x.portal.id, access: "view", acknowledgePrivilegeWaiverRisk: true }));
+    const folders = await db.withFirm(x.owner, (s) => listMatterFolders(s, x.matter.id));
+    const shared = folders.find((f) => f.name === "Client Uploads")!;
+    const red = folders.find((f) => f.isPrivilegedArea)!;
+    const text = prose(42, 800);
+    const sharedItem = await upload(x.owner, x.matter.id, await textFile("Demand Letter.txt", text), "Demand Letter.txt", shared.id);
+    const privItem = await upload(x.owner, x.matter.id, await textFile("Demand Letter attorney notes.txt", `${text}\nOur real bottom line is 60000.`), "Demand Letter attorney notes.txt", red.id);
+    await processor.drain();
+
+    expect((await db.withFirm(x.owner, (s) => listSimilar(s, sharedItem.id))).map((r) => r.id)).toContain(privItem.id);
+    expect(await db.withFirm(x.portalCtx, (s) => listSimilar(s, sharedItem.id))).toEqual([]);
+    await db.withFirm(x.portalCtx, async (s) => {
+      expect((await s.client.query("SELECT count(*)::int n FROM huis.evidence_similarity")).rows[0].n).toBe(0);
+    });
+    await expect(db.withFirm(x.portalCtx, (s) => compareEvidence(s, sharedItem.id, privItem.id))).rejects.toThrow();
+
+    // Walled matter: a paralegal outside the wall sees nothing.
+    const w1 = await upload(x.owner, x.walled.id, await textFile("Walled A.txt", text));
+    await upload(x.owner, x.walled.id, await textFile("Walled A final.txt", `${text}\nchange`));
+    await processor.drain();
+    await expect(db.withFirm(x.paraCtx, (s) => listSimilar(s, w1.id))).rejects.toThrow();
+    await db.withFirm(x.paraCtx, async (s) => {
+      expect((await s.client.query("SELECT count(*)::int n FROM huis.evidence_similarity WHERE matter_id = $1", [x.walled.id])).rows[0].n).toBe(0);
+    });
+  });
+
+  it("the app can't read fingerprints or forge similarity links; only the job holder can fingerprint", async () => {
+    const x = await setup();
+    const a = await upload(x.owner, x.matter.id, files.pdf!);
+    await processor.drain();
+    await expect(db.withFirm(x.owner, (s) => s.client.query("SELECT * FROM huis.evidence_fingerprints"))).rejects.toThrow(/permission/);
+    await expect(db.withFirm(x.owner, (s) => s.client.query("SELECT * FROM huis.evidence_lsh"))).rejects.toThrow(/permission/);
+    await expect(db.withFirm(x.owner, (s) => s.client.query(
+      "INSERT INTO huis.evidence_similarity (item_a, item_b, firm_id, matter_id, kind, score) VALUES ($1, $1, $2, $3, 'version', 1)",
+      [a.id, x.firmId, x.matter.id]))).rejects.toThrow(/permission/);
+    await expect(db.withFirm(x.owner, (s) => s.client.query(
+      "SELECT huis.worker_save_similarity(1, gen_random_uuid(), array_fill(1, ARRAY[64]), 'x', false, 100)"))).rejects.toThrow(/permission/);
+    await expect(t.worker.query(
+      "SELECT huis.worker_save_similarity(1, gen_random_uuid(), array_fill(1, ARRAY[64]), 'x', false, 100)")).rejects.toThrow(/not held/);
+  });
+});
+
+describe("security review 3 regressions", () => {
+  it("crowded fingerprint buckets are skipped, so look-alike floods can't slow matching", async () => {
+    const x = await setup();
+    const text = prose(555, 800);
+    const fp = fingerprint(text).minhash;
+    const folder = (await db.withFirm(x.owner, (s) => listMatterFolders(s, x.matter.id))).find((f) => f.name === "Evidence")!;
+    // Plant 300 look-alikes directly (bypassing everything), as an attacker flooding a matter would.
+    const c = await t.admin.connect();
+    try {
+      await c.query("BEGIN");
+      await c.query("SET LOCAL session_replication_role = replica");
+      await c.query(`
+        WITH items AS (
+          INSERT INTO huis.evidence_items (id, firm_id, matter_id, folder_id, original_filename, size_bytes, sha256, storage_key, source, uploaded_by, status)
+          SELECT gen_random_uuid(), $1, $2, $3, 'flood-' || g || '.txt', 10, md5(g::text) || md5(g::text), 'k' || g, 'upload', $4, 'clean'
+            FROM generate_series(1, 300) g RETURNING id),
+        fps AS (
+          INSERT INTO huis.evidence_fingerprints (evidence_id, firm_id, matter_id, minhash, name_stem, is_email, phrase_count)
+          SELECT id, $1, $2, $5::int[], 'flood', false, 500 FROM items RETURNING evidence_id)
+        INSERT INTO huis.evidence_lsh (evidence_id, matter_id, band, hash)
+          SELECT f.evidence_id, $2, b, ((($5::int[])[b * 2 + 1])::bigint << 32) | ((($5::int[])[b * 2 + 2])::bigint & 4294967295)
+            FROM fps f, generate_series(0, 31) b`,
+        [x.firmId, x.matter.id, folder.id, x.ownerUserId, fp]);
+      await c.query("COMMIT");
+    } finally {
+      c.release();
+    }
+    const writeText = async (name: string, body: string) => { const f = path.join(dir, name); await writeFile(f, body); return f; };
+    const a = await upload(x.owner, x.matter.id, await writeText("flood-a.txt", text));
+    await upload(x.owner, x.matter.id, await writeText("flood-b.txt", `${text}\nextra`));
+    await processor.drain();
+    // Every band value is shared by 300+ items, so nothing is matched (and no work done on them).
+    expect(await db.withFirm(x.owner, (s) => listSimilar(s, a.id))).toEqual([]);
+    expect((await t.admin.query("SELECT count(*)::int n FROM huis.evidence_similarity WHERE matter_id = $1", [x.matter.id])).rows[0].n).toBe(0);
+  });
+
+  it("a job whose lease is lost fails loudly instead of being recorded as 'partial'", async () => {
+    const x = await setup();
+    const zip = await upload(x.owner, x.matter.id, files.zip!);
+    const stealing = async (input: ExtractInput) => {
+      const r = await extract(input);
+      await t.admin.query("UPDATE huis.jobs SET lock_token = gen_random_uuid() WHERE evidence_id = $1 AND kind = 'evidence.extract'", [zip.id]);
+      return r;
+    };
+    const p = new EvidenceProcessor(t.worker, vault, scanner, stealing);
+    await p.runOnce(); // scan
+    await p.runOnce(); // extract — loses its job mid-way
+    expect((await db.withFirm(x.owner, (s) => getEvidence(s, zip.id)))?.childCount).toBe(0);
+    expect((await t.admin.query("SELECT count(*)::int n FROM huis.evidence_items WHERE parent_id = $1", [zip.id])).rows[0].n).toBe(0);
+    const ok = await t.worker.query("SELECT huis.worker_renew_lease(1, gen_random_uuid()) AS ok");
+    expect(ok.rows[0].ok).toBe(false);
+  });
+
+  it("stops storing contained files once the upload's unpacking budget is used up", async () => {
+    const x = await setup();
+    const zip = await upload(x.owner, x.matter.id, files.zip!);
+    await processor.runOnce(); // scan only
+    await t.admin.query("INSERT INTO huis.unpack_counters (item_id, items, bytes) VALUES ($1, 249999, 0)", [zip.id]);
+    await processor.drain();
+    const z = await db.withFirm(x.owner, (s) => getEvidence(s, zip.id));
+    expect(z).toMatchObject({ childCount: 1, extractionStatus: "partial" });
+    expect(z?.extractionDetail).toMatch(/unpacking limit/);
+  });
+
+  it("text comparison stays fast on crafted input and refuses oversized text", () => {
+    const L = "x".repeat(320);
+    const a = Array.from({ length: 3000 }, (_, i) => L + i).join("\n");
+    const b = Array.from({ length: 3000 }, (_, i) => L + (i + 5000)).join("\n");
+    const t0 = Date.now();
+    expect(diffLines(a, b).tooLarge).toBe(false);
+    expect(Date.now() - t0).toBeLessThan(400);
+    expect(diffLines("y".repeat(1_000_001), "z").tooLarge).toBe(true);
+  });
+
+  it("a tool can be stopped by its watcher (used to cap mailbox unpacking on disk)", async () => {
+    const t0 = Date.now();
+    await expect(runTool("sh", ["-c", "sleep 20"], { watch: async () => false, watchMs: 100 })).rejects.toThrow();
+    expect(Date.now() - t0).toBeLessThan(5000);
+  });
+});
+
+describe("security review 3: lease renewal", () => {
+  it("a long-running extract job keeps renewing its lease", async () => {
+    const x = await setup();
+    const item = await upload(x.owner, x.matter.id, files.pdf!);
+    let observed: number | null = null;
+    const slow = async (input: ExtractInput) => {
+      // Simulate a lease about to run out, then a long job.
+      await t.admin.query("UPDATE huis.jobs SET locked_until = now() + interval '1 second' WHERE evidence_id = $1 AND kind = 'evidence.extract'", [item.id]);
+      await new Promise((r) => setTimeout(r, 1500));
+      observed = Number((await t.admin.query(
+        "SELECT extract(epoch FROM locked_until - now()) AS s FROM huis.jobs WHERE evidence_id = $1 AND kind = 'evidence.extract'", [item.id])).rows[0].s);
+      return extract(input);
+    };
+    await new EvidenceProcessor(t.worker, vault, scanner, slow, 200).drain();
+    expect(observed).toBeGreaterThan(5 * 3600);
+    expect((await db.withFirm(x.owner, (s) => getEvidence(s, item.id)))?.extractionStatus).toBe("done");
   });
 });

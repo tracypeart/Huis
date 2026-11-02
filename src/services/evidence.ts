@@ -389,3 +389,57 @@ export async function moveEvidence(
     });
   }
 }
+
+export interface SimilarItem {
+  id: string;
+  originalFilename: string;
+  kind: "near_duplicate" | "version";
+  score: number;
+  folderName: string;
+  folderIsPrivileged: boolean;
+  uploadedAt: Date;
+  dateReceived: string | null;
+}
+
+/**
+ * Near-duplicates and other versions of an item. The database only returns
+ * a link when this person can see both items, so nothing here reveals that
+ * a privileged or walled document exists.
+ */
+export async function listSimilar(s: FirmSession, evidenceId: string): Promise<SimilarItem[]> {
+  await getEvidence(s, evidenceId);
+  const { rows } = await s.client.query(
+    `SELECT o.id, o.original_filename, x.kind, x.score, f.name AS folder_name, f.is_privileged_area,
+            o.uploaded_at, o.date_received
+       FROM huis.evidence_similarity x
+       JOIN huis.evidence_items o ON o.id = CASE WHEN x.item_a = $1 THEN x.item_b ELSE x.item_a END
+       JOIN huis.matter_folders f ON f.id = o.folder_id
+      WHERE x.item_a = $1 OR x.item_b = $1
+      ORDER BY x.kind DESC, x.score DESC, o.uploaded_at
+      LIMIT 200`,
+    [evidenceId],
+  );
+  return rows.map((r) => ({
+    id: r.id, originalFilename: r.original_filename, kind: r.kind, score: Number(r.score),
+    folderName: r.folder_name, folderIsPrivileged: r.is_privileged_area, uploadedAt: r.uploaded_at,
+    dateReceived: r.date_received ? String(r.date_received).slice(0, 10) : null,
+  }));
+}
+
+/**
+ * Side-by-side comparison of two items' text. Both must be visible and in
+ * the same matter; reading both is recorded like any other view.
+ */
+export async function compareEvidence(s: FirmSession, leftId: string, rightId: string) {
+  const left = await getEvidence(s, leftId);
+  const right = await getEvidence(s, rightId);
+  if (left.matterId !== right.matterId || left.id === right.id) throw new NotFoundError("comparison");
+  const lt = left.status === "clean" ? await getEvidenceText(s, leftId) : null;
+  const rt = right.status === "clean" ? await getEvidenceText(s, rightId) : null;
+  if (!lt || !rt) return { left, right, diff: null, tooLarge: false };
+  const { diffLines } = await import("../similarity/diff");
+  const { DIFF_MAX_CHARS } = await import("../similarity/diff");
+  if (lt.content.length > DIFF_MAX_CHARS || rt.content.length > DIFF_MAX_CHARS) return { left, right, diff: null, tooLarge: true };
+  const d = diffLines(lt.content, rt.content);
+  return { left, right, diff: d.lines, tooLarge: d.tooLarge };
+}

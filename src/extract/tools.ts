@@ -8,7 +8,11 @@ import { LIMITS } from "./types";
  * time are capped, and on timeout the tool and everything it started (for
  * example LibreOffice's helper processes) are killed together.
  */
-export function run(cmd: string, args: string[], opts: { timeoutSec?: number; maxBytes?: number } = {}): Promise<string> {
+export function run(cmd: string, args: string[], opts: {
+  timeoutSec?: number; maxBytes?: number;
+  /** Checked every few seconds while the tool runs; returning false stops it (e.g. disk use too high). */
+  watch?: () => Promise<boolean>; watchMs?: number;
+} = {}): Promise<string> {
   const max = opts.maxBytes ?? 64 * 1024 * 1024;
   return new Promise((resolve, reject) => {
     const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", OMP_THREAD_LIMIT: "1", LANG: "C.UTF-8", HOME: process.env.HOME ?? "/tmp", TMPDIR: process.env.TMPDIR ?? "/tmp" };
@@ -19,6 +23,13 @@ export function run(cmd: string, args: string[], opts: { timeoutSec?: number; ma
     const killGroup = () => { try { process.kill(-child.pid!, "SIGKILL"); } catch { /* gone */ } };
     const fail = () => { if (!failed) { failed = true; killGroup(); reject(new Error(`${cmd} failed`)); } };
     const timer = setTimeout(fail, (opts.timeoutSec ?? LIMITS.toolTimeoutSec) * 1000);
+    let checking = false;
+    const watcher = opts.watch ? setInterval(() => {
+      if (checking || failed) return;
+      checking = true;
+      opts.watch!().then((ok) => { checking = false; if (!ok) fail(); }, () => { checking = false; fail(); });
+    }, opts.watchMs ?? 5000) : null;
+    child.on("close", () => { if (watcher) clearInterval(watcher); });
     child.stdout!.on("data", (d: Buffer) => {
       size += d.length;
       if (size > max) { fail(); return; }

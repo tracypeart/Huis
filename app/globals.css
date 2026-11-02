@@ -84,3 +84,12 @@ mark { background: #fff1a8; color: inherit; padding: 0 1px; border-radius: 2px; 
 .doc-text { white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
   font-size: .82rem; line-height: 1.5; background: #fafbfc; border: 1px solid var(--line); border-radius: 6px; padding: 14px;
   max-height: 560px; overflow: auto; }
+.diff { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; font-size: .82rem; line-height: 1.5;
+  border: 1px solid var(--line); border-radius: 6px; max-height: 70vh; overflow: auto; }
+.diff div { white-space: pre-wrap; word-break: break-word; padding: 0 12px 0 28px; position: relative; }
+.diff div::before { position: absolute; left: 10px; }
+.diff .removed { background: #fdecec; color: #8a1c1c; text-decoration: line-through; text-decoration-color: rgba(138,28,28,.4); }
+.diff .removed::before { content: "−"; }
+.diff .added { background: #e9f7ee; color: #14532d; }
+.diff .added::before { content: "+"; }
+.diff .gap { color: var(--muted, #667); background: #f4f5f7; font-style: italic; }
