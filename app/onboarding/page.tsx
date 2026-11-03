@@ -1,13 +1,17 @@
 import { redirect } from "next/navigation";
 import { createFirmAction } from "../../lib/actions";
-import { getFlash, getPending } from "../../lib/server";
+import { getFlash, getPending, getSession } from "../../lib/server";
 import { FlashBanner, StateSelect } from "../../lib/ui";
 
 export const dynamic = "force-dynamic";
 
 export default async function Onboarding({ searchParams }: { searchParams: Promise<{ f?: string }> }) {
   const pending = await getPending();
-  if (!pending) redirect("/signin?reason=expired");
+  if (!pending) {
+    // Already signed in to a firm: nothing to set up here.
+    if (await getSession()) redirect("/dashboard");
+    redirect("/signin?reason=invalid");
+  }
   const flash = await getFlash((await searchParams).f);
   return (
     <main className="centered">

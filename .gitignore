@@ -24,3 +24,7 @@ next-env.d.ts
 
 # Local encrypted evidence store
 .huis-storage/
+
+# Pre-release check output (made-up data, but contains session cookies)
+/qa-state.json
+/qa-crawl-report.json

@@ -1,4 +1,5 @@
 import { createClientAction } from "../../../lib/actions";
+import { notFound } from "next/navigation";
 import { getFlash, withSession } from "../../../lib/server";
 import { FlashBanner } from "../../../lib/ui";
 import { listClients } from "../../../src/services/clients";
@@ -8,9 +9,13 @@ export const dynamic = "force-dynamic";
 
 export default async function Clients({ searchParams }: { searchParams: Promise<{ f?: string }> }) {
   const flash = await getFlash((await searchParams).f);
-  const { clients, canCreate } = await withSession(async (s) => ({
-    clients: await listClients(s), canCreate: can(s.actor.role, "clients.create"),
-  }));
+  const data = await withSession(async (s) => {
+    // Pages someone can't use look like pages that don't exist.
+    if (!can(s.actor.role, "clients.view")) return null;
+    return { clients: await listClients(s), canCreate: can(s.actor.role, "clients.create") };
+  });
+  if (!data) notFound();
+  const { clients, canCreate } = data;
   return (
     <>
       <h1>Clients</h1>

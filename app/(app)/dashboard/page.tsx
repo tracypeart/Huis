@@ -2,7 +2,7 @@ import Link from "next/link";
 import { withSession } from "../../../lib/server";
 import { date } from "../../../lib/ui";
 import { listMatters } from "../../../src/services/matters";
-import { can } from "../../../src/security/permissions";
+import { can, INTERNAL_ROLES } from "../../../src/security/permissions";
 
 export const dynamic = "force-dynamic";
 
@@ -17,14 +17,15 @@ export default async function Dashboard() {
     return { matters, c: counts.rows[0], actor: s.actor };
   });
   const open = data.matters.filter((m) => m.status === "open");
+  const staff = INTERNAL_ROLES.has(data.actor.role);
   const trialDays = data.c?.trial_ends_at
     ? Math.max(0, Math.ceil((new Date(data.c.trial_ends_at).getTime() - Date.now()) / 86_400_000)) : null;
 
   return (
     <>
       <h1>Welcome, {data.actor.fullName.split(" ")[0]}</h1>
-      <p className="sub">Here is where your firm&apos;s matters stand.</p>
-      {data.c?.plan === "trial" && trialDays !== null ? (
+      <p className="sub">{staff ? "Here is where your firm's matters stand." : "Here are the matters your law firm has shared with you."}</p>
+      {staff && data.c?.plan === "trial" && trialDays !== null ? (
         <div className="flash success">Free trial: {trialDays} day{trialDays === 1 ? "" : "s"} remaining.</div>
       ) : null}
       <div className="grid" style={{ marginBottom: 20 }}>
@@ -59,10 +60,12 @@ export default async function Dashboard() {
           </table>
         )}
       </div>
-      <div className="card">
-        <h2>Coming next</h2>
-        <p className="notice">Inbox Intelligence (Outlook, then Gmail), evidence upload, court calendar and Ask Huis arrive in the next phases.</p>
-      </div>
+      {staff ? (
+        <div className="card">
+          <h2>Coming next</h2>
+          <p className="notice">A full export of each Matter&apos;s Brain and evidence, then case timelines and the contradiction engine, AI legal research, court calendars (Utah first) and integrations.</p>
+        </div>
+      ) : null}
     </>
   );
 }
