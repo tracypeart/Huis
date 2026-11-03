@@ -23,13 +23,13 @@ const staffOnly = (s: FirmSession) => {
 export interface Mailbox {
   id: string; ownerUserId: string; mine: boolean; provider: string; accountAddress: string | null; displayName: string | null;
   scope: "all" | "selected"; syncSince: string | null; manage: boolean; status: string;
-  lastSyncedAt: Date | null; lastError: string | null; messageCount: number; unfiledCount: number;
+  lastSyncedAt: Date | null; lastError: string | null; messageCount: number; unfiledCount: number; autoFile: boolean;
 }
 
 export async function listMailboxes(s: FirmSession): Promise<Mailbox[]> {
   staffOnly(s);
   const { rows } = await s.client.query(
-    `SELECT c.id, c.owner_user_id, c.provider, c.account_address, c.display_name, c.scope, c.sync_since, c.manage, c.status,
+    `SELECT c.id, c.owner_user_id, c.provider, c.account_address, c.display_name, c.scope, c.sync_since, c.manage, c.status, c.auto_file,
             c.last_synced_at, c.last_error,
             (SELECT count(*)::int FROM huis.mail_messages m WHERE m.connection_id = c.id AND m.removed_at IS NULL) AS message_count,
             (SELECT count(*)::int FROM huis.mail_messages m WHERE m.connection_id = c.id AND m.removed_at IS NULL AND m.filed_matter_id IS NULL) AS unfiled_count
@@ -39,6 +39,7 @@ export async function listMailboxes(s: FirmSession): Promise<Mailbox[]> {
     accountAddress: r.account_address, displayName: r.display_name, scope: r.scope,
     syncSince: r.sync_since ? String(r.sync_since).slice(0, 10) : null, manage: r.manage, status: r.status,
     lastSyncedAt: r.last_synced_at, lastError: r.last_error, messageCount: r.message_count, unfiledCount: r.unfiled_count,
+    autoFile: r.auto_file,
   }));
 }
 
@@ -213,4 +214,56 @@ export async function setMatterColor(s: FirmSession, matterId: string, color: st
   const c = z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().parse(color);
   const { rowCount } = await s.client.query("UPDATE huis.matters SET color = $2 WHERE id = $1", [matterId, c]);
   if (!rowCount) throw new PermissionDeniedError("change this Matter");
+}
+
+// ---------------------------------------------------------------------------
+// Suggestions and filing modes (part 2)
+// ---------------------------------------------------------------------------
+export type FilingMode = "manual" | "assisted" | "automatic";
+
+export interface MatterSuggestion { matterId: string; title: string; color: string | null; score: number; strong: boolean; reasons: string[] }
+
+/** The Matters this email may belong to, with the reasons — only Matters this person can see and add to. */
+export async function suggestMatters(s: FirmSession, messageId: string): Promise<MatterSuggestion[]> {
+  staffOnly(s);
+  if (!uuid.safeParse(messageId).success) throw new NotFoundError("Email");
+  const { rows } = await s.client.query("SELECT * FROM huis.suggest_matters($1)", [messageId]);
+  return rows.map((r) => ({ matterId: r.matter_id, title: r.title, color: r.color, score: r.score, strong: r.strong, reasons: r.reasons }));
+}
+
+export async function getFilingMode(s: FirmSession): Promise<FilingMode> {
+  const { rows } = await s.client.query<{ mail_filing_mode: FilingMode }>("SELECT mail_filing_mode FROM huis.firms");
+  return rows[0]?.mail_filing_mode ?? "assisted";
+}
+
+export async function setFilingMode(s: FirmSession, mode: string): Promise<void> {
+  const m = z.enum(["manual", "assisted", "automatic"]).parse(mode);
+  await s.client.query("SELECT huis.set_mail_filing_mode($1)", [m]);
+  await recordAudit(s, "mailbox.filing_mode_changed", { metadata: { mode: m } });
+}
+
+export async function setAutoFile(s: FirmSession, connectionId: string, on: boolean): Promise<void> {
+  const m = await getMailbox(s, connectionId);
+  if (!m.mine) throw new PermissionDeniedError("change another person's mailbox");
+  const ok = (await s.client.query<{ ok: boolean }>("SELECT huis.set_mailbox_auto_file($1, $2) AS ok", [connectionId, on])).rows[0]!.ok;
+  if (!ok) throw new NotFoundError("Mailbox");
+  await recordAudit(s, "mailbox.auto_file_changed", { targetType: "mailbox", targetId: connectionId, metadata: { on } });
+}
+
+const ASSISTED_ERRORS: Record<string, string> = {
+  mode_manual: "Your firm files email manually; choose a Matter and folder below.",
+  not_suggested: "That Matter isn't a current suggestion for this email; file it manually instead.",
+  no_folder: "That Matter has no internal Correspondence folder; file it manually instead.",
+  removed: "This email was deleted from the mailbox and can no longer be filed.",
+  already_filed: "This email is already filed in that Matter.",
+};
+
+/** One-click filing into a suggested Matter's internal Correspondence folder. */
+export async function fileToSuggestion(s: FirmSession, messageId: string, matterId: string): Promise<string> {
+  staffOnly(s);
+  if (!uuid.safeParse(messageId).success || !uuid.safeParse(matterId).success) throw new NotFoundError("Email");
+  const r = (await s.client.query<{ r: string }>("SELECT huis.request_assisted_filing($1, $2) AS r", [messageId, matterId])).rows[0]!.r;
+  if (ASSISTED_ERRORS[r]) throw new UserFacingError(ASSISTED_ERRORS[r]!);
+  await recordAudit(s, "mailbox.filing_requested", { targetType: "mail_message", targetId: messageId, matterId, metadata: { method: "assisted" } });
+  return r;
 }

@@ -81,6 +81,8 @@ export class MailWorker {
           if (budget <= 0) { more = true; break; }
         }
       }
+      // Automatic filing (only acts when the firm and the mailbox owner have both turned it on).
+      await this.pool.query("SELECT huis.worker_auto_file($1, $2)", args);
       await this.pool.query("SELECT huis.worker_finish_mailbox($1, $2, NULL, false, $3)", [...args, more]);
     } catch (err) {
       await this.pool.query("SELECT huis.worker_finish_mailbox($1, $2, $3, $4, false)", [...args, errText(err), needsReconnect(err)])
