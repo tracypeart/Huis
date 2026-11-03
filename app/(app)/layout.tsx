@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { withSession } from "../../lib/server";
 import { ROLE_LABELS } from "../../lib/ui";
-import { can } from "../../src/security/permissions";
+import { can, INTERNAL_ROLES } from "../../src/security/permissions";
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +15,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       <nav className="nav" aria-label="Main">
         <div className="logo">Huis Law IP<small>{firmName}</small></div>
         <Link href="/dashboard">Dashboard</Link>
+        {INTERNAL_ROLES.has(actor.role) ? <Link href="/inbox">Inbox</Link> : null}
         <Link href="/matters">Matters</Link>
         <Link href="/search">Search</Link>
         {can(actor.role, "clients.view") ? <Link href="/clients">Clients</Link> : null}

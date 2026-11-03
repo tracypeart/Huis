@@ -28,6 +28,7 @@ const EVENT_LABELS: Record<string, string> = {
   copy_requested: "Copy requested (redacted / exhibit / Bates)",
   copy_produced: "Copy produced",
   produced_from: "Produced by Huis from another document",
+  filed_from_mailbox: "Filed from a connected mailbox (original message retrieved from the mail provider)",
 };
 
 const COPY_STATUS: Record<string, string> = { queued: "Waiting", running: "Being produced", done: "Ready", failed: "Failed" };
@@ -79,7 +80,7 @@ export default async function EvidenceDetail({ params, searchParams }: {
       <p className="notice"><Link href={`/matters/${m.id}`}>← {m.title}</Link></p>
       <h1 style={{ wordBreak: "break-word" }}>{e.originalFilename}</h1>
       <p className="sub">
-        {e.relativePath ?? (e.containerPath ? `Inside: ${e.containerPath}` : e.source === "produced_copy" ? "Copy produced by Huis" : "Uploaded file")} · {formatBytes(e.sizeBytes)} · <EvidenceStatus status={e.status} />
+        {e.relativePath ?? (e.containerPath ? `Inside: ${e.containerPath}` : e.source === "produced_copy" ? "Copy produced by Huis" : e.source === "mailbox" ? "Filed from a mailbox" : "Uploaded file")} · {formatBytes(e.sizeBytes)} · <EvidenceStatus status={e.status} />
         {e.extractionStatus ? <> · <span className="badge">{EXTRACTION_LABELS[e.extractionStatus]}</span></> : null}
       </p>
       {data.producedFrom ? (
@@ -197,6 +198,7 @@ export default async function EvidenceDetail({ params, searchParams }: {
                   <td style={{ whiteSpace: "nowrap" }}>{when(c.occurredAt)}</td>
                   <td>{EVENT_LABELS[c.event] ?? c.event}
                     {c.event === "moved" ? <div className="notice">{String(c.details.from)} → {String(c.details.to)}</div> : null}
+                    {c.event === "filed_from_mailbox" && c.details.mailbox ? <div className="notice">{String(c.details.mailbox)}</div> : null}
                   </td>
                   <td>{c.actorName ?? "Huis system"}</td>
                 </tr>

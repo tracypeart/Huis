@@ -64,6 +64,43 @@ No. Development and testing use only made-up sample files.
 
 ---
 
+## Huis Inbox (email)
+
+### Which email can Huis connect to?
+Outlook and Microsoft 365 now; Gmail is next. Each attorney or staff member connects their own mailbox with **Connect Outlook**.
+
+### What can Huis do with my mailbox?
+Read it, and nothing else. Huis asks Microsoft for read-only access: it can't send, change, move or delete your email. You can disconnect at any time in Huis or in your Microsoft account.
+
+### Who can see my email in Huis?
+Only you and anyone you choose (for example, your assistant). Firm owners and administrators can't see your unfiled email unless you add them. A mailbox holds every client's privileged communications, so this is enforced by the database, not just by the screens. Once you file an email into a Matter, it follows that Matter's rules: ethical walls, the red privileged folder and client access.
+
+### Do I have to bring in my whole mailbox?
+No. The default is the whole mailbox, but you can choose specific folders and limit it to mail received after a date. Turn on **Let Huis manage** to keep it in sync every few minutes, or press **Sync now** when you want.
+
+### What happens when I file an email?
+Huis retrieves the original message exactly as Outlook holds it and adds it to the Matter as evidence. It gets the same treatment as any other evidence:
+- encrypted and fingerprinted
+- virus-scanned
+- read, so it's searchable
+- each attachment split out as its own item
+
+Its chain of custody records which mailbox it came from, when it was received, who filed it and when it was retrieved. Filing into a folder the client can see asks you to confirm, because sharing may affect privilege.
+
+### Can I search my email?
+Yes: words, exact phrases in quotes, `or`, `-exclude`, and email addresses, across the subject, people and body. Searches are recorded in the audit log. Search by meaning arrives with the AI features.
+
+### How are my Microsoft credentials protected?
+Microsoft's long-lived sign-in token is encrypted with a key specific to your firm and tied to your mailbox. The Huis app itself can't read it back; only the background service that syncs mail can. Huis only ever sends your Microsoft access to Microsoft's mail service.
+
+### What if I disconnect?
+Huis deletes its Microsoft credentials and every unfiled email it brought in. Emails you already filed stay in their Matters.
+
+### Can Huis suggest which Matter an email belongs to?
+Yes, in the next step. Huis will suggest a Matter from case numbers, Huis numbers, the people involved and earlier emails in the same conversation, and your firm chooses Manual, Assisted or Automatic filing. Every suggestion shows why it was made.
+
+---
+
 ## Search and reading documents
 
 ### What can Huis read?

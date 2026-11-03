@@ -56,6 +56,9 @@ export async function createTestDatabase(): Promise<TestDatabase> {
   await admin.query(`CREATE ROLE ${workerUser} LOGIN PASSWORD '${appPassword}' NOSUPERUSER NOBYPASSRLS IN ROLE huis_worker`);
   const worker = new pg.Pool({ connectionString: withCredentials(adminUrl, workerUser, appPassword), max: 2 });
 
+  // Dropping the database at teardown ends any idle connections; that's expected.
+  admin.on("error", () => undefined);
+  worker.on("error", () => undefined);
   return {
     db,
     worker,

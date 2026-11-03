@@ -11,6 +11,7 @@ import { addMatterMember, createMatter, linkContactToMatter, setCourtCaseNumber 
 import { changeUserRole, disableUser, endUserSessions, inviteUser, issueInvitation } from "../src/services/users";
 import { moveEvidence } from "../src/services/evidence";
 import { requestCopy } from "../src/services/workingCopies";
+import { fileMessage, requestSync, setDelegate, setFolderIncluded, setMatterColor, updateMailbox } from "../src/services/inbox";
 import { ROLES } from "../src/security/permissions";
 import { act, db, getPending, setSessionCookie, withSession } from "./server";
 
@@ -186,6 +187,58 @@ export async function requestCopyAction(fd: FormData): Promise<void> {
       folderId: text(fd, "folderId") ?? "",
       acknowledgePrivilegeWaiverRisk: fd.get("acknowledge") === "on",
     });
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Huis Inbox
+// ---------------------------------------------------------------------------
+export async function fileMessageAction(fd: FormData): Promise<void> {
+  const messageId = text(fd, "messageId") ?? "";
+  return act(`/inbox/${messageId}`, "Filing… Huis is copying the original email into the Matter (with its attachments).", () => withSession(async (s) => {
+    await fileMessage(s, messageId, {
+      matterId: text(fd, "matterId") ?? "", folderId: text(fd, "folderId") ?? "",
+      acknowledgePrivilegeWaiverRisk: fd.get("acknowledge") === "on",
+    });
+  }));
+}
+
+export async function updateMailboxAction(fd: FormData): Promise<void> {
+  const id = text(fd, "connectionId") ?? "";
+  const status = (text(fd, "status") ?? "active") as "active" | "paused" | "disconnected";
+  return act(status === "disconnected" ? "/inbox" : `/inbox/mailboxes/${id}`,
+    status === "disconnected" ? "Mailbox disconnected. Its unfiled mail was deleted from Huis; filed emails stay in their Matters." : "Mailbox settings saved.",
+    () => withSession(async (s) => {
+      await updateMailbox(s, id, {
+        scope: text(fd, "scope") ?? "all", syncSince: text(fd, "syncSince") || null, manage: fd.get("manage") === "on", status,
+      });
+    }));
+}
+
+export async function mailFolderAction(fd: FormData): Promise<void> {
+  const id = text(fd, "connectionId") ?? "";
+  return act(`/inbox/mailboxes/${id}`, "Folder updated.", () => withSession(async (s) => {
+    await setFolderIncluded(s, text(fd, "folderId") ?? "", fd.get("included") === "true");
+    await requestSync(s, id);
+  }));
+}
+
+export async function mailDelegateAction(fd: FormData): Promise<void> {
+  const id = text(fd, "connectionId") ?? "";
+  return act(`/inbox/mailboxes/${id}`, "Access updated.", () => withSession(async (s) => {
+    await setDelegate(s, id, text(fd, "userId") ?? "", fd.get("granted") === "true");
+  }));
+}
+
+export async function syncMailboxAction(fd: FormData): Promise<void> {
+  const id = text(fd, "connectionId") ?? "";
+  return act("/inbox", "Sync requested.", () => withSession(async (s) => { await requestSync(s, id); }));
+}
+
+export async function matterColorAction(fd: FormData): Promise<void> {
+  const id = text(fd, "matterId") ?? "";
+  return act(`/matters/${id}`, "Color saved.", () => withSession(async (s) => {
+    await setMatterColor(s, id, text(fd, "color") || null);
   }));
 }
 

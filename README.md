@@ -8,6 +8,7 @@ The Legal Intelligence Operating System: an AI-powered platform that connects th
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — the master architecture: decisions, non-negotiables, the 10 phases, and open questions. **This is the authority.**
 - [`docs/PHASE-1.md`](docs/PHASE-1.md) — what Phase 1 guarantees and how code must access data.
 - [`docs/PHASE-2.md`](docs/PHASE-2.md) — evidence intake, encryption, scanning and chain of custody.
+- [`docs/PHASE-3.md`](docs/PHASE-3.md) — Huis Inbox: connecting Outlook, private sync, search and filing email into Matters.
 - [`docs/FAQ.md`](docs/FAQ.md) — plain-language FAQ for attorneys and firms: safety, privilege and search.
 - [`docs/SECURITY-REVIEW-2026-11.md`](docs/SECURITY-REVIEW-2026-11.md) — independent security review of Phases 1–2 and fixes.
 - [`docs/source/`](docs/source/) — original specs (ChatGPT architecture with Tracy's answers; Phase 11 Case Outcome Intelligence).

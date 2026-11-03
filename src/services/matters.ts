@@ -34,6 +34,8 @@ export interface Matter {
   status: string;
   restricted: boolean;
   openedAt: Date;
+  /** Color for color-coded organization (inbox, lists). */
+  color: string | null;
 }
 
 export interface MatterFolder {
@@ -45,13 +47,13 @@ export interface MatterFolder {
 }
 
 const MATTER_COLUMNS = `id, title, huis_number, court_case_number, firm_matter_number, client_id,
-  lead_attorney_id, jurisdiction_state, court_name, practice_area, status, restricted, opened_at`;
+  lead_attorney_id, jurisdiction_state, court_name, practice_area, status, restricted, opened_at, color`;
 
 const toMatter = (r: Record<string, any>): Matter => ({
   id: r.id, title: r.title, huisNumber: r.huis_number, courtCaseNumber: r.court_case_number,
   firmMatterNumber: r.firm_matter_number, clientId: r.client_id, leadAttorneyId: r.lead_attorney_id,
   jurisdictionState: r.jurisdiction_state, courtName: r.court_name, practiceArea: r.practice_area,
-  status: r.status, restricted: r.restricted, openedAt: r.opened_at,
+  status: r.status, restricted: r.restricted, openedAt: r.opened_at, color: r.color ?? null,
 });
 
 /**
