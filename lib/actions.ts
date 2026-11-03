@@ -10,6 +10,9 @@ import { resolveIdentity, signUpFirm } from "../src/services/firms";
 import { addMatterMember, createMatter, linkContactToMatter, setCourtCaseNumber } from "../src/services/matters";
 import { changeUserRole, disableUser, endUserSessions, inviteUser, issueInvitation } from "../src/services/users";
 import { moveEvidence } from "../src/services/evidence";
+import {
+  addClaimFromTemplate, addElement, addFactFromPassage, addNode, decideLink, decideNode, deleteNode, importMatterPeople, linkNodes, unlink, updateNode,
+} from "../src/services/dna";
 import { addNote, askMatter, deleteAnswer, deleteNote, setAiProviderSetting, updateNote } from "../src/services/brain";
 import { requestCopy } from "../src/services/workingCopies";
 import {
@@ -310,4 +313,75 @@ export async function aiProviderAction(fd: FormData): Promise<void> {
   return act(matterId ? `/matters/${matterId}/brain` : "/", "AI setting saved.", () => withSession(async (s) => {
     await setAiProviderSetting(s, text(fd, "provider") ?? "");
   }));
+}
+
+// ---------------------------------------------------------------------------
+// Case DNA
+// ---------------------------------------------------------------------------
+const dnaPath = (fd: FormData) => {
+  const matterId = text(fd, "matterId") ?? "";
+  const back = text(fd, "back");
+  // Only return to a page inside this Matter's Case DNA.
+  return back && /^\/matters\/[0-9a-f-]{36}\/dna(\/[0-9a-f-]{36})?(\?[a-z=0-9-]*)?$/i.test(back) && back.startsWith(`/matters/${matterId}/`)
+    ? back : `/matters/${matterId}/dna`;
+};
+const nodeFields = (fd: FormData) => ({
+  kind: fd.get("kind") ?? undefined, label: fd.get("label"), details: fd.get("details") ?? "",
+  eventDate: text(fd, "eventDate") || null, email: text(fd, "email") || null, role: text(fd, "role") || null,
+  amount: text(fd, "amount") || null,
+});
+
+export async function dnaAddNodeAction(fd: FormData): Promise<void> {
+  const matterId = text(fd, "matterId") ?? "";
+  return act(dnaPath(fd), "Added to Case DNA.", () => withSession(async (s) => { await addNode(s, matterId, nodeFields(fd)); }));
+}
+export async function dnaUpdateNodeAction(fd: FormData): Promise<void> {
+  return act(dnaPath(fd), "Saved.", () => withSession(async (s) => { await updateNode(s, text(fd, "nodeId") ?? "", nodeFields(fd)); }));
+}
+export async function dnaDeleteNodeAction(fd: FormData): Promise<void> {
+  const matterId = text(fd, "matterId") ?? "";
+  return act(`/matters/${matterId}/dna`, "Deleted.", () => withSession(async (s) => { await deleteNode(s, text(fd, "nodeId") ?? ""); }));
+}
+export async function dnaDecideAction(fd: FormData): Promise<void> {
+  const d = text(fd, "decision");
+  return act(dnaPath(fd), d === "confirmed" ? "Confirmed." : "Rejected; Huis won't suggest it again.", () => withSession(async (s) => {
+    const linkId = text(fd, "linkId");
+    if (linkId) await decideLink(s, linkId, d); else await decideNode(s, text(fd, "nodeId") ?? "", d);
+  }));
+}
+export async function dnaLinkAction(fd: FormData): Promise<void> {
+  return act(dnaPath(fd), "Linked.", () => withSession(async (s) => {
+    await linkNodes(s, text(fd, "fromId") ?? "", text(fd, "toId") ?? "", text(fd, "relation"));
+  }));
+}
+export async function dnaUnlinkAction(fd: FormData): Promise<void> {
+  return act(dnaPath(fd), "Link removed.", () => withSession(async (s) => { await unlink(s, text(fd, "linkId") ?? ""); }));
+}
+export async function dnaAddClaimAction(fd: FormData): Promise<void> {
+  const matterId = text(fd, "matterId") ?? "";
+  return act(`/matters/${matterId}/dna`, "Claim added.", async () => {
+    const id = await withSession(async (s) => {
+      const template = text(fd, "template");
+      if (template && template !== "custom") return addClaimFromTemplate(s, matterId, template);
+      return addNode(s, matterId, { kind: text(fd, "kind") === "defense" ? "defense" : "claim", label: fd.get("label"), details: fd.get("details") ?? "" });
+    });
+    return { redirectTo: `/matters/${matterId}/dna/${id}` };
+  });
+}
+export async function dnaAddElementAction(fd: FormData): Promise<void> {
+  return act(dnaPath(fd), "Element added.", () => withSession(async (s) => {
+    await addElement(s, text(fd, "claimId") ?? "", { label: fd.get("label"), details: fd.get("details") ?? "" });
+  }));
+}
+export async function dnaAddFactAction(fd: FormData): Promise<void> {
+  return act(dnaPath(fd), "Added as a fact, with its source.", () => withSession(async (s) => {
+    await addFactFromPassage(s, text(fd, "elementId") ?? "", { chunkId: text(fd, "chunkId"), relation: text(fd, "relation") });
+  }));
+}
+export async function dnaImportPeopleAction(fd: FormData): Promise<void> {
+  const matterId = text(fd, "matterId") ?? "";
+  return act(`/matters/${matterId}/dna`, "People added.", async () => {
+    const n = await withSession((s) => importMatterPeople(s, matterId));
+    return { message: n ? `${n} added from the Matter's client and contacts.` : "Everyone is already on the map." };
+  });
 }

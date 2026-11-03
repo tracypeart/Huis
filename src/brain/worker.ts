@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import pg from "pg";
 import { aiProvider } from "../ai/gateway";
+import { findEvents } from "../dna/extract";
 import { chunkText, MAX_CHUNKS } from "./chunk";
 
 const MAX_ATTEMPTS = 5;
@@ -34,6 +35,11 @@ export class BrainWorker {
       }
       await this.pool.query("SELECT huis.worker_log_ai($1, $2, $3, $4, $5, $6, $7)",
         [job.source_id, job.lock_token, provider.name, provider.model, job.content.length, 0, Date.now() - started]);
+      // Case DNA suggestions from documents: dated events, and the people on filed email.
+      if (job.kind === "evidence") {
+        await this.pool.query("SELECT huis.worker_save_dna_suggestions($1, $2, $3)",
+          [job.source_id, job.lock_token, JSON.stringify(findEvents(job.content))]);
+      }
       const hash = createHash("sha256").update(job.content).digest("hex");
       // Very large documents: only the first part fits; the Brain says so.
       const partial = job.full_length > job.content.length || chunks.length >= MAX_CHUNKS;

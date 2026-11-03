@@ -72,6 +72,11 @@ Each Matter's own knowledge base: everything readable in it (documents, scans, f
 ### Does Huis send our documents to an AI company?
 Not today. Huis's built-in AI runs entirely inside Huis and sends nothing to any outside service; it finds and cites the most relevant passages rather than writing conclusions. An outside AI provider will only be added after it signs zero-data-retention and no-training terms, and each firm's administrators decide whether to use it. Firms can also turn AI off entirely.
 
+### What is Case DNA™?
+A map of how a case fits together: people, events, claims and their legal elements, facts and damages, each linked to the evidence behind it. Click a claim, such as FMLA retaliation, to see each element with the facts that support or contradict it, the witnesses, the emails and the other evidence.
+
+Huis suggests, and attorneys decide. Huis proposes dated events from documents and people from email, and finds passages that may prove an element. Nothing counts until someone confirms it. Like the Matter Brain, Case DNA is attorney work product that clients and other outside users never see.
+
 ### Who owns our data?
 Your firm does. You can export everything at any time.
 

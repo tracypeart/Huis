@@ -45,7 +45,7 @@ export default async function MatterBrainPage({ params, searchParams }: {
 
   return (
     <>
-      <p className="notice"><Link href={`/matters/${m.id}`}>← {m.title}</Link></p>
+      <p className="notice"><Link href={`/matters/${m.id}`}>← {m.title}</Link> · <Link href={`/matters/${m.id}/dna`}>Case DNA™</Link></p>
       <h1>Matter Brain</h1>
       <p className="sub">
         Everything readable in this Matter — documents, filed email, transcripts and attorney notes — in one place you can ask.
