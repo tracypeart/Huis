@@ -239,3 +239,87 @@ describe("reading Gmail messages", () => {
     expect(() => toMailMessage({ id: "x2", payload: deep as never })).not.toThrow();
   });
 });
+
+describe("review 7: hostile mail and mail-service responses", () => {
+  it("a crafted email can't stall the worker (HTML and address parsing stay fast)", () => {
+    const b64 = (x: string) => Buffer.from(x).toString("base64url");
+    const started = Date.now();
+    for (const html of ["<".repeat(400_000), "<script>".repeat(200_000), "<b".repeat(300_000)]) {
+      toMailMessage({ id: "x", labelIds: ["INBOX"], payload: { mimeType: "text/html", body: { data: b64(html) } } as never });
+    }
+    toMailMessage({ id: "y", labelIds: ["INBOX"], payload: { headers: [{ name: "To", value: "a".repeat(100_000) }, { name: "Cc", value: "a.".repeat(50_000) }] } as never });
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+
+  it("mail trashed or deleted while Gmail's history expired is removed after the fresh import", async () => {
+    const x = await setup();
+    await syncAll();
+    g.relabel("g1", ["TRASH"]);
+    g.remove("g2");
+    g.expiredBefore = g.historyId + 1;
+    await db.withFirm(x.avery, (s) => requestSync(s, x.connectionId));
+    await syncAll();
+    expect((await db.withFirm(x.avery, (s) => listMessages(s, {}))).map((m) => m.subject).sort()).toEqual(["Archived newsletter", "Re: Smith v. Acme — notice"]);
+  });
+
+  it("a history page with more changes than can be handled safely leads to a fresh import, never silently skipped mail", async () => {
+    const x = await setup();
+    await syncAll();
+    for (let i = 0; i < 1100; i++) g.events.push({ h: ++g.historyId, kind: "labels", id: "g1" });
+    g.relabel("g1", ["TRASH"]);
+    g.historyPageSize = 5000;
+    await db.withFirm(x.avery, (s) => requestSync(s, x.connectionId));
+    await syncAll();
+    const live = (await db.withFirm(x.avery, (s) => listMessages(s, {}))).map((m) => m.subject);
+    expect(live).not.toContain("Smith v. Acme — notice");
+    expect((await db.withFirm(x.avery, (s) => listMailboxes(s)))[0]!.lastError).toBeNull();
+  });
+
+  it("endless empty pages stop the sync with an error", async () => {
+    const x = await setup();
+    g.endlessEmptyPages = true;
+    await syncAll();
+    expect((await db.withFirm(x.avery, (s) => listMailboxes(s)))[0]!.lastError).toMatch(/empty pages/);
+  });
+
+  it("errors never carry text from the mail service", async () => {
+    const x = await setup();
+    g.notJson = "PRIVILEGED settlement memo — not JSON";
+    await syncAll();
+    const err = (await t.admin.query("SELECT last_error FROM huis.mail_connections WHERE id = $1", [x.connectionId])).rows[0].last_error;
+    expect(err).toBe("Gmail sent an unreadable response");
+    g.notJson = null;
+    g.refreshError = "Bearer ya29.LEAKED-token";
+    await db.withFirm(x.avery, (s) => requestSync(s, x.connectionId));
+    await syncAll();
+    const err2 = (await t.admin.query("SELECT last_error FROM huis.mail_connections WHERE id = $1", [x.connectionId])).rows[0].last_error;
+    expect(err2).not.toContain("LEAKED");
+  });
+
+  it("one malformed message doesn't stop the rest of the mailbox", async () => {
+    const x = await setup();
+    g.rawOverride.g1 = { id: "g1", labelIds: ["INBOX"], internalDate: "9000000000000000", payload: { headers: { not: "a list" }, parts: "nope" } };
+    await syncAll();
+    const subjects = (await db.withFirm(x.avery, (s) => listMessages(s, {}))).map((m) => m.subject);
+    expect(subjects).toEqual(expect.arrayContaining(["Smith timeline", "Archived newsletter"]));
+    expect((await db.withFirm(x.avery, (s) => listMailboxes(s)))[0]!.lastError).toBeNull();
+  });
+
+  it("with a 'mail since' date, mail with no usable date stays out", async () => {
+    const x = await setup();
+    await db.withFirm(x.avery, (s) => updateMailbox(s, x.connectionId, { scope: "all", syncSince: "2026-09-01", manage: false, status: "active" }));
+    g.rawOverride.g3 = { id: "g3", labelIds: ["INBOX"], payload: { headers: [{ name: "Subject", value: "Undated old mail" }] } };
+    await syncAll();
+    expect(await subjects(x.avery)).not.toContain("Undated old mail");
+  });
+
+  it("an unreadable saved sync position starts a fresh import instead of failing every time", async () => {
+    const x = await setup();
+    await syncAll();
+    await t.admin.query("UPDATE huis.mail_folders SET delta_link = 'garbage' WHERE connection_id = $1 AND provider_folder_id = 'HUIS_NO_LABEL'", [x.connectionId]);
+    g.add(msg("g10", ["INBOX"], "Arrived later"));
+    await db.withFirm(x.avery, (s) => requestSync(s, x.connectionId));
+    await syncAll();
+    expect(await subjects(x.avery)).toContain("Arrived later");
+  });
+});

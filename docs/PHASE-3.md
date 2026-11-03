@@ -1,13 +1,13 @@
 # Phase 3 — Huis Inbox (Email Intelligence)
 
-**Status:** Parts 1 and 2 merged after independent security reviews 5 and 6. Part 3 (Gmail) built and tested; under independent review. Gmail works for Google test users now; connecting other firms' Gmail needs Google's verification and CASA assessment (below).
+**Status:** Parts 1 and 2 merged after independent security reviews 5 and 6. Part 3 (Gmail) merged after independent security review 7. Gmail works for Google test users now; connecting other firms' Gmail needs Google's verification and CASA assessment (below).
 
 ## Plan
 | Part | What | Status |
 |---|---|---|
 | 3.1 | Connect Outlook, whole mailbox or chosen folders, continuous sync ("Let Huis manage"), email search, file email into Matters, matter colors | Merged |
 | 3.2 | Matter suggestions (case numbers, Huis numbers, people, threads; AI later), Manual / Assisted / Automatic filing | Merged |
-| 3.3 | Gmail, built the same way | Built, in review (live for outside firms after Google verification) |
+| 3.3 | Gmail, built the same way | Merged (live for outside firms after Google verification) |
 | Later | Semantic ("meaning") search across email, with the AI layer in Phase 6 | Phase 6 |
 
 ## Part 1 — what exists
@@ -65,11 +65,11 @@ Gmail works like Outlook: the same privacy, search, suggestions, filing modes, c
 |---|---|
 | Connecting | **Connect Gmail** asks Google for read-only access to the signed-in staff member's own Gmail (`gmail.readonly`, plus sign-in). If someone unticks the Gmail permission on Google's consent screen, Huis refuses the connection and says why. The account is identified by Google's stable account id, never by email address |
 | Labels | Labels are shown as folders: Inbox, Sent, Starred, Important, the firm's own labels (nested labels like "Clients/Smith" keep their nesting), and "No label (archived)". An email with several labels appears under the first chosen label in that order. **Spam, Trash and Drafts are never brought into Huis** |
-| Syncing | The first sync imports the mailbox in pages; later syncs use Gmail's change history (new, deleted, trashed and relabelled email). If the history is too old (Gmail keeps about a week), Huis imports again. Choosing different labels starts a fresh import |
+| Syncing | The first sync imports the mailbox in pages; later syncs use Gmail's change history (new, deleted, trashed and relabelled email). If the history is too old (Gmail keeps about a week), or a batch of changes is too large to handle safely, Huis imports again; when a fresh import finishes, anything no longer in the mailbox leaves Huis. Choosing different labels starts a fresh import |
 | Filing | Huis files the original message exactly as Google holds it (raw MIME), with the same custody record as Outlook |
 | Safety | Every Gmail address Huis calls is built by Huis; paging tokens from Google are checked and an unexpected one stops the sync with an error rather than being followed or silently skipping mail. Tokens are sent only to Google's sign-in and Gmail hosts. An expired Google grant marks the mailbox **Needs reconnecting** |
 
-**Tests:** `test/gmail.test.ts`, 12 tests against a stand-in Google service: consent request, ID token checks (nonce, audience, issuer), refusing connections without Gmail permission, encrypted bound credentials, labels and folder choice, Spam/Trash/Drafts excluded, HTML mail read as text, change history, expired history, chosen labels, exact original on filing, reconnect, bad paging tokens, privacy, and hostile message content. Also checked in a real browser.
+**Tests:** `test/gmail.test.ts`, 20 tests (8 from review 7) against a stand-in Google service: consent request, ID token checks (nonce, audience, issuer), refusing connections without Gmail permission, encrypted bound credentials, labels and folder choice, Spam/Trash/Drafts excluded, HTML mail read as text, change history, expired history, chosen labels, exact original on filing, reconnect, bad paging tokens, privacy, and hostile message content. Also checked in a real browser.
 
 **Needed from Google before outside firms can connect** (until then, up to 100 named test users can):
 - A Google Cloud project with an OAuth client ("Web application"). Add the redirect `https://<huis domain>/api/mailboxes/google/callback` (and `http://localhost:3000/api/mailboxes/google/callback` for development). Store `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` in the secret vault, never in code or chat.

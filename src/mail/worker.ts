@@ -24,6 +24,13 @@ export interface MailConfig {
 interface Mailbox { connection_id: string; lock_token: string; firm_id: string; provider: string; account_subject: string; scope: string; sync_since: string | null; ciphertext: Buffer | null }
 interface Filing { filing_id: string; lock_token: string; firm_id: string; matter_id: string; connection_id: string; provider: string; account_subject: string; provider_message_id: string; ciphertext: Buffer | null; attempts: number }
 
+/** With a "mail since" date set, mail older than it (or with no date at all) stays out of Huis. */
+function beforeCutoff(m: { receivedAt: string | null; sentAt: string | null }, since: number | null): boolean {
+  if (since === null) return false;
+  const when = Date.parse(m.receivedAt ?? m.sentAt ?? "");
+  return Number.isNaN(when) || when < since;
+}
+
 const errText = (e: unknown) => (e instanceof Error ? e.message : "mailbox error");
 const needsReconnect = (e: unknown) => Boolean((e as { reconnect?: boolean })?.reconnect);
 
@@ -71,7 +78,7 @@ export class MailWorker {
       if (since !== null && Number.isNaN(since)) throw new Error("invalid 'mail since' date");
       let budget = SYNC_BUDGET;
       if (provider.mailboxPage) {
-        more = await this.syncMailbox(provider, args, since);
+        more = await this.syncMailbox(provider, args, since, m.scope);
         await this.pool.query("SELECT huis.worker_auto_file($1, $2)", args);
         await this.pool.query("SELECT huis.worker_finish_mailbox($1, $2, NULL, false, $3)", [...args, more]);
         return true;
@@ -88,7 +95,7 @@ export class MailWorker {
         for (;;) {
           const page = await provider.deltaPage(f.providerId, link);
           // Optional "only mail since" setting is applied here (Graph's own date filter caps results).
-          const keep = page.messages.filter((x) => x.removed || since === null || !x.receivedAt || Date.parse(x.receivedAt) >= since);
+          const keep = page.messages.filter((x) => x.removed || !beforeCutoff(x, since));
           for (let i = 0; i < keep.length; i += 500) {
             await this.pool.query("SELECT huis.worker_save_mail_messages($1, $2, $3, $4)",
               [...args, row.folder_id, JSON.stringify(keep.slice(i, i + 500))]);
@@ -124,7 +131,7 @@ export class MailWorker {
    * the "No label" folder together with a fingerprint of the chosen labels,
    * so choosing different labels starts a fresh import.
    */
-  private async syncMailbox(provider: MailProvider, args: string[], since: number | null): Promise<boolean> {
+  private async syncMailbox(provider: MailProvider, args: string[], since: number | null, scope: string): Promise<boolean> {
     const folders: MailFolderInfo[] = await provider.listFolders();
     const rows = new Map<string, { folder_id: string; included: boolean; delta_link: string | null }>();
     for (const f of folders) {
@@ -136,12 +143,19 @@ export class MailWorker {
     const home = rows.get(GMAIL_NO_LABEL);
     if (!home) throw new Error("mailbox has no home folder");
     const order = folders.map((f) => f.providerId).filter((id) => id !== GMAIL_NO_LABEL);
-    const chosen = [...rows].filter(([, r]) => r.included).map(([id]) => id).sort();
+    // Whole mailbox: everything is already imported, so a new label needs no re-import.
+    const chosen = scope === "all" ? ["*all*"] : [...rows].filter(([, r]) => r.included).map(([id]) => id).sort();
     const fp = createHash("sha256").update(chosen.join("\n")).digest("hex").slice(0, 16);
-    const saved = home.delta_link?.startsWith(`${fp}|`) ? home.delta_link.slice(fp.length + 1) : null;
-    let link: string | null = saved || null;
+    // Saved as "<labels fingerprint>|<when the current fresh import started, if one is running>|<position>".
+    const parts = home.delta_link?.split("|") ?? [];
+    const valid = parts.length === 3 && parts[0] === fp;
+    let link: string | null = valid ? parts[2] || null : null;
+    const dbNow = async () => (await this.pool.query<{ now: string }>("SELECT now()::text AS now")).rows[0]!.now;
+    let importStarted: string | null = valid ? parts[1] || null : null;
+    if (!link) importStarted = await dbNow();
     let budget = SYNC_BUDGET;
     let restarts = 0;
+    let emptyInARow = 0;
     const seen = new Set<string>();
     const folderFor = (labels: string[]): string | null => {
       for (const id of order) if (labels.includes(id) && rows.get(id)!.included) return rows.get(id)!.folder_id;
@@ -149,19 +163,21 @@ export class MailWorker {
       if (!labels.some((l) => order.includes(l)) && home.included) return home.folder_id;
       return null;
     };
+    const save = (position: string | null) => this.pool.query("SELECT huis.worker_save_mail_folder_state($1, $2, $3, $4)",
+      [...args, home.folder_id, position ? `${fp}|${importStarted ?? ""}|${position}` : null]);
     for (;;) {
       const page = await provider.mailboxPage!(link);
       if (page.restart) {
         if (++restarts > 1) throw new Error("mail sync could not restart");
         link = null;
+        importStarted = await dbNow();
         continue;
       }
       const groups = new Map<string, MailMessageInfo[]>();
       const add = (folderId: string, m: MailMessageInfo) => { const g = groups.get(folderId) ?? []; g.push(m); groups.set(folderId, g); };
       for (const m of page.messages) {
         const folderId = m.removed ? null : folderFor(m.labels);
-        const tooOld = !m.removed && since !== null && m.receivedAt && Date.parse(m.receivedAt) < since;
-        if (m.removed || !folderId || tooOld) add(home.folder_id, { id: m.id, removed: true });
+        if (m.removed || !folderId || beforeCutoff(m, since)) add(home.folder_id, { id: m.id, removed: true });
         else { const { labels: _l, ...rest } = m; add(folderId, rest); }
       }
       for (const [folderId, list] of groups) {
@@ -169,11 +185,18 @@ export class MailWorker {
           await this.pool.query("SELECT huis.worker_save_mail_messages($1, $2, $3, $4)", [...args, folderId, JSON.stringify(list.slice(i, i + 500))]);
         }
       }
+      // A finished fresh import: whatever it didn't see was trashed or deleted meanwhile.
+      if (page.fullImportDone && importStarted) {
+        await this.pool.query("SELECT huis.worker_sweep_unseen_mail($1, $2, $3)", [...args, importStarted]);
+        importStarted = null;
+      }
       budget -= Math.max(1, page.messages.length);
       if (page.nextLink && seen.has(page.nextLink)) throw new Error("mail sync did not move forward");
+      emptyInARow = page.messages.length === 0 && page.nextLink ? emptyInARow + 1 : 0;
+      if (emptyInARow > 20) throw new Error("mail service kept returning empty pages");
       if (page.nextLink) seen.add(page.nextLink);
       link = page.nextLink ?? page.deltaLink ?? link;
-      await this.pool.query("SELECT huis.worker_save_mail_folder_state($1, $2, $3, $4)", [...args, home.folder_id, link ? `${fp}|${link}` : null]);
+      await save(link);
       if (!page.nextLink) return false;
       if (budget <= 0) return true;
     }

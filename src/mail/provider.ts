@@ -27,4 +27,7 @@ export type MailMessageInfo =
 export interface DeltaPage { messages: MailMessageInfo[]; nextLink: string | null; deltaLink: string | null }
 
 /** restart: the saved position is too old (Gmail keeps about a week of history); import everything again. */
-export interface MailboxPage { messages: (MailMessageInfo & { labels: string[] })[]; nextLink: string | null; deltaLink: string | null; restart?: boolean }
+/** fullImportDone: a fresh import just finished listing everything (mail it didn't see is no longer in the mailbox). */
+export interface MailboxPage {
+  messages: (MailMessageInfo & { labels: string[] })[]; nextLink: string | null; deltaLink: string | null; restart?: boolean; fullImportDone?: boolean;
+}

@@ -39,6 +39,11 @@ export class FakeGoogle {
   /** A page token to return instead of the real one (to test checks). */
   pageTokenOverride: string | null = null;
   calls: string[] = [];
+  /** Misbehave: replace a message's JSON, return endless empty list pages, or a non-JSON body. */
+  rawOverride: Record<string, unknown> = {};
+  endlessEmptyPages = false;
+  historyPageSize = 2;
+  notJson: string | null = null;
   privateKey!: import("node:crypto").KeyObject;
   jwks!: ReturnType<typeof createLocalJWKSet>;
 
@@ -55,6 +60,7 @@ export class FakeGoogle {
   reset() {
     this.messages = []; this.events = []; this.historyId = 1000; this.expiredBefore = 0; this.refreshError = null;
     this.idAudience = GOOGLE_CLIENT_ID; this.idIssuer = "https://accounts.google.com"; this.pageTokenOverride = null; this.calls = [];
+    this.rawOverride = {}; this.endlessEmptyPages = false; this.notJson = null; this.historyPageSize = 2;
     this.grantedScope = "openid https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/gmail.readonly";
   }
 
@@ -85,6 +91,11 @@ export class FakeGoogle {
     const p = url.pathname.replace(/^\/gmail\/v1\/users\/me/, "");
     if (p === "/profile") return this.json(res, 200, { emailAddress: "Avery@Gmail-Firm.example", historyId: String(this.historyId) });
     if (p === "/labels") return this.json(res, 200, { labels: this.labels });
+    if (this.notJson) { res.writeHead(200, { "content-type": "application/json" }); return res.end(this.notJson); }
+    if (p === "/messages" && this.endlessEmptyPages) {
+      const n = Number((url.searchParams.get("pageToken") ?? "e0").slice(1)) + 1;
+      return this.json(res, 200, { messages: [], nextPageToken: `e${n}` });
+    }
     if (p === "/messages") {
       const all = this.messages.filter((m) => url.searchParams.get("includeSpamTrash") === "true" || !m.labels.some((l) => l === "SPAM" || l === "TRASH"));
       const start = Number((url.searchParams.get("pageToken") ?? "p0").slice(1));
@@ -97,6 +108,7 @@ export class FakeGoogle {
     if (one) {
       const m = this.messages.find((x) => x.id === decodeURIComponent(one[1]!));
       if (!m) return this.json(res, 404, { error: { code: 404 } });
+      if (this.rawOverride[m.id] && url.searchParams.get("format") !== "raw") return this.json(res, 200, this.rawOverride[m.id]);
       if (url.searchParams.get("format") === "raw") return this.json(res, 200, { id: m.id, raw: Buffer.from(m.mime).toString("base64url") });
       return this.json(res, 200, this.full(m));
     }
@@ -105,14 +117,14 @@ export class FakeGoogle {
       if (start < this.expiredBefore) return this.json(res, 404, { error: { code: 404, message: "Requested entity was not found." } });
       const all = this.events.filter((e) => e.h > start);
       const off = Number((url.searchParams.get("pageToken") ?? "h0").slice(1));
-      const page = all.slice(off, off + 2);
-      const more = off + 2 < all.length;
+      const page = all.slice(off, off + this.historyPageSize);
+      const more = off + this.historyPageSize < all.length;
       const msg = (id: string) => ({ message: { id, threadId: "t" } });
       return this.json(res, 200, {
         history: page.map((e) => ({ id: String(e.h),
           ...(e.kind === "added" ? { messagesAdded: [msg(e.id)] } : e.kind === "deleted" ? { messagesDeleted: [msg(e.id)] } : { labelsAdded: [{ ...msg(e.id), labelIds: [] }] }) })),
         historyId: String(this.historyId),
-        ...(more ? { nextPageToken: this.pageTokenOverride ?? `h${off + 2}` } : {}),
+        ...(more ? { nextPageToken: this.pageTokenOverride ?? `h${off + this.historyPageSize}` } : {}),
       });
     }
     return this.json(res, 404, { error: "unknown" });

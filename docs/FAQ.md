@@ -57,6 +57,7 @@ Yes, at every stage. After each part is built, a separate reviewer that did not 
 - **Review 4** (viewer, redactions and exhibit copies): marks and copy requests stayed firm-only. 5 issues fixed, the most important making sure a redaction always lands exactly where it was drawn, even on cropped PDFs, and that nothing appears in a copy that the attorney couldn't see in the viewer.
 - **Review 5** (Huis Inbox): nobody but the mailbox owner and their chosen delegates could read mail. 7 issues fixed, including keeping what attorneys search for out of the admin-readable audit log, and re-checking permissions when a filing actually runs.
 - **Review 6** (matter suggestions and automatic filing): suggestions never revealed Matters someone couldn't see. 5 issues fixed, mainly making automatic filing much stricter, so neither a colleague nor an outside sender can steer someone's email into the wrong Matter.
+- **Review 7** (Gmail): connections, tokens and privacy held. 8 issues fixed. The most important stops a deliberately crafted email from slowing Huis down, and makes sure mail deleted in Gmail always leaves Huis too.
 
 ### Who owns our data?
 Your firm does. You can export everything at any time.

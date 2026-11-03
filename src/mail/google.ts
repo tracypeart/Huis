@@ -73,7 +73,9 @@ async function tokenRequest(params: Record<string, string>): Promise<TokenRespon
   });
   const body = (await res.json().catch(() => ({}))) as TokenResponse;
   if (!res.ok || !body.access_token) {
-    const err = new Error(`Google token request failed (${typeof body.error === "string" ? body.error.slice(0, 50) : res.status})`);
+    // Only Google's short error codes are kept: never raw text from the response.
+    const code = typeof body.error === "string" && /^[a-z_]{1,40}$/.test(body.error) ? body.error : String(res.status);
+    const err = new Error(`Google token request failed (${code})`);
     (err as Error & { reconnect?: boolean }).reconnect = body.error === "invalid_grant" || body.error === "unauthorized_client";
     throw err;
   }
@@ -90,7 +92,7 @@ export async function verifyGoogleIdToken(idToken: string, opts: { clientId: str
   return {
     subject: payload.sub,
     name: typeof payload.name === "string" && payload.name.trim() ? payload.name.trim().slice(0, 300) : null,
-    email: typeof payload.email === "string" ? payload.email : null,
+    email: typeof payload.email === "string" && payload.email_verified === true ? payload.email : null,
   };
 }
 
@@ -135,7 +137,8 @@ async function gmailFetch(token: string, url: string): Promise<Response> {
     const res = await fetch(target, { headers: { authorization: `Bearer ${token}`, accept: "application/json" }, redirect: "error" });
     // Google rate-limits busy mailboxes (429, or 403 with a rate-limit reason): back off a few times.
     if ((res.status === 429 || res.status === 500 || res.status === 503) && attempt < 3) {
-      const wait = Math.min(60, Number(res.headers.get("retry-after") ?? String(2 ** attempt * 2)) || 5);
+      // Short waits only, so one mailbox can't hold the worker (or outlast its lock).
+      const wait = Math.min(10, Number(res.headers.get("retry-after") ?? String(2 ** attempt * 2)) || 5);
       await res.body?.cancel().catch(() => undefined);
       await new Promise((r) => setTimeout(r, wait * 1000));
       continue;
@@ -153,7 +156,8 @@ async function gmailFetch(token: string, url: string): Promise<Response> {
 
 /** Largest JSON response read (checked while reading). Raw messages (base64) get more room. */
 const MAX_JSON_BYTES = 50 * 1024 * 1024;
-const MAX_RAW_JSON_BYTES = 300 * 1024 * 1024;
+// Gmail's largest message is 50 MB, about 68 MB as base64.
+const MAX_RAW_JSON_BYTES = 100 * 1024 * 1024;
 
 async function gmailJson<T>(token: string, url: string, max = MAX_JSON_BYTES): Promise<T> {
   const res = await gmailFetch(token, url);
@@ -168,7 +172,12 @@ async function gmailJson<T>(token: string, url: string, max = MAX_JSON_BYTES): P
     if (size > max) { await reader.cancel().catch(() => undefined); throw new Error("Gmail response too large"); }
     parts.push(value);
   }
-  return JSON.parse(Buffer.concat(parts).toString("utf8")) as T;
+  try {
+    return JSON.parse(Buffer.concat(parts).toString("utf8")) as T;
+  } catch {
+    // Never echo the response: it may be mail content.
+    throw new Error("Gmail sent an unreadable response");
+  }
 }
 
 /** Text from Gmail, minus NUL characters (Postgres can't store them in text). */
@@ -189,16 +198,41 @@ interface GmailMessage {
 
 const MAX_BODY_CHARS = 1_000_000;
 
-function decode(data: string | undefined): string {
-  if (!data) return "";
+function decode(data: unknown): string {
+  if (typeof data !== "string" || !data) return "";
   return Buffer.from(data, "base64url").toString("utf8");
 }
 
+/** Removes <script>, <style> and <head> blocks with a single forward scan (no regex backtracking). */
+function dropBlocks(html: string): string {
+  const lower = html.replace(/[A-Z]/g, (c) => c.toLowerCase()); // same length as html
+  let out = "";
+  let i = 0;
+  for (;;) {
+    let start = -1;
+    let tag = "";
+    for (const t of ["script", "style", "head"]) {
+      const at = lower.indexOf(`<${t}`, i);
+      if (at !== -1 && (start === -1 || at < start)) { start = at; tag = t; }
+    }
+    if (start === -1) return out + html.slice(i);
+    out += html.slice(i, start) + " ";
+    const end = lower.indexOf(`</${tag}`, start);
+    if (end === -1) return out;
+    const close = lower.indexOf(">", end);
+    if (close === -1) return out;
+    i = close + 1;
+  }
+}
+
+/** Largest HTML reduced to text (bigger HTML is cut first). */
+const MAX_HTML_CHARS = 2_000_000;
+
 function htmlToText(html: string): string {
-  return html
-    .replace(/<(script|style|head)[\s\S]*?<\/\1>/gi, " ")
+  return dropBlocks(html.slice(0, MAX_HTML_CHARS))
     .replace(/<br\s*\/?>|<\/(p|div|li|tr|h[1-6])>/gi, "\n")
-    .replace(/<[^>]+>/g, " ")
+    // Linear: a tag can't contain another "<", so nothing is rescanned.
+    .replace(/<[^<>]*>/g, " ")
     .replace(/&nbsp;/gi, " ").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&quot;/gi, "\"").replace(/&#39;/gi, "'").replace(/&amp;/gi, "&")
     .replace(/[ \t]+/g, " ").replace(/\n\s*\n+/g, "\n\n").trim();
 }
@@ -211,21 +245,27 @@ function readParts(root: GmailPart | undefined): { text: string; hasAttachments:
   let visited = 0;
   const walk = (p: GmailPart, depth: number) => {
     if (depth > 20 || ++visited > 500) return;
-    const type = (p.mimeType ?? "").toLowerCase();
-    if (p.filename) hasAttachments = true;
-    else if (type === "text/plain" && plain.length < MAX_BODY_CHARS) plain += decode(p.body?.data);
-    else if (type === "text/html" && html.length < MAX_BODY_CHARS * 2) html += decode(p.body?.data);
-    for (const c of p.parts ?? []) walk(c, depth + 1);
+    const type = typeof p.mimeType === "string" ? p.mimeType.toLowerCase() : "";
+    if (typeof p.filename === "string" && p.filename) hasAttachments = true;
+    else if (type === "text/plain" && plain.length < MAX_BODY_CHARS) plain = (plain + decode(p.body?.data)).slice(0, MAX_BODY_CHARS);
+    else if (type === "text/html" && html.length < MAX_HTML_CHARS) html = (html + decode(p.body?.data)).slice(0, MAX_HTML_CHARS);
+    if (Array.isArray(p.parts)) for (const c of p.parts) if (c && typeof c === "object") walk(c, depth + 1);
   };
   if (root) walk(root, 0);
   return { text: (plain || htmlToText(html)).slice(0, MAX_BODY_CHARS), hasAttachments };
 }
 
-const EMAIL = /[^\s<>(),;:"']+@[^\s<>(),;:"']+\.[^\s<>(),;:"']+/g;
+/** Address headers: split on separators, then check each piece (linear time; no backtracking). */
+const ADDRESS_SEPARATORS = /[\s<>(),;:"']+/;
+const ADDRESS = /^[^@]+@[^@]+\.[^@]+$/;
+const MAX_HEADER_CHARS = 64_000;
 function addresses(header: string | undefined): string[] {
   const out = new Set<string>();
-  for (const a of (header ?? "").match(EMAIL) ?? []) out.add(a.toLowerCase().slice(0, 320));
-  return [...out].slice(0, 500);
+  for (const piece of (header ?? "").slice(0, MAX_HEADER_CHARS).split(ADDRESS_SEPARATORS)) {
+    if (piece.length <= 320 && ADDRESS.test(piece)) out.add(piece.toLowerCase());
+    if (out.size >= 500) break;
+  }
+  return [...out];
 }
 function displayName(header: string | undefined): string | null {
   const h = header ?? "";
@@ -237,32 +277,49 @@ function displayName(header: string | undefined): string | null {
 
 /** Turns a Gmail message into Huis's shape (with its labels, which decide its folder). */
 export function toMailMessage(m: GmailMessage): MailMessageInfo & { labels: string[] } {
-  const labels = (m.labelIds ?? []).filter((l) => typeof l === "string" && ID.test(l));
+  const labels = (Array.isArray(m.labelIds) ? m.labelIds : []).filter((l): l is string => typeof l === "string" && ID.test(l));
+  try {
+    return readMessage(m, labels);
+  } catch {
+    // Something unexpected in one message: keep it (so it can still be opened and filed), without the unreadable details.
+    return { id: m.id, removed: false, labels, internetMessageId: null, conversationId: null, subject: "(message Huis couldn't read)",
+      fromAddress: null, fromName: null, to: [], cc: [], receivedAt: null, sentAt: null, hasAttachments: false, importance: null,
+      isRead: null, preview: null, body: null };
+  }
+}
+
+/** A date Huis (and Postgres) can store, or null. */
+function safeDate(ms: number): string | null {
+  return Number.isFinite(ms) && ms > 0 && ms < 8_640_000_000_000_000 ? new Date(ms).toISOString() : null;
+}
+
+function readMessage(m: GmailMessage, labels: string[]): MailMessageInfo & { labels: string[] } {
   if (labels.some((l) => EXCLUDED.has(l))) return { id: m.id, removed: true, labels };
   const h = new Map<string, string>();
-  for (const x of m.payload?.headers ?? []) {
-    const k = (x.name ?? "").toLowerCase();
+  const headers = Array.isArray(m.payload?.headers) ? m.payload!.headers : [];
+  for (const x of headers.slice(0, 1000)) {
+    if (!x || typeof x !== "object") continue;
+    const k = typeof x.name === "string" ? x.name.toLowerCase() : "";
     if (k && !h.has(k) && typeof x.value === "string") h.set(k, x.value.slice(0, 100_000));
   }
-  const ms = Number(m.internalDate);
-  const received = Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : null;
-  const sentRaw = h.get("date") ? Date.parse(h.get("date")!) : NaN;
-  const body = readParts(m.payload);
+  const received = safeDate(Number(m.internalDate));
+  const sent = h.get("date") ? safeDate(Date.parse(h.get("date")!.slice(0, 200))) : null;
+  const body = readParts(m.payload && typeof m.payload === "object" ? m.payload : undefined);
   return {
     id: m.id, removed: false, labels,
     internetMessageId: clean(h.get("message-id")?.trim().slice(0, 1000) ?? null),
-    conversationId: clean(m.threadId ?? null),
+    conversationId: typeof m.threadId === "string" ? clean(m.threadId.slice(0, 1000)) : null,
     subject: clean(h.get("subject")?.slice(0, 1000) ?? null),
     fromAddress: clean(addresses(h.get("from"))[0] ?? null),
     fromName: clean(displayName(h.get("from"))),
     to: addresses(h.get("to")).map((a) => clean(a)!),
     cc: addresses(h.get("cc")).map((a) => clean(a)!),
     receivedAt: received,
-    sentAt: Number.isFinite(sentRaw) ? new Date(sentRaw).toISOString() : received,
+    sentAt: sent ?? received,
     hasAttachments: body.hasAttachments,
     importance: labels.includes("IMPORTANT") ? "high" : "normal",
     isRead: !labels.includes("UNREAD"),
-    preview: clean((m.snippet ?? "").slice(0, 1000)),
+    preview: typeof m.snippet === "string" ? clean(m.snippet.slice(0, 1000)) : null,
     body: clean(body.text),
   };
 }
@@ -288,6 +345,9 @@ function pageToken(v: unknown): string | null {
   return v;
 }
 
+/** More changed messages than this in one history page means a fresh import instead. */
+const MAX_CHANGES_PER_PAGE = 2000;
+
 /** Gmail messages fetched in parallel per page (well inside Google's per-user quota). */
 const CONCURRENCY = 5;
 
@@ -297,12 +357,13 @@ export class GmailMailProvider implements MailProvider {
   /** Labels as folders: Inbox, Sent, Starred, Important, your own labels, then "No label" (archived mail). */
   async listFolders(): Promise<MailFolderInfo[]> {
     const res = await gmailJson<{ labels?: { id?: string; name?: string; type?: string }[] }>(this.accessToken, `${gmailBase()}/labels`);
-    const ids = new Set((res.labels ?? []).map((l) => l.id));
+    const labels = (Array.isArray(res.labels) ? res.labels : []).filter((l) => l && typeof l === "object");
+    const ids = new Set(labels.map((l) => l.id));
     const out: MailFolderInfo[] = SYSTEM_FOLDERS.filter(([id]) => ids.has(id))
       .map(([id, name]) => ({ providerId: id, parentProviderId: null, name, path: name, total: null }));
-    const user = (res.labels ?? [])
+    const user = labels
       .filter((l) => l.type === "user" && typeof l.id === "string" && ID.test(l.id) && !EXCLUDED.has(l.id))
-      .map((l) => ({ id: l.id!, name: (clean(l.name) || "(unnamed)").slice(0, 300) }))
+      .map((l) => ({ id: l.id!, name: (clean(typeof l.name === "string" ? l.name : null) || "(unnamed)").slice(0, 300) }))
       .sort((a, b) => a.name.localeCompare(b.name))
       .slice(0, 2000);
     // Gmail nests labels by name ("Clients/Smith").
@@ -339,7 +400,11 @@ export class GmailMailProvider implements MailProvider {
   }
 
   async mailboxPage(link: string | null): Promise<MailboxPage> {
-    const at = parseLink(link);
+    let at: ReturnType<typeof parseLink>;
+    try { at = parseLink(link); } catch {
+      // A saved position Huis can't read: start a fresh import rather than failing every time.
+      return { messages: [], nextLink: null, deltaLink: null, restart: true };
+    }
     if (at.kind === "start" || at.kind === "full") {
       // Note where history starts before listing, so nothing that arrives during the import is missed.
       let history = at.kind === "full" ? at.history : "";
@@ -351,12 +416,14 @@ export class GmailMailProvider implements MailProvider {
       const q = new URLSearchParams({ maxResults: "100", includeSpamTrash: "false" });
       if (at.kind === "full" && at.page) q.set("pageToken", at.page);
       const list = await gmailJson<{ messages?: { id?: string }[]; nextPageToken?: string }>(this.accessToken, `${gmailBase()}/messages?${q}`);
-      const ids = [...new Set((list.messages ?? []).map((m) => m.id).filter((x): x is string => typeof x === "string" && ID.test(x)))].slice(0, 100);
+      const listed = Array.isArray(list.messages) ? list.messages : [];
+      const ids = [...new Set(listed.map((m) => m?.id).filter((x): x is string => typeof x === "string" && ID.test(x)))].slice(0, 100);
       const next = pageToken(list.nextPageToken);
       return {
         messages: await this.fetchMessages(ids),
         nextLink: next ? `full:${history}:${next}` : null,
         deltaLink: next ? null : `hist:${history}:`,
+        fullImportDone: !next,
       };
     }
     const q = new URLSearchParams({ startHistoryId: at.history, maxResults: "100" });
@@ -373,16 +440,21 @@ export class GmailMailProvider implements MailProvider {
     }
     const deleted = new Set<string>();
     const changed = new Set<string>();
-    for (const e of (h.history ?? []).slice(0, 1000)) {
-      for (const x of e.messagesDeleted ?? []) if (x.message?.id && ID.test(x.message.id)) deleted.add(x.message.id);
-      for (const x of [...(e.messagesAdded ?? []), ...(e.labelsAdded ?? []), ...(e.labelsRemoved ?? [])]) {
-        if (x.message?.id && ID.test(x.message.id)) changed.add(x.message.id);
-      }
+    const records = Array.isArray(h.history) ? h.history : [];
+    // Too many changes at once to handle safely in one page: import everything again
+    // (a fresh import also marks whatever disappeared), rather than dropping any.
+    if (records.length > 1000) return { messages: [], nextLink: null, deltaLink: null, restart: true };
+    for (const e of records) {
+      const list = (v: unknown) => (Array.isArray(v) ? v : []) as { message?: { id?: unknown } }[];
+      const idOf = (x: { message?: { id?: unknown } }) => (x && typeof x.message?.id === "string" && ID.test(x.message.id) ? x.message.id : null);
+      for (const x of list(e?.messagesDeleted)) { const id = idOf(x); if (id) deleted.add(id); }
+      for (const x of [...list(e?.messagesAdded), ...list(e?.labelsAdded), ...list(e?.labelsRemoved)]) { const id = idOf(x); if (id) changed.add(id); }
     }
     for (const id of deleted) changed.delete(id);
+    if (deleted.size + changed.size > MAX_CHANGES_PER_PAGE) return { messages: [], nextLink: null, deltaLink: null, restart: true };
     const messages = [
-      ...[...deleted].slice(0, 1000).map((id) => ({ id, removed: true as const, labels: [] as string[] })),
-      ...(await this.fetchMessages([...changed].slice(0, 500))),
+      ...[...deleted].map((id) => ({ id, removed: true as const, labels: [] as string[] })),
+      ...(await this.fetchMessages([...changed])),
     ];
     const next = pageToken(h.nextPageToken);
     const latest = HISTORY.test(String(h.historyId ?? "")) ? String(h.historyId) : at.history;
