@@ -1,12 +1,12 @@
 # Phase 3 — Huis Inbox (Email Intelligence)
 
-**Status:** Part 1 merged after independent security review 5. Part 2 (suggestions, filing modes) built and tested; under independent review.
+**Status:** Part 1 merged after independent security review 5. Part 2 (suggestions, filing modes) merged after independent security review 6.
 
 ## Plan
 | Part | What | Status |
 |---|---|---|
 | 3.1 | Connect Outlook, whole mailbox or chosen folders, continuous sync ("Let Huis manage"), email search, file email into Matters, matter colors | Merged |
-| 3.2 | Matter suggestions (case numbers, Huis numbers, people, threads; AI later), Manual / Assisted / Automatic filing | Built, in review |
+| 3.2 | Matter suggestions (case numbers, Huis numbers, people, threads; AI later), Manual / Assisted / Automatic filing | Merged |
 | 3.3 | Gmail, built the same way | After Google verification (see below) |
 | Later | Semantic ("meaning") search across email, with the AI layer in Phase 6 | Phase 6 |
 
@@ -43,7 +43,17 @@
 **Filing modes** (set by a firm administrator on the Inbox page):
 - **Manual** — suggestions are shown; people choose the Matter and folder.
 - **Assisted** (default) — **File here** next to a suggestion files the email into that Matter's internal *Correspondence* folder in one click.
-- **Automatic** — Huis files new email by itself, but only when **all** of these hold: the mailbox owner has turned on automatic filing for their own mailbox and "Let Huis manage"; the match is strong (Huis number, case number or same conversation); no other Matter scores within 10 points; and the target is the Matter's internal Correspondence folder, never a folder clients or other outsiders can see. Suggestions are worked out as the mailbox owner, so their walls apply, and the filing is checked again as the owner when it runs.
+- **Automatic** — Huis files email by itself, but only when **all** of these hold:
+  - the mailbox owner has turned on automatic filing for their own mailbox, with "Let Huis manage" on;
+  - the email arrived after automatic filing was turned on (history is never filed automatically);
+  - the Matter is one the owner is on (as owner or editor), not just one they could add to;
+  - the match is strong (Huis number, court case number, or same conversation) **and** the client or a contact linked to the Matter is on the email, because anyone can type a case number into an email;
+  - no other Matter the owner can add to scores within 10 points;
+  - the target is the Matter's internal Correspondence folder, never a folder clients or other outsiders can see.
+
+  Each filing is checked again, as the owner, when it runs. If the firm or the owner switches automatic filing off, filings already queued are dropped.
+
+**Matching numbers.** Huis and court case numbers are matched as whole numbers, ignoring spacing and dashes. So 2:24-cv-0123 doesn't match inside 2:24-cv-01234, and a case number doesn't match inside a phone number. A court case number needs at least six letters or digits, including at least two digits.
 
 Every one-click or automatic filing records its reasons and method in the email's chain of custody. AI-based suggestions arrive with the AI layer (Phase 6) and will add to these signals rather than replace them.
 

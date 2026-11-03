@@ -61,9 +61,10 @@ export default async function MailboxSettings({ params, searchParams }: { params
       <div className="card">
         <h2>Automatic filing</h2>
         <p className="notice">
-          When on, Huis files new email from this mailbox into a Matter by itself — only when the email has the Matter&apos;s Huis number
-          or court case number, or belongs to a conversation already filed there, and only into the Matter&apos;s internal Correspondence
-          folder. Every automatic filing records why it was made. Needs “Let Huis manage” on.
+          When on, Huis files email received from now on into a Matter by itself — only Matters you&apos;re on, only when the email has
+          the Matter&apos;s Huis number or court case number (or belongs to a conversation already filed there) <em>and</em> the client
+          or a contact linked to the Matter is on it, and only into the Matter&apos;s internal Correspondence folder. Email already in
+          Huis is never filed automatically. Every automatic filing records why it was made. Needs “Let Huis manage” on.
           {data.mode !== "automatic" ? " Your firm's filing mode isn't Automatic, so this has no effect until an administrator changes it." : ""}
         </p>
         <form action={autoFileAction} className="row">

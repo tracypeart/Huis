@@ -54,8 +54,9 @@ Yes, at every stage. After each part is built, a separate reviewer that did not 
 - **Review 1** (sign-in, firms, matters, secure intake): 9 issues confirmed, all fixed.
 - **Review 2** (reading files and search): 7 security issues plus 7 reliability issues, all fixed. These included the protections above for privileged attachments, attachment names, the sealed-off file reader and the reading and search records.
 - **Review 3** (Outlook mailboxes and similar documents): no privilege or ethical-wall leak found. 4 robustness issues and 1 suspected issue, all fixed, so very large or deliberately crafted mailboxes can't slow Huis down or fill its disks.
-- **Review 5** (Huis Inbox): nobody but the mailbox owner and their chosen delegates could read mail. 7 issues fixed, including keeping what attorneys search for out of the admin-readable audit log, and re-checking permissions when a filing actually runs.
 - **Review 4** (viewer, redactions and exhibit copies): marks and copy requests stayed firm-only. 5 issues fixed, the most important making sure a redaction always lands exactly where it was drawn, even on cropped PDFs, and that nothing appears in a copy that the attorney couldn't see in the viewer.
+- **Review 5** (Huis Inbox): nobody but the mailbox owner and their chosen delegates could read mail. 7 issues fixed, including keeping what attorneys search for out of the admin-readable audit log, and re-checking permissions when a filing actually runs.
+- **Review 6** (matter suggestions and automatic filing): suggestions never revealed Matters someone couldn't see. 5 issues fixed, mainly making automatic filing much stricter, so neither a colleague nor an outside sender can steer someone's email into the wrong Matter.
 
 ### Who owns our data?
 Your firm does. You can export everything at any time.
@@ -111,7 +112,14 @@ Your firm chooses:
 - **Assisted:** one click files to a suggested Matter.
 - **Automatic:** Huis files by itself.
 
-Automatic filing is deliberately cautious. Each attorney must also turn it on for their own mailbox. It only acts on strong, unambiguous matches: a Huis number, a court case number, or a conversation already filed in that Matter. It only ever files into the Matter's internal Correspondence folder, never somewhere a client can see. Every automatic filing records why it was made.
+Automatic filing is deliberately cautious:
+- Each attorney must also turn it on for their own mailbox.
+- It only handles email that arrives after it was turned on.
+- It only files into Matters that attorney is on.
+- It only acts on clear matches: a Huis number, a court case number or an already-filed conversation, **plus** the client or a known contact on the email. A stranger who types a case number into an email can't steer it.
+- It only ever files into the Matter's internal Correspondence folder, never somewhere a client can see.
+
+Every automatic filing records why it was made, and switching it off stops anything still waiting.
 
 ---
 

@@ -496,40 +496,101 @@ describe("part 3.2: suggestions and filing modes", () => {
     expect(sug.find((m) => m.matterId === x.other.id)?.reasons).toContain("An earlier email in this conversation was filed here");
   });
 
-  it("automatic: files only strong, unambiguous matches, only when the firm and the mailbox owner both turned it on", async () => {
+  const now = () => new Date().toISOString();
+  async function turnOnAutomatic(x: Awaited<ReturnType<typeof setupWithLinks>>) {
+    await db.withFirm(x.owner, (s) => setFilingMode(s, "automatic"));
+    await db.withFirm(x.avery, (s) => updateMailbox(s, x.connectionId, { scope: "all", manage: true, status: "active" }));
+    await syncAll();
+    await db.withFirm(x.avery, (s) => setAutoFile(s, x.connectionId, true));
+  }
+  async function drain() { let n = 0; while (await mail.fileOnce()) n += 1; return n; }
+
+  it("automatic: files only strong, unambiguous matches with the client or a contact on the email, only when the firm and the mailbox owner both turned it on", async () => {
     const x = await setupWithLinks();
+    await db.withFirm(x.owner, (s) => addMatterMember(s, { matterId: x.matter.id, userId: x.attorney.id, access: "edit" }));
     await db.withFirm(x.owner, (s) => setFilingMode(s, "automatic"));
     await db.withFirm(x.avery, (s) => updateMailbox(s, x.connectionId, { scope: "all", manage: true, status: "active" }));
     // Not yet opted in by the mailbox owner: nothing is filed.
     await syncAll();
-    expect(await mail.fileOnce()).toBe(false);
+    expect(await drain()).toBe(0);
     await db.withFirm(x.avery, (s) => setAutoFile(s, x.connectionId, true));
-    await t.admin.query("UPDATE huis.mail_messages SET auto_checked_at = NULL WHERE connection_id = $1", [x.connectionId]);
+    ms.messages.push(
+      { id: "N1", folder: "F-inbox", subject: "Smith v. Acme — amended notice", from: "opposing@biglaw.example", to: ["avery@lawfirm.example"], received: now(), body: "Case No. 250901234: amended notice attached.", mime: "n1" },
+      // Anyone can type a case number into an email: on its own it's not enough.
+      { id: "N2", folder: "F-inbox", subject: "Your case", from: "stranger@unrelated.example", to: ["avery@lawfirm.example"], received: now(), body: "About case 250901234.", mime: "n2" },
+    );
     await db.withFirm(x.avery, (s) => requestSync(s, x.connectionId));
     await syncAll();
-    let n = 0;
-    while (await mail.fileOnce()) n += 1;
-    expect(n).toBe(1);
+    expect(await drain()).toBe(1);
     const filed = (await db.withFirm(x.avery, (s) => listMessages(s, { status: "filed" })));
-    expect(filed.map((m) => m.subject)).toEqual(["Smith v. Acme — deposition notice"]);
+    // The older deposition notice (received before automatic filing was turned on) was left alone.
+    expect(filed.map((m) => m.subject)).toEqual(["Smith v. Acme — amended notice"]);
     const ev = (await db.withFirm(x.avery, (s) => getEvidence(s, filed[0]!.filedEvidenceId!)))!;
     expect(ev.folderName).toBe("Correspondence");
     const custody = (await t.admin.query("SELECT details FROM huis.evidence_custody_events WHERE evidence_id = $1 AND event = 'filed_from_mailbox'", [ev.id])).rows[0];
     expect(custody.details).toMatchObject({ method: "automatic" });
-    // The client email (only a "likely" match) and lunch were left for a person to decide.
     const unfiled = (await db.withFirm(x.avery, (s) => listMessages(s, { status: "unfiled" }))).map((m) => m.subject);
-    expect(unfiled).toEqual(expect.arrayContaining(["Re: settlement range", "Lunch Friday?"]));
+    expect(unfiled).toEqual(expect.arrayContaining(["Your case", "Smith v. Acme — deposition notice", "Re: settlement range", "Lunch Friday?"]));
     // Someone else can't turn on automatic filing for this mailbox.
     await db.withFirm(x.avery, (s) => setDelegate(s, x.connectionId, x.assistant.id, true));
     await expect(db.withFirm(x.sam, (s) => setAutoFile(s, x.connectionId, false))).rejects.toThrow();
   });
 
+  it("review 6: automatic filing only files into Matters the mailbox owner is on", async () => {
+    const x = await setupWithLinks();
+    // Avery can add to Smith v. Acme (unrestricted) but isn't on it: e.g. a colleague's Matter.
+    await turnOnAutomatic(x);
+    ms.messages.push({ id: "N1", folder: "F-inbox", subject: "Notice", from: "opposing@biglaw.example", to: ["avery@lawfirm.example"], received: now(), body: "Case No. 250901234", mime: "n1" });
+    await db.withFirm(x.avery, (s) => requestSync(s, x.connectionId));
+    await syncAll();
+    expect(await drain()).toBe(0);
+    // Still suggested to Avery as a person, who can decide.
+    const msg = (await db.withFirm(x.avery, (s) => listMessages(s, { q: "notice" }))).find((m) => m.subject === "Notice")!;
+    expect((await db.withFirm(x.avery, (s) => suggestMatters(s, msg.id)))[0]?.matterId).toBe(x.matter.id);
+  });
+
+  it("review 6: words, phone numbers and longer numbers never match a court case number", async () => {
+    const x = await setupWithLinks();
+    await db.withFirm(x.owner, (s) => setCourtCaseNumber(s, x.other.id, "REGARDS"));
+    await db.withFirm(x.owner, (s) => setCourtCaseNumber(s, x.walled.id, null));
+    ms.messages.push(
+      { id: "P1", folder: "F-inbox", subject: "Call me", from: "someone@else.example", to: ["avery@lawfirm.example"], received: now(), body: "Call me at 250.901.2345. Regards", mime: "p1" },
+      { id: "P2", folder: "F-inbox", subject: "Federal", from: "someone@else.example", to: ["avery@lawfirm.example"], received: now(), body: "Re 2:24-cv-01234.", mime: "p2" },
+      { id: "P3", folder: "F-inbox", subject: "State", from: "someone@else.example", to: ["avery@lawfirm.example"], received: now(), body: "Re: Case 25-0901-234, hearing moved.", mime: "p3" },
+    );
+    await syncAll();
+    const msgs = await db.withFirm(x.avery, (s) => listMessages(s, {}));
+    const sug = (subj: string) => db.withFirm(x.avery, (s) => suggestMatters(s, msgs.find((m) => m.subject === subj)!.id));
+    expect(await sug("Call me")).toEqual([]);
+    await db.withFirm(x.owner, (s) => setCourtCaseNumber(s, x.matter.id, "2:24-cv-0123"));
+    expect(await sug("Federal")).toEqual([]);
+    await db.withFirm(x.owner, (s) => setCourtCaseNumber(s, x.matter.id, "250901234"));
+    // The same number written with separators still matches.
+    expect((await sug("State"))[0]?.reasons).toContain("Court case number 250901234 appears in the email");
+  });
+
+  it("review 6: switching automatic filing off stops filings already queued", async () => {
+    const x = await setupWithLinks();
+    await db.withFirm(x.owner, (s) => addMatterMember(s, { matterId: x.matter.id, userId: x.attorney.id, access: "edit" }));
+    await turnOnAutomatic(x);
+    ms.messages.push({ id: "N1", folder: "F-inbox", subject: "Notice", from: "opposing@biglaw.example", to: ["avery@lawfirm.example"], received: now(), body: "Case No. 250901234", mime: "n1" });
+    await db.withFirm(x.avery, (s) => requestSync(s, x.connectionId));
+    await syncAll();
+    expect((await t.admin.query("SELECT count(*)::int AS n FROM huis.mail_filings WHERE method = 'automatic' AND status = 'queued'")).rows[0].n).toBe(1);
+    await db.withFirm(x.owner, (s) => setFilingMode(s, "assisted"));
+    await drain();
+    expect(await db.withFirm(x.avery, (s) => listMessages(s, { status: "filed" }))).toEqual([]);
+  });
+
   it("automatic filing never acts when two Matters match equally", async () => {
     const x = await setupWithLinks();
     await db.withFirm(x.owner, (s) => setCourtCaseNumber(s, x.other.id, "250901234"));
+    await db.withFirm(x.owner, (s) => addMatterMember(s, { matterId: x.matter.id, userId: x.attorney.id, access: "edit" }));
     await db.withFirm(x.owner, (s) => setFilingMode(s, "automatic"));
     await db.withFirm(x.avery, (s) => updateMailbox(s, x.connectionId, { scope: "all", manage: true, status: "active" }));
     await db.withFirm(x.avery, (s) => setAutoFile(s, x.connectionId, true));
+    await t.admin.query("UPDATE huis.mail_connections SET auto_file_since = now() - interval '1 year' WHERE id = $1", [x.connectionId]);
+    await t.admin.query("UPDATE huis.firms SET mail_filing_mode_since = now() - interval '1 year'");
     await syncAll();
     // Both Matters have the case number; one also has opposing counsel and its title in the email (100 vs 90): within 10, too close to call.
     const ambiguous = (await db.withFirm(x.avery, (s) => listMessages(s, { q: "250901234" })))[0]!;

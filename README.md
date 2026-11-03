@@ -2,7 +2,7 @@
 
 The Legal Intelligence Operating System: an AI-powered platform that connects the communications, evidence, documents, people, deadlines, research and strategy behind every legal matter.
 
-**Status:** Phase 1 complete (hosting deferred to the end). Phase 2 parts 1–2 — secure evidence intake, reading and search — merged after independent security reviews; part 3 in progress. See [`docs/PHASE-2.md`](docs/PHASE-2.md).
+**Status:** Phase 1 complete (hosting deferred to the end). Phase 2 (secure evidence intake, reading, search, viewer and copies) complete. Phase 3 parts 1–2 (Huis Inbox for Outlook, matter suggestions, filing modes) merged; Gmail next, after Google verification. Every part merged after an independent security review. See [`docs/PHASE-2.md`](docs/PHASE-2.md) and [`docs/PHASE-3.md`](docs/PHASE-3.md).
 
 ## Start here
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — the master architecture: decisions, non-negotiables, the 10 phases, and open questions. **This is the authority.**
@@ -10,7 +10,7 @@ The Legal Intelligence Operating System: an AI-powered platform that connects th
 - [`docs/PHASE-2.md`](docs/PHASE-2.md) — evidence intake, encryption, scanning and chain of custody.
 - [`docs/PHASE-3.md`](docs/PHASE-3.md) — Huis Inbox: connecting Outlook, private sync, search and filing email into Matters.
 - [`docs/FAQ.md`](docs/FAQ.md) — plain-language FAQ for attorneys and firms: safety, privilege and search.
-- [`docs/SECURITY-REVIEW-2026-11.md`](docs/SECURITY-REVIEW-2026-11.md) — independent security review of Phases 1–2 and fixes.
+- [`docs/SECURITY-REVIEW-2026-11.md`](docs/SECURITY-REVIEW-2026-11.md) — independent security reviews (1–6) and fixes.
 - [`docs/source/`](docs/source/) — original specs (ChatGPT architecture with Tracy's answers; Phase 11 Case Outcome Intelligence).
 
 ## Run locally

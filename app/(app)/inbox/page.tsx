@@ -92,7 +92,7 @@ export default async function Inbox({ searchParams }: { searchParams: Promise<{ 
               <select name="mode" defaultValue={data.mode}>
                 <option value="manual">Manual — Huis suggests; people file themselves</option>
                 <option value="assisted">Assisted — one-click filing to a suggested Matter</option>
-                <option value="automatic">Automatic — Huis files emails with a case number, Huis number or known conversation</option>
+                <option value="automatic">Automatic — Huis files clear matches (a case or Huis number plus the client or a contact) by itself</option>
               </select>
             </label>
             <button type="submit" className="secondary">Save</button>
