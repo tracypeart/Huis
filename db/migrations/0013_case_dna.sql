@@ -85,9 +85,16 @@ CREATE INDEX dna_citations_node ON huis.dna_citations (node_id);
 CREATE INDEX dna_citations_evidence ON huis.dna_citations (evidence_id);
 
 -- Everything in a link or citation stays inside its Matter.
+-- Runs as the caller: from the app, row-level security applies to every lookup.
 CREATE FUNCTION huis.dna_same_matter() RETURNS trigger
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = huis, pg_temp AS $$
+LANGUAGE plpgsql SET search_path = huis, pg_temp AS $$
 BEGIN
+  -- From the app: another firm or a Matter the person can't change is refused first,
+  -- with the same answer whether or not the items exist.
+  IF current_user <> 'huis_security'
+     AND (NEW.firm_id IS DISTINCT FROM huis.current_firm_id() OR NOT huis.dna_writable(NEW.matter_id)) THEN
+    RAISE EXCEPTION 'not permitted' USING ERRCODE = '42501';
+  END IF;
   IF TG_TABLE_NAME = 'dna_links' THEN
     IF NOT EXISTS (SELECT 1 FROM huis.dna_nodes n WHERE n.id = NEW.from_id AND n.matter_id = NEW.matter_id AND n.firm_id = NEW.firm_id)
        OR NOT EXISTS (SELECT 1 FROM huis.dna_nodes n WHERE n.id = NEW.to_id AND n.matter_id = NEW.matter_id AND n.firm_id = NEW.firm_id) THEN
@@ -104,9 +111,26 @@ BEGIN
   END IF;
   RETURN NEW;
 END $$;
-ALTER FUNCTION huis.dna_same_matter() OWNER TO huis_security;
-REVOKE ALL ON FUNCTION huis.dna_same_matter() FROM PUBLIC;
+
 CREATE TRIGGER dna_links_same_matter BEFORE INSERT OR UPDATE ON huis.dna_links FOR EACH ROW EXECUTE FUNCTION huis.dna_same_matter();
+
+-- A citation's quote always comes from the source itself, never from whoever adds it.
+CREATE FUNCTION huis.dna_citation_quote() RETURNS trigger
+LANGUAGE plpgsql SET search_path = huis, pg_temp AS $$
+DECLARE v_text text;
+BEGIN
+  -- Huis's own suggestions (saved by the worker) quote what the worker read.
+  IF current_user = 'huis_security' THEN RETURN NEW; END IF;
+  IF NEW.evidence_id IS NOT NULL THEN
+    SELECT left(content, 2000000) INTO v_text FROM huis.evidence_text WHERE evidence_id = NEW.evidence_id;
+  ELSE
+    SELECT title || E'\n\n' || body INTO v_text FROM huis.matter_notes WHERE id = NEW.note_id;
+  END IF;
+  NEW.quote := left(btrim(regexp_replace(substr(coalesce(v_text, ''), NEW.char_start + 1, NEW.char_end - NEW.char_start), '\s+', ' ', 'g')), 1500);
+  IF NEW.quote = '' THEN RAISE EXCEPTION 'that passage is not in the source'; END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER dna_citations_quote BEFORE INSERT ON huis.dna_citations FOR EACH ROW EXECUTE FUNCTION huis.dna_citation_quote();
 CREATE TRIGGER dna_citations_same_matter BEFORE INSERT OR UPDATE ON huis.dna_citations FOR EACH ROW EXECUTE FUNCTION huis.dna_same_matter();
 
 -- What can change after creation: wording, dates and amounts, and the decision (recorded with who and when).
@@ -120,6 +144,12 @@ BEGIN
   IF TG_TABLE_NAME = 'dna_nodes' THEN
     IF NEW.kind IS DISTINCT FROM OLD.kind OR NEW.origin_key IS DISTINCT FROM OLD.origin_key THEN
       RAISE EXCEPTION 'Case DNA history cannot be rewritten';
+    END IF;
+    -- What Huis suggested stays as Huis suggested it until someone confirms it.
+    IF OLD.origin = 'huis' AND OLD.status = 'suggested' AND (
+         NEW.label IS DISTINCT FROM OLD.label OR NEW.details IS DISTINCT FROM OLD.details OR NEW.event_date IS DISTINCT FROM OLD.event_date
+         OR NEW.email IS DISTINCT FROM OLD.email OR NEW.role IS DISTINCT FROM OLD.role OR NEW.amount IS DISTINCT FROM OLD.amount) THEN
+      RAISE EXCEPTION 'Confirm a suggestion before changing it';
     END IF;
   ELSIF NEW.from_id IS DISTINCT FROM OLD.from_id OR NEW.to_id IS DISTINCT FROM OLD.to_id OR NEW.relation IS DISTINCT FROM OLD.relation THEN
     RAISE EXCEPTION 'Case DNA history cannot be rewritten';
@@ -137,11 +167,15 @@ CREATE TRIGGER dna_nodes_guard BEFORE UPDATE ON huis.dna_nodes FOR EACH ROW EXEC
 CREATE TRIGGER dna_links_guard BEFORE UPDATE ON huis.dna_links FOR EACH ROW EXECUTE FUNCTION huis.dna_guard();
 
 -- A node built on evidence that is no longer clean leaves the map.
+-- A node drawn from evidence stays on the map while at least one of its evidence sources is clean.
+-- (Answers only about this firm's nodes; for anything else it says nothing.)
 CREATE FUNCTION huis.dna_node_sources_ok(p_node_id uuid) RETURNS boolean
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = huis, pg_temp AS $$
-  SELECT NOT EXISTS (
-    SELECT 1 FROM huis.dna_citations c JOIN huis.evidence_items i ON i.id = c.evidence_id
-     WHERE c.node_id = p_node_id AND (i.status <> 'clean' OR i.matter_id <> c.matter_id))
+  SELECT NOT EXISTS (SELECT 1 FROM huis.dna_citations c
+                      WHERE c.node_id = p_node_id AND c.firm_id = huis.current_firm_id() AND c.evidence_id IS NOT NULL)
+      OR EXISTS (SELECT 1 FROM huis.dna_citations c JOIN huis.evidence_items i ON i.id = c.evidence_id
+                  WHERE c.node_id = p_node_id AND c.firm_id = huis.current_firm_id()
+                    AND i.status = 'clean' AND i.matter_id = c.matter_id)
 $$;
 ALTER FUNCTION huis.dna_node_sources_ok(uuid) OWNER TO huis_security;
 REVOKE ALL ON FUNCTION huis.dna_node_sources_ok(uuid) FROM PUBLIC;
@@ -175,8 +209,10 @@ CREATE POLICY dna_nodes_insert ON huis.dna_nodes FOR INSERT TO huis_app
 CREATE POLICY dna_nodes_update ON huis.dna_nodes FOR UPDATE TO huis_app
   USING (firm_id = huis.current_firm_id() AND huis.dna_writable(matter_id) AND huis.dna_node_sources_ok(id))
   WITH CHECK (firm_id = huis.current_firm_id());
+-- (Every change policy repeats the read conditions: a change with no WHERE clause
+-- must never reach rows the person can't see.)
 CREATE POLICY dna_nodes_delete ON huis.dna_nodes FOR DELETE TO huis_app
-  USING (firm_id = huis.current_firm_id() AND huis.dna_writable(matter_id) AND origin = 'attorney');
+  USING (firm_id = huis.current_firm_id() AND huis.dna_writable(matter_id) AND origin = 'attorney' AND huis.dna_node_sources_ok(id));
 
 -- Links are visible only when both ends are.
 CREATE POLICY dna_links_select ON huis.dna_links FOR SELECT TO huis_app
@@ -190,10 +226,14 @@ CREATE POLICY dna_links_insert ON huis.dna_links FOR INSERT TO huis_app
               AND EXISTS (SELECT 1 FROM huis.dna_nodes n WHERE n.id = from_id)
               AND EXISTS (SELECT 1 FROM huis.dna_nodes n WHERE n.id = to_id));
 CREATE POLICY dna_links_update ON huis.dna_links FOR UPDATE TO huis_app
-  USING (firm_id = huis.current_firm_id() AND huis.dna_writable(matter_id))
+  USING (firm_id = huis.current_firm_id() AND huis.dna_writable(matter_id)
+         AND EXISTS (SELECT 1 FROM huis.dna_nodes n WHERE n.id = from_id)
+         AND EXISTS (SELECT 1 FROM huis.dna_nodes n WHERE n.id = to_id))
   WITH CHECK (firm_id = huis.current_firm_id());
 CREATE POLICY dna_links_delete ON huis.dna_links FOR DELETE TO huis_app
-  USING (firm_id = huis.current_firm_id() AND huis.dna_writable(matter_id) AND origin = 'attorney');
+  USING (firm_id = huis.current_firm_id() AND huis.dna_writable(matter_id) AND origin = 'attorney'
+         AND EXISTS (SELECT 1 FROM huis.dna_nodes n WHERE n.id = from_id)
+         AND EXISTS (SELECT 1 FROM huis.dna_nodes n WHERE n.id = to_id));
 
 -- Citations: visible only with their node and their source (evidence rules, so walls apply).
 CREATE POLICY dna_citations_select ON huis.dna_citations FOR SELECT TO huis_app
@@ -206,8 +246,12 @@ CREATE POLICY dna_citations_insert ON huis.dna_citations FOR INSERT TO huis_app
               AND EXISTS (SELECT 1 FROM huis.dna_nodes n WHERE n.id = node_id AND n.origin = 'attorney')
               AND ((evidence_id IS NOT NULL AND EXISTS (SELECT 1 FROM huis.evidence_items i WHERE i.id = evidence_id AND i.status = 'clean'))
                    OR (note_id IS NOT NULL AND EXISTS (SELECT 1 FROM huis.matter_notes x WHERE x.id = note_id))));
+-- Only citations an attorney added, on items the person can see, from sources they can open.
 CREATE POLICY dna_citations_delete ON huis.dna_citations FOR DELETE TO huis_app
-  USING (firm_id = huis.current_firm_id() AND huis.dna_writable(matter_id));
+  USING (firm_id = huis.current_firm_id() AND huis.dna_writable(matter_id)
+         AND EXISTS (SELECT 1 FROM huis.dna_nodes n WHERE n.id = node_id AND n.origin = 'attorney')
+         AND ((evidence_id IS NOT NULL AND EXISTS (SELECT 1 FROM huis.evidence_items i WHERE i.id = evidence_id AND i.status = 'clean'))
+              OR (note_id IS NOT NULL AND EXISTS (SELECT 1 FROM huis.matter_notes x WHERE x.id = note_id))));
 
 -- ---------------------------------------------------------------------------
 -- Huis's suggestions, saved by the worker while it reads a document:
@@ -220,14 +264,19 @@ DECLARE
   e jsonb;
   v_node uuid;
   v_addr text;
-  v_name text;
   v_email text;
+  v_people int := 0;
+  v_pos int := 0;
   n int := 0;
 BEGIN
   SELECT * INTO r FROM huis.brain_sources WHERE id = p_source_id AND status = 'running' AND lock_token = p_lock_token;
   IF NOT FOUND THEN RAISE EXCEPTION 'source is not held by this worker'; END IF;
   IF r.evidence_id IS NULL THEN RETURN 0; END IF;
   IF jsonb_typeof(p_events) <> 'array' OR jsonb_array_length(p_events) > 50 THEN RAISE EXCEPTION 'invalid suggestions'; END IF;
+  -- A Matter can't be flooded with suggestions (attorneys can always add their own).
+  IF (SELECT count(*) FROM huis.dna_nodes WHERE matter_id = r.matter_id AND origin = 'huis' AND status = 'suggested') >= 2000 THEN
+    RETURN 0;
+  END IF;
 
   FOR e IN SELECT * FROM jsonb_array_elements(p_events) LOOP
     BEGIN
@@ -247,23 +296,34 @@ BEGIN
     END;
   END LOOP;
 
-  -- People on a filed email (except the firm's own staff).
+  -- People on a filed email (except the firm's own staff), at most 20 per email.
+  -- The suggestion is named by address; the names an email gives are kept with
+  -- each email it came from, so one email can't decide what a person is called.
   FOR v_addr IN
     SELECT a FROM huis.evidence_email m,
       LATERAL unnest(array_prepend(m.from_addr, m.to_addrs || m.cc_addrs)) a
      WHERE m.evidence_id = r.evidence_id AND a IS NOT NULL
      LIMIT 100
   LOOP
+    EXIT WHEN v_people >= 20;
+    v_pos := v_pos + 1;
     v_email := lower(coalesce(substring(v_addr FROM '<([^<>@\s]+@[^<>\s]+)>'), substring(v_addr FROM '([^<>@\s,;"]+@[^<>\s,;"]+)')));
-    CONTINUE WHEN v_email IS NULL OR length(v_email) > 320;
+    CONTINUE WHEN v_email IS NULL OR length(v_email) > 320 OR v_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$';
     CONTINUE WHEN EXISTS (SELECT 1 FROM huis.users u WHERE u.firm_id = r.firm_id AND lower(u.email) = v_email);
-    v_name := nullif(btrim(regexp_replace(split_part(v_addr, '<', 1), '["'']', '', 'g')), '');
+    v_people := v_people + 1;
     BEGIN
+      v_node := NULL;
       INSERT INTO huis.dna_nodes (firm_id, matter_id, kind, label, email, status, origin, origin_key)
-        VALUES (r.firm_id, r.matter_id, 'person', left(coalesce(v_name, v_email), 300), v_email, 'suggested', 'huis',
-                'person:' || v_email)
-        ON CONFLICT (matter_id, origin_key) DO NOTHING;
-      IF FOUND THEN n := n + 1; END IF;
+        VALUES (r.firm_id, r.matter_id, 'person', left(v_email, 300), v_email, 'suggested', 'huis', 'person:' || v_email)
+        ON CONFLICT (matter_id, origin_key) DO NOTHING
+        RETURNING id INTO v_node;
+      IF v_node IS NOT NULL THEN n := n + 1;
+      ELSE SELECT id INTO v_node FROM huis.dna_nodes WHERE matter_id = r.matter_id AND origin_key = 'person:' || v_email;
+      END IF;
+      -- Cited to this email (so the person leaves the map if every email they came from does).
+      INSERT INTO huis.dna_citations (firm_id, matter_id, node_id, evidence_id, char_start, char_end, quote)
+        VALUES (r.firm_id, r.matter_id, v_node, r.evidence_id, 1000000000 + v_pos, 1000000000 + v_pos, left('Email header: ' || v_addr, 1500))
+        ON CONFLICT DO NOTHING;
     EXCEPTION WHEN others THEN NULL;
     END;
   END LOOP;

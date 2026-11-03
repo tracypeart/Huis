@@ -68,12 +68,15 @@ async function node(s: FirmSession, id: string): Promise<DnaNode> {
 // ---------------------------------------------------------------------------
 // Reading
 // ---------------------------------------------------------------------------
+/** Confirmed items always come first, so suggestions can never crowd them out. */
+export const MAX_LISTED = 5000;
+
 export async function listNodes(s: FirmSession, matterId: string, opts: { includeRejected?: boolean } = {}): Promise<DnaNode[]> {
   reader(s);
   await getMatter(s, matterId);
   const { rows } = await s.client.query(
     `SELECT ${NODE_COLS} FROM huis.dna_nodes WHERE matter_id = $1 ${opts.includeRejected ? "" : "AND status <> 'rejected'"}
-      ORDER BY kind, event_date NULLS LAST, label LIMIT 5000`, [matterId]);
+      ORDER BY (status = 'confirmed') DESC, kind, event_date NULLS LAST, label LIMIT ${MAX_LISTED}`, [matterId]);
   return rows.map(toNode);
 }
 
@@ -217,6 +220,7 @@ export async function addNode(s: FirmSession, matterId: string, input: unknown):
 export async function updateNode(s: FirmSession, nodeId: string, input: unknown): Promise<void> {
   writer(s);
   const n = await node(s, nodeId);
+  if (n.origin === "huis" && n.status === "suggested") throw new UserFacingError("Confirm Huis's suggestion before changing it.");
   const v = nodeInput.omit({ kind: true }).parse(input);
   await s.client.query(
     "UPDATE huis.dna_nodes SET label = $2, details = $3, event_date = $4, email = $5, role = $6, amount = $7 WHERE id = $1",
@@ -328,7 +332,12 @@ export async function importMatterPeople(s: FirmSession, matterId: string): Prom
     if (existing.some((e) => (e.kind === "person" || e.kind === "organization") && (e.label === p.label || (p.email && e.email === p.email) ) && e.origin === "attorney")) continue;
     // A matching suggestion from Huis is confirmed rather than duplicated.
     const suggestion = p.email ? existing.find((e) => e.origin === "huis" && e.email === p.email && e.status === "suggested") : undefined;
-    if (suggestion) { await s.client.query("UPDATE huis.dna_nodes SET status = 'confirmed', role = $2 WHERE id = $1", [suggestion.id, p.role.slice(0, 100)]); n++; continue; }
+    if (suggestion) {
+      // Confirm first (a suggestion can't be reworded while it's a suggestion), then name it.
+      await s.client.query("UPDATE huis.dna_nodes SET status = 'confirmed' WHERE id = $1", [suggestion.id]);
+      await s.client.query("UPDATE huis.dna_nodes SET label = $2, role = $3 WHERE id = $1", [suggestion.id, p.label.slice(0, 300), p.role.slice(0, 100)]);
+      n++; continue;
+    }
     const email = p.email && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(p.email) ? p.email : null;
     await insertNode(s, matterId, { kind: p.kind, label: p.label.slice(0, 300), details: "", eventDate: null, email, role: p.role.slice(0, 100), amount: null });
     n++;

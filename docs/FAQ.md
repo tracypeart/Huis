@@ -59,6 +59,7 @@ Yes, at every stage. After each part is built, a separate reviewer that did not 
 - **Review 6** (matter suggestions and automatic filing): suggestions never revealed Matters someone couldn't see. 5 issues fixed, mainly making automatic filing much stricter, so neither a colleague nor an outside sender can steer someone's email into the wrong Matter.
 - **Review 7** (Gmail): connections, tokens and privacy held. 8 issues fixed. The most important stops a deliberately crafted email from slowing Huis down, and makes sure mail deleted in Gmail always leaves Huis too.
 - **Review 8** (Matter Brain): walls, outside users and other firms held against direct database attacks. 6 issues fixed. The most important stops a planted document from pushing itself into every answer, and makes the database itself (not just the app) withhold an answer once a source becomes unavailable.
+- **Review 9** (Case DNA™): outside users, walls and history held. 8 issues fixed. The most important closes a database shortcut that could have brought back items hidden for safety reasons, and makes every quote in the case map come from the source itself.
 
 ### What is the Matter Brain?
 Each Matter's own knowledge base: everything readable in it (documents, scans, filed email, transcripts, client uploads) plus the attorneys' notes. You can ask it a question in plain English, for example "When was she terminated, and what happened just before?" Every answer cites the passages it came from, with links to the source.

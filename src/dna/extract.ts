@@ -19,6 +19,7 @@ const DATE = new RegExp(
   `|(\\d{4})-(\\d{2})-(\\d{2}))\\b`, "gi");
 
 export const MAX_EVENTS = 40;
+const MAX_EXAMINED = 2000;
 const MAX_TEXT = 2_000_000;
 
 function iso(y: number, m: number, d: number): string | null {
@@ -52,7 +53,9 @@ export function findEvents(input: string): FoundEvent[] {
   const out: FoundEvent[] = [];
   const seen = new Set<string>();
   DATE.lastIndex = 0;
-  for (let m = DATE.exec(text); m && out.length < MAX_EVENTS; m = DATE.exec(text)) {
+  // Only so many date-like matches are examined per document, however the text is built.
+  let examined = 0;
+  for (let m = DATE.exec(text); m && out.length < MAX_EVENTS && examined++ < MAX_EXAMINED; m = DATE.exec(text)) {
     let date: string | null = null;
     if (m[1]) date = iso(Number(m[3]), MONTHS[m[1].toLowerCase()]!, Number(m[2]));
     else if (m[5]) date = iso(Number(m[6]), MONTHS[m[5].toLowerCase()]!, Number(m[4]));

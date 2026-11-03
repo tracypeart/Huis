@@ -6,7 +6,7 @@ import { FlashBanner } from "../../../../../lib/ui";
 import { WORK_PRODUCT_LABEL } from "../../../../../src/ai/gateway";
 import { TEMPLATE_NOTE } from "../../../../../src/dna/templates";
 import { NotFoundError } from "../../../../../src/errors";
-import { CLAIM_TEMPLATES, KIND_LABELS, listNodes, type DnaNode, type NodeKind } from "../../../../../src/services/dna";
+import { CLAIM_TEMPLATES, KIND_LABELS, listNodes, MAX_LISTED, type DnaNode, type NodeKind } from "../../../../../src/services/dna";
 import { getMatter } from "../../../../../src/services/matters";
 import { INTERNAL_ROLES } from "../../../../../src/security/permissions";
 
@@ -43,6 +43,7 @@ export default async function CaseDnaPage({ params, searchParams }: { params: Pr
         Huis suggests; you decide.<br /><span className="badge privileged">{WORK_PRODUCT_LABEL}</span>
       </p>
       <FlashBanner flash={flash} />
+      {nodes.length >= MAX_LISTED ? <p className="notice">This map is very large: showing the first {MAX_LISTED.toLocaleString()} items (everything confirmed comes first).</p> : null}
 
       <div className="card">
         <h2>Claims and defenses</h2>

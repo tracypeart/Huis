@@ -1,12 +1,12 @@
 # Phase 4 — Matter Brain + Case DNA™
 
-**Status:** Part 1 (Matter Brain) merged after independent security review 8. Part 2 (Case DNA™) built and tested; under independent review.
+**Status:** Part 1 (Matter Brain) merged after independent security review 8. Part 2 (Case DNA™) merged after independent security review 9. Part 3 next.
 
 ## Plan
 | Part | What | Status |
 |---|---|---|
 | 4.1 | **Matter Brain**: each Matter's knowledge base (documents, filed email, transcripts, client uploads, attorney notes), split into passages, searchable by words and by meaning; **Ask this Matter** with cited answers; attorney notes; AI Gateway with a firm-level AI setting and a usage log | Merged |
-| 4.2 | **Case DNA™**: the relationship map: people, organizations, events, claims, defenses, legal elements, witnesses, damages, each linked to the evidence behind it. AI suggests; attorneys confirm. Click a claim to see its elements, supporting and contradicting facts, evidence, witnesses and emails | Built, in review |
+| 4.2 | **Case DNA™**: the relationship map: people, organizations, events, claims, defenses, legal elements, witnesses, damages, each linked to the evidence behind it. AI suggests; attorneys confirm. Click a claim to see its elements, supporting and contradicting facts, evidence, witnesses and emails | Merged |
 | 4.3 | Full export of a Matter Brain (with evidence), and written answers from an outside AI provider once its zero-retention terms are signed (O-3) | After 4.2 |
 
 PostgreSQL stays the single source of truth. Passages and meaning fingerprints live in PostgreSQL (pgvector); a separate graph database is added only if Case DNA outgrows it.
@@ -32,13 +32,13 @@ PostgreSQL stays the single source of truth. Passages and meaning fingerprints l
 | Area | What Huis does |
 |---|---|
 | The map | People, organizations, events (with dates), claims, defenses, legal elements, facts and damages, and the links between them (supports, contradicts, witnessed, involves, works for, caused, defends against, is an element of). Each item can cite the passages it came from |
-| Huis suggests | While reading each document, Huis suggests **dated events** (each sentence with a date, cited to where it appears) and **people** on filed email (except the firm's own staff). **Find evidence** on any legal element searches the Matter Brain for passages that may prove or disprove it |
+| Huis suggests | While reading each document, Huis suggests **dated events** (each sentence with a date, cited to where it appears) and **people** on filed email (except the firm's own staff; at most 20 per email; named by email address, with the name each email gave shown beside it). **Find evidence** on any legal element searches the Matter Brain for passages that may prove or disprove it |
 | Attorneys decide | Suggestions count only once someone confirms them. Rejected suggestions aren't suggested again, even when documents are read again. Every decision records who made it and when. Huis's suggestions can be rejected but not deleted, so the record stays complete |
 | Claims | Add a claim from a starting template, with its elements and sources, or build your own: FMLA retaliation, FMLA interference, Title VII retaliation, ADA discrimination, breach of contract (Utah), wrongful termination in violation of public policy (Utah). Templates are a starting point, not legal advice; check every element against the controlling law |
 | Claim view | Click a claim to see each element with its supporting and contradicting facts and their sources, plus the claim's witnesses, emails and other evidence |
 | People | **Add the client and contacts** puts the Matter's client and linked contacts on the map, confirming matching suggestions instead of duplicating them |
 | Who can use it | Firm staff on the Matter; read-only staff can read but not change it. Clients and other outside users never see it. Ethical walls apply. Nothing can be linked or cited across Matters, and only a passage the person can open can become a fact |
-| Evidence that changes | An item built on evidence that is no longer clean (e.g. later found infected) disappears from the map |
+| Evidence that changes | An item built on evidence that is no longer clean (e.g. later found infected) disappears from the map once none of its sources is clean. Quotes always come from the source itself |
 | Logs | The audit log records the kind of change (added, confirmed, linked…), never the wording |
 
-**Tests:** `test/dna.test.ts`, 9 tests: event finding (formats, impossible dates, abbreviations, speed on hostile text), suggestions from documents and email, confirm/reject and rejections sticking, the claim view with facts, witnesses and emails, importing people, outside users and read-only staff, walls and cross-Matter attempts (including direct database writes), planting suggestions or rewriting history, evidence that stops being clean, and audit without wording. Also checked in a real browser.
+**Tests:** `test/dna.test.ts`, 14 tests (5 from review 9): event finding (formats, impossible dates, abbreviations, speed on hostile text), suggestions from documents and email, confirm/reject and rejections sticking, the claim view with facts, witnesses and emails, importing people, outside users and read-only staff, walls and cross-Matter attempts (including direct database writes), planting suggestions or rewriting history, evidence that stops being clean, and audit without wording. Also checked in a real browser.

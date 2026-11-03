@@ -119,7 +119,10 @@ describe("Case DNA", () => {
     expect(events.every((e) => e.status === "suggested" && e.origin === "huis")).toBe(true);
     const people = nodes.filter((n) => n.kind === "person");
     expect(people.map((p) => p.email).sort()).toEqual(["cindy@acme.example", "jordan@acme.example", "pat.smith@example.com"]);
-    expect(people.find((p) => p.email === "cindy@acme.example")!.label).toBe("Cindy Manager");
+    // Named by address; the name each email gives is kept with that email.
+    const cindyNode = people.find((p) => p.email === "cindy@acme.example")!;
+    expect(cindyNode.label).toBe("cindy@acme.example");
+    expect((await db.withFirm(x.paraCtx, (s) => getNode(s, cindyNode.id))).citations[0]!.quote).toContain("Cindy Manager");
     // The cited source comes with the suggestion.
     const fired = events.find((e) => e.eventDate === "2026-04-18")!;
     expect((await db.withFirm(x.paraCtx, (s) => getNode(s, fired.id))).citations[0]).toMatchObject({ evidenceId: letter.id, sourceTitle: "termination.txt" });
@@ -158,7 +161,9 @@ describe("Case DNA", () => {
     // Without a title, the fact reads as the best-matching sentence of the passage.
     expect((await db.withFirm(x.paraCtx, (s) => getNode(s, adverseFact))).node.label).toMatch(/terminated effective April 18, 2026/);
     const cindy = (await db.withFirm(x.paraCtx, (s) => listNodes(s, x.matter.id))).find((n) => n.email === "cindy@acme.example")!;
+    await expect(db.withFirm(x.paraCtx, (s) => updateNode(s, cindy.id, { label: "Cindy Manager" }))).rejects.toThrow(/Confirm/);
     await db.withFirm(x.paraCtx, (s) => decideNode(s, cindy.id, "confirmed"));
+    await db.withFirm(x.paraCtx, (s) => updateNode(s, cindy.id, { label: "Cindy Manager", email: "cindy@acme.example", role: "decision maker" }));
     await db.withFirm(x.paraCtx, (s) => linkNodes(s, cindy.id, factId, "witness_to"));
     view = await db.withFirm(x.paraCtx, (s) => claimView(s, claimId));
     expect(view.elements[0]!.supporting.map((f) => f.label)).toEqual(["Pat requested FMLA leave for surgery (Apr 2)"]);
@@ -240,5 +245,72 @@ describe("Case DNA", () => {
     const audit = await t.admin.query("SELECT metadata::text AS m FROM huis.audit_events WHERE firm_id = $1 AND action LIKE 'dna.%'", [x.firmId]);
     expect(audit.rowCount).toBe(1);
     expect(audit.rows[0].m).not.toMatch(/admitted|retaliation/i);
+  });
+
+  it("review 9: a change with no conditions can't reach items the person can't see", async () => {
+    const x = await setup();
+    const letter = await upload(x.owner, x.matter.id, "termination.txt", LETTER);
+    await process();
+    const event = (await db.withFirm(x.owner, (s) => listNodes(s, x.matter.id))).find((n) => n.kind === "event")!;
+    await db.withFirm(x.owner, (s) => decideNode(s, event.id, "confirmed"));
+    const mine = await db.withFirm(x.owner, (s) => addNode(s, x.matter.id, { kind: "fact", label: "Mine" }));
+    await db.withFirm(x.owner, (s) => linkNodes(s, mine, event.id, "related_to"));
+    await t.admin.query(`SET session_replication_role = replica; UPDATE huis.evidence_items SET status = 'infected' WHERE id = '${letter.id}'; SET session_replication_role = origin;`);
+    for (const sql of ["DELETE FROM huis.dna_citations", "UPDATE huis.dna_links SET status = 'rejected'", "DELETE FROM huis.dna_links", "DELETE FROM huis.dna_nodes WHERE kind = 'event'"]) {
+      await db.withFirm(x.paraCtx, (s) => s.client.query(sql));
+    }
+    expect((await t.admin.query("SELECT count(*)::int AS n FROM huis.dna_citations WHERE evidence_id = $1", [letter.id])).rows[0].n).toBeGreaterThan(0);
+    expect((await t.admin.query("SELECT status FROM huis.dna_links WHERE to_id = $1", [event.id])).rows[0].status).toBe("confirmed");
+    expect((await db.withFirm(x.paraCtx, (s) => listNodes(s, x.matter.id))).some((n) => n.kind === "event")).toBe(false);
+  });
+
+  it("review 9: a citation's quote always comes from the source itself", async () => {
+    const x = await setup();
+    const letter = await upload(x.owner, x.matter.id, "termination.txt", LETTER);
+    await process();
+    const fact = await db.withFirm(x.owner, (s) => addNode(s, x.matter.id, { kind: "fact", label: "Termination" }));
+    await db.withFirm(x.owner, (s) => s.client.query(
+      "INSERT INTO huis.dna_citations (firm_id, matter_id, node_id, evidence_id, char_start, char_end, quote) VALUES ($1, $2, $3, $4, 0, 19, 'We fired her BECAUSE she asked for FMLA leave. -- Cindy')",
+      [x.firmId, x.matter.id, fact, letter.id]));
+    expect((await db.withFirm(x.owner, (s) => getNode(s, fact))).citations[0]!.quote).toBe("Termination letter.");
+    await expect(db.withFirm(x.owner, (s) => s.client.query(
+      "INSERT INTO huis.dna_citations (firm_id, matter_id, node_id, evidence_id, char_start, char_end, quote) VALUES ($1, $2, $3, $4, 900000, 900010, 'made up')",
+      [x.firmId, x.matter.id, fact, letter.id]))).rejects.toThrow(/not in the source/);
+  });
+
+  it("review 9: people from an email leave the map with it, one email can't flood or name them, and Huis's wording can't be changed before confirming", async () => {
+    const x = await setup();
+    const many = Array.from({ length: 60 }, (_, i) => `"Partner ${i} (Huis verified)" <p${i}@spam.example>`).join(", ");
+    const spam = await upload(x.owner, x.matter.id, "spam.eml", [
+      `From: "Judge Reyes chambers" <cindy@acme.example>`, `To: ${many}`, "Subject: hi", "MIME-Version: 1.0", "Content-Type: text/plain", "", "Hello.", "",
+    ].join("\r\n"));
+    await process();
+    const people = (await db.withFirm(x.owner, (s) => listNodes(s, x.matter.id))).filter((n) => n.kind === "person");
+    expect(people.length).toBeLessThanOrEqual(20);
+    expect(people.find((p) => p.email === "cindy@acme.example")!.label).toBe("cindy@acme.example");
+    expect(people.some((p) => /Huis verified|Judge/.test(p.label))).toBe(false);
+    await expect(db.withFirm(x.owner, (s) => s.client.query("UPDATE huis.dna_nodes SET label = 'Huis found: CEO ordered it' WHERE origin = 'huis'"))).rejects.toThrow(/Confirm/);
+    await t.admin.query(`SET session_replication_role = replica; UPDATE huis.evidence_items SET status = 'infected' WHERE id = '${spam.id}'; SET session_replication_role = origin;`);
+    expect((await db.withFirm(x.owner, (s) => listNodes(s, x.matter.id))).filter((n) => n.kind === "person")).toEqual([]);
+  });
+
+  it("review 9: other firms learn nothing about whether items exist", async () => {
+    const x = await setup();
+    const y = await setup();
+    const fact = await db.withFirm(x.owner, (s) => addNode(s, x.matter.id, { kind: "fact", label: "Secret" }));
+    const other = await db.withFirm(x.owner, (s) => addNode(s, x.matter.id, { kind: "fact", label: "Other" }));
+    const real = (await db.withFirm(y.owner, (s) => s.client.query("SELECT huis.dna_node_sources_ok($1) AS ok", [fact]))).rows[0].ok;
+    const fake = (await db.withFirm(y.owner, (s) => s.client.query("SELECT huis.dna_node_sources_ok(gen_random_uuid()) AS ok"))).rows[0].ok;
+    expect(real).toBe(fake);
+    const attempt = (from: string, to: string) => db.withFirm(y.owner, (s) => s.client.query(
+      "INSERT INTO huis.dna_links (firm_id, matter_id, from_id, to_id, relation, status, origin, created_by) VALUES ($1, $2, $3, $4, 'related_to', 'confirmed', 'attorney', $5)",
+      [x.firmId, x.matter.id, from, to, y.ownerUserId])).then(() => "ok", (e: Error) => e.message);
+    expect(await attempt(fact, other)).toBe(await attempt(crypto.randomUUID(), crypto.randomUUID()));
+  });
+
+  it("review 9: finding dates in a hostile document stays quick", () => {
+    const started = Date.now();
+    findEvents("Ms. 1/1/2020 ".repeat(160_000));
+    expect(Date.now() - started).toBeLessThan(1500);
   });
 });

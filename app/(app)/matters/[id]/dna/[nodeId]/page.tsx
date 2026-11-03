@@ -212,7 +212,7 @@ export default async function DnaNodePage({ params, searchParams }: {
         ) : null}
       </div>
 
-      {data.canWrite && n.status !== "rejected" ? (
+      {data.canWrite && n.status === "confirmed" ? (
         <div className="card">
           <h2>Edit</h2>
           <form action={dnaUpdateNodeAction}>
