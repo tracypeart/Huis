@@ -9,6 +9,7 @@ import { listUsers } from "../../../../src/services/users";
 import { listEvidence } from "../../../../src/services/evidence";
 import Link from "next/link";
 import EvidenceUploader from "./uploader";
+import { canExportMatter } from "../../../../src/services/matterExport";
 import { EvidenceStatus, formatBytes } from "../../../../lib/ui";
 import { can, INTERNAL_ROLES, type Role } from "../../../../src/security/permissions";
 
@@ -48,7 +49,7 @@ export default async function MatterOverview({ params, searchParams }: {
       ? (await s.client.query<{ display_name: string }>("SELECT display_name FROM huis.clients WHERE id = $1", [matter.clientId])).rows[0]
       : undefined;
     return {
-      matter, folders, internal, canManage, canEdit,
+      matter, folders, internal, canManage, canEdit, canExport: await canExportMatter(s, id),
       members: members.rows, contacts: linked?.rows ?? [],
       leadName: lead?.full_name ?? "—", clientName: client?.display_name,
       people: canManage ? (await listUsers(s)).filter((u) => u.status === "active") : [],
@@ -233,6 +234,23 @@ export default async function MatterOverview({ params, searchParams }: {
               <button type="submit" className="secondary">Link</button>
             </form>
           ) : null}
+        </div>
+      ) : null}
+      {data.canExport ? (
+        <div className="card">
+          <h2>Export this Matter</h2>
+          <p className="notice">
+            A complete copy as a ZIP file: every original exactly as received (scanned-clean items only), the text Huis read from each,
+            the chain of custody, viewer marks, attorney notes, your Matter Brain questions, Case DNA, a manifest, and a checksum for
+            every file. Built as it downloads; Huis keeps no copy. Each item&apos;s chain of custody records the export.
+          </p>
+          <form method="post" action={`/api/matters/${m.id}/export`}>
+            <label className="check">
+              <input type="checkbox" name="acknowledge" required />
+              <span>This export contains privileged and confidential material, including the Privileged &amp; Confidential area and attorney work product. I will store it securely.</span>
+            </label>
+            <div style={{ marginTop: 8 }}><button type="submit">Download export</button></div>
+          </form>
         </div>
       ) : null}
     </>

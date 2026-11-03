@@ -60,6 +60,7 @@ Yes, at every stage. After each part is built, a separate reviewer that did not 
 - **Review 7** (Gmail): connections, tokens and privacy held. 8 issues fixed. The most important stops a deliberately crafted email from slowing Huis down, and makes sure mail deleted in Gmail always leaves Huis too.
 - **Review 8** (Matter Brain): walls, outside users and other firms held against direct database attacks. 6 issues fixed. The most important stops a planted document from pushing itself into every answer, and makes the database itself (not just the app) withhold an answer once a source becomes unavailable.
 - **Review 9** (Case DNA™): outside users, walls and history held. 8 issues fixed. The most important closes a database shortcut that could have brought back items hidden for safety reasons, and makes every quote in the case map come from the source itself.
+- **Review 10** (full export of a Matter): walls, outside users and private questions held. 8 issues fixed. The most important re-checks access before every single file while an export downloads, so someone whose access is removed (or a file found infected) partway through stops receiving files immediately.
 
 ### What is the Matter Brain?
 Each Matter's own knowledge base: everything readable in it (documents, scans, filed email, transcripts, client uploads) plus the attorneys' notes. You can ask it a question in plain English, for example "When was she terminated, and what happened just before?" Every answer cites the passages it came from, with links to the source.
@@ -79,8 +80,14 @@ A map of how a case fits together: people, events, claims and their legal elemen
 Huis suggests, and attorneys decide. Huis proposes dated events from documents and people from email, and finds passages that may prove an element. Nothing counts until someone confirms it. Like the Matter Brain, Case DNA is attorney work product that clients and other outside users never see.
 
 ### Who owns our data?
-Your firm does. You can export everything at any time.
+Your firm does. A Matter's owner or a firm administrator can export the whole Matter at any time from its page with **Download export**. The ZIP contains:
+- every original exactly as received
+- the text Huis read from each item
+- the chain of custody
+- attorney notes, their own Matter Brain questions, and Case DNA
+- a manifest, and a checksum for every file so you can show nothing was altered
 
+Huis keeps no copy of the export, and each item's chain of custody records that it was exported.
 ### Is our real client data used to build or test Huis?
 No. Development and testing use only made-up sample files.
 
