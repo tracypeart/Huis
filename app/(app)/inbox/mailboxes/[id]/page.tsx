@@ -33,15 +33,15 @@ export default async function MailboxSettings({ params, searchParams }: { params
     <>
       <p className="notice"><Link href="/inbox">← Inbox</Link></p>
       <h1>{m.accountAddress ?? m.displayName}</h1>
-      <p className="sub">Outlook mailbox · read-only access · unfiled mail is visible only to you and the people below</p>
+      <p className="sub">{m.provider === "google" ? "Gmail" : "Outlook"} mailbox · read-only access · unfiled mail is visible only to you and the people below</p>
       <FlashBanner flash={flash} />
 
       <div className="card">
         <h2>What Huis brings in</h2>
         <form action={updateMailboxAction}>
           <input type="hidden" name="connectionId" value={m.id} />
-          <label className="check"><input type="radio" name="scope" value="all" defaultChecked={m.scope === "all"} /> <span>The whole mailbox (new folders included automatically)</span></label>
-          <label className="check"><input type="radio" name="scope" value="selected" defaultChecked={m.scope === "selected"} /> <span>Only the folders I choose below</span></label>
+          <label className="check"><input type="radio" name="scope" value="all" defaultChecked={m.scope === "all"} /> <span>The whole mailbox (new folders or labels included automatically)</span></label>
+          <label className="check"><input type="radio" name="scope" value="selected" defaultChecked={m.scope === "selected"} /> <span>Only the folders (Gmail: labels) I choose below</span></label>
           <label style={{ marginTop: 8 }}>Only mail received on or after (optional)
             <input type="date" name="syncSince" defaultValue={m.syncSince ?? ""} />
           </label>
@@ -76,10 +76,11 @@ export default async function MailboxSettings({ params, searchParams }: { params
       </div>
 
       <div className="card">
-        <h2>Folders</h2>
+        <h2>{m.provider === "google" ? "Labels" : "Folders"}</h2>
+        {m.provider === "google" ? <p className="notice">An email with several labels appears under the first one you&apos;ve chosen (Inbox, Sent, Starred, Important, then your labels). Spam, Trash and Drafts are never brought into Huis.</p> : null}
         {data.folders.length === 0 ? <p className="notice">Folders appear after the first sync.</p> : (
           <table>
-            <thead><tr><th>Folder</th><th>Items</th><th>Brought into Huis</th></tr></thead>
+            <thead><tr><th>{m.provider === "google" ? "Label" : "Folder"}</th><th>Items</th><th>Brought into Huis</th></tr></thead>
             <tbody>
               {data.folders.map((f) => (
                 <tr key={f.id}>
@@ -125,7 +126,7 @@ export default async function MailboxSettings({ params, searchParams }: { params
 
       <div className="card">
         <h2>Disconnect</h2>
-        <p className="notice">Deletes Huis&apos;s access and every unfiled email from Huis. Emails already filed stay in their Matters. You can also remove Huis&apos;s access in your Microsoft account settings.</p>
+        <p className="notice">Deletes Huis&apos;s access and every unfiled email from Huis. Emails already filed stay in their Matters. You can also remove Huis&apos;s access in your {m.provider === "google" ? "Google" : "Microsoft"} account settings.</p>
         <form action={updateMailboxAction}>
           <input type="hidden" name="connectionId" value={m.id} />
           <input type="hidden" name="scope" value={m.scope} />

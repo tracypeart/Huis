@@ -69,7 +69,7 @@ No. Development and testing use only made-up sample files.
 ## Huis Inbox (email)
 
 ### Which email can Huis connect to?
-Outlook and Microsoft 365 now; Gmail is next. Each attorney or staff member connects their own mailbox with **Connect Outlook**.
+Outlook / Microsoft 365 and Gmail / Google Workspace. Each attorney or staff member connects their own mailbox with **Connect Outlook** or **Connect Gmail**. Gmail labels appear as folders. Spam, Trash and Drafts are never brought into Huis. (Until Google finishes verifying Huis, Gmail is limited to named test users.)
 
 ### What can Huis do with my mailbox?
 Read it, and nothing else. Huis asks Microsoft for read-only access: it can't send, change, move or delete your email. You can disconnect at any time in Huis or in your Microsoft account.

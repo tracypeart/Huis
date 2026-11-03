@@ -1,9 +1,15 @@
 import type { Readable } from "node:stream";
 
-/** What every mailbox provider (Outlook now, Gmail next) must offer Huis. */
+/** What every mailbox provider (Outlook, Gmail) must offer Huis. */
 export interface MailProvider {
   listFolders(): Promise<MailFolderInfo[]>;
+  /** Folder-by-folder change feed (Outlook). */
   deltaPage(folderProviderId: string, link: string | null): Promise<DeltaPage>;
+  /**
+   * Whole-mailbox change feed (Gmail). When present it is used instead of
+   * deltaPage: each message carries its labels, which decide its folder.
+   */
+  mailboxPage?(link: string | null): Promise<MailboxPage>;
   fetchMime(messageId: string): Promise<Readable>;
 }
 
@@ -19,3 +25,6 @@ export type MailMessageInfo =
     };
 
 export interface DeltaPage { messages: MailMessageInfo[]; nextLink: string | null; deltaLink: string | null }
+
+/** restart: the saved position is too old (Gmail keeps about a week of history); import everything again. */
+export interface MailboxPage { messages: (MailMessageInfo & { labels: string[] })[]; nextLink: string | null; deltaLink: string | null; restart?: boolean }

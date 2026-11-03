@@ -16,7 +16,7 @@ export async function GET(req: NextRequest) {
   const done = async (kind: "success" | "error", message: string) =>
     NextResponse.redirect(new URL(`/inbox?f=${await setFlash({ kind, message })}`, cfg.baseUrl));
   const jar = await cookies();
-  const pending = await unseal<{ state: string; nonce: string; verifier: string; firmId: string; userId: string }>(
+  const pending = await unseal<{ provider?: string; state: string; nonce: string; verifier: string; firmId: string; userId: string }>(
     jar.get(MAILBOX_OAUTH_COOKIE)?.value, cfg.sessionKey, "mailbox-oauth");
   jar.delete({ name: MAILBOX_OAUTH_COOKIE, path: "/api/mailboxes" });
 
@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
   const code = p.get("code");
   const state = p.get("state");
   const session = await getSession();
-  if (!cfg.microsoft || !pending || !code || !state || !same(state, pending.state)
+  if (!cfg.microsoft || !pending || (pending.provider ?? "microsoft") !== "microsoft" || !code || !state || !same(state, pending.state)
       || !session || session.userId !== pending.userId || session.firmId !== pending.firmId) {
     return done("error", "The mailbox connection couldn't be verified. Please try again.");
   }

@@ -52,7 +52,7 @@ export async function getMailbox(s: FirmSession, id: string): Promise<Mailbox> {
 
 /** Records a newly authorized mailbox (called from the connect callback). */
 export async function connectMailbox(s: FirmSession, p: {
-  provider: "microsoft"; subject: string; address: string | null; displayName: string; refreshToken: string; masterKey: string;
+  provider: "microsoft" | "google"; subject: string; address: string | null; displayName: string; refreshToken: string; masterKey: string;
 }): Promise<string> {
   staffOnly(s);
   if (s.actor.role === "read_only") throw new PermissionDeniedError("connect a mailbox");

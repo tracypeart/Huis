@@ -1,13 +1,13 @@
 # Phase 3 — Huis Inbox (Email Intelligence)
 
-**Status:** Part 1 merged after independent security review 5. Part 2 (suggestions, filing modes) merged after independent security review 6.
+**Status:** Parts 1 and 2 merged after independent security reviews 5 and 6. Part 3 (Gmail) built and tested; under independent review. Gmail works for Google test users now; connecting other firms' Gmail needs Google's verification and CASA assessment (below).
 
 ## Plan
 | Part | What | Status |
 |---|---|---|
 | 3.1 | Connect Outlook, whole mailbox or chosen folders, continuous sync ("Let Huis manage"), email search, file email into Matters, matter colors | Merged |
 | 3.2 | Matter suggestions (case numbers, Huis numbers, people, threads; AI later), Manual / Assisted / Automatic filing | Merged |
-| 3.3 | Gmail, built the same way | After Google verification (see below) |
+| 3.3 | Gmail, built the same way | Built, in review (live for outside firms after Google verification) |
 | Later | Semantic ("meaning") search across email, with the AI layer in Phase 6 | Phase 6 |
 
 ## Part 1 — what exists
@@ -56,6 +56,25 @@
 **Matching numbers.** Huis and court case numbers are matched as whole numbers, ignoring spacing and dashes. So 2:24-cv-0123 doesn't match inside 2:24-cv-01234, and a case number doesn't match inside a phone number. A court case number needs at least six letters or digits, including at least two digits.
 
 Every one-click or automatic filing records its reasons and method in the email's chain of custody. AI-based suggestions arrive with the AI layer (Phase 6) and will add to these signals rather than replace them.
+
+## Part 3 — Gmail
+
+Gmail works like Outlook: the same privacy, search, suggestions, filing modes, chain of custody and permission checks. What differs:
+
+| Area | Gmail |
+|---|---|
+| Connecting | **Connect Gmail** asks Google for read-only access to the signed-in staff member's own Gmail (`gmail.readonly`, plus sign-in). If someone unticks the Gmail permission on Google's consent screen, Huis refuses the connection and says why. The account is identified by Google's stable account id, never by email address |
+| Labels | Labels are shown as folders: Inbox, Sent, Starred, Important, the firm's own labels (nested labels like "Clients/Smith" keep their nesting), and "No label (archived)". An email with several labels appears under the first chosen label in that order. **Spam, Trash and Drafts are never brought into Huis** |
+| Syncing | The first sync imports the mailbox in pages; later syncs use Gmail's change history (new, deleted, trashed and relabelled email). If the history is too old (Gmail keeps about a week), Huis imports again. Choosing different labels starts a fresh import |
+| Filing | Huis files the original message exactly as Google holds it (raw MIME), with the same custody record as Outlook |
+| Safety | Every Gmail address Huis calls is built by Huis; paging tokens from Google are checked and an unexpected one stops the sync with an error rather than being followed or silently skipping mail. Tokens are sent only to Google's sign-in and Gmail hosts. An expired Google grant marks the mailbox **Needs reconnecting** |
+
+**Tests:** `test/gmail.test.ts`, 12 tests against a stand-in Google service: consent request, ID token checks (nonce, audience, issuer), refusing connections without Gmail permission, encrypted bound credentials, labels and folder choice, Spam/Trash/Drafts excluded, HTML mail read as text, change history, expired history, chosen labels, exact original on filing, reconnect, bad paging tokens, privacy, and hostile message content. Also checked in a real browser.
+
+**Needed from Google before outside firms can connect** (until then, up to 100 named test users can):
+- A Google Cloud project with an OAuth client ("Web application"). Add the redirect `https://<huis domain>/api/mailboxes/google/callback` (and `http://localhost:3000/api/mailboxes/google/callback` for development). Store `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` in the secret vault, never in code or chat.
+- OAuth consent screen with the scopes above, Google's app verification, and the CASA security assessment (open item O-4: owner and budget).
+- Note: while the app is in Google's "testing" mode, Google expires test users' access after 7 days, so they will be asked to reconnect weekly. This goes away once the app is verified.
 
 ## Needed from the end-of-build Azure step
 - Add the redirect address `https://<huis domain>/api/mailboxes/microsoft/callback` (and `http://localhost:3000/api/mailboxes/microsoft/callback` for development) to the Huis app registration.
