@@ -590,7 +590,8 @@ describe("part 3.2: suggestions and filing modes", () => {
     await db.withFirm(x.avery, (s) => updateMailbox(s, x.connectionId, { scope: "all", manage: true, status: "active" }));
     await db.withFirm(x.avery, (s) => setAutoFile(s, x.connectionId, true));
     await t.admin.query("UPDATE huis.mail_connections SET auto_file_since = now() - interval '1 year' WHERE id = $1", [x.connectionId]);
-    await t.admin.query("UPDATE huis.firms SET mail_filing_mode_since = now() - interval '1 year'");
+    // (Backdates the setting for the test; the guard that blocks direct edits is bypassed.)
+    await t.admin.query("SET session_replication_role = replica; UPDATE huis.firms SET mail_filing_mode_since = now() - interval '1 year'; SET session_replication_role = origin;");
     await syncAll();
     // Both Matters have the case number; one also has opposing counsel and its title in the email (100 vs 90): within 10, too close to call.
     const ambiguous = (await db.withFirm(x.avery, (s) => listMessages(s, { q: "250901234" })))[0]!;

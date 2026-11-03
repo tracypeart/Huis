@@ -58,6 +58,19 @@ Yes, at every stage. After each part is built, a separate reviewer that did not 
 - **Review 5** (Huis Inbox): nobody but the mailbox owner and their chosen delegates could read mail. 7 issues fixed, including keeping what attorneys search for out of the admin-readable audit log, and re-checking permissions when a filing actually runs.
 - **Review 6** (matter suggestions and automatic filing): suggestions never revealed Matters someone couldn't see. 5 issues fixed, mainly making automatic filing much stricter, so neither a colleague nor an outside sender can steer someone's email into the wrong Matter.
 - **Review 7** (Gmail): connections, tokens and privacy held. 8 issues fixed. The most important stops a deliberately crafted email from slowing Huis down, and makes sure mail deleted in Gmail always leaves Huis too.
+- **Review 8** (Matter Brain): walls, outside users and other firms held against direct database attacks. 6 issues fixed. The most important stops a planted document from pushing itself into every answer, and makes the database itself (not just the app) withhold an answer once a source becomes unavailable.
+
+### What is the Matter Brain?
+Each Matter's own knowledge base: everything readable in it (documents, scans, filed email, transcripts, client uploads) plus the attorneys' notes. You can ask it a question in plain English, for example "When was she terminated, and what happened just before?" Every answer cites the passages it came from, with links to the source.
+
+### Who can see AI answers? Can AI leak privileged or walled material?
+- Answers are built only from what the person asking can open themselves, so ethical walls and the privileged area apply exactly as they do everywhere else.
+- Questions and answers are private to the person who asked. If a source later becomes unavailable to them, the answer is withheld.
+- Clients, co-counsel and experts never see the Matter Brain, attorney notes or any AI output.
+- The audit log records that a question was asked, never the question.
+
+### Does Huis send our documents to an AI company?
+Not today. Huis's built-in AI runs entirely inside Huis and sends nothing to any outside service; it finds and cites the most relevant passages rather than writing conclusions. An outside AI provider will only be added after it signs zero-data-retention and no-training terms, and each firm's administrators decide whether to use it. Firms can also turn AI off entirely.
 
 ### Who owns our data?
 Your firm does. You can export everything at any time.

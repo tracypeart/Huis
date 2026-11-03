@@ -10,6 +10,7 @@ import { resolveIdentity, signUpFirm } from "../src/services/firms";
 import { addMatterMember, createMatter, linkContactToMatter, setCourtCaseNumber } from "../src/services/matters";
 import { changeUserRole, disableUser, endUserSessions, inviteUser, issueInvitation } from "../src/services/users";
 import { moveEvidence } from "../src/services/evidence";
+import { addNote, askMatter, deleteAnswer, deleteNote, setAiProviderSetting, updateNote } from "../src/services/brain";
 import { requestCopy } from "../src/services/workingCopies";
 import {
   fileMessage, fileToSuggestion, requestSync, setAutoFile, setDelegate, setFilingMode, setFolderIncluded, setMatterColor, updateMailbox,
@@ -265,5 +266,48 @@ export async function matterColorAction(fd: FormData): Promise<void> {
 export async function endSessionsAction(fd: FormData): Promise<void> {
   return act("/users", "Signed out on all devices.", () => withSession(async (s) => {
     await endUserSessions(s, text(fd, "userId") ?? "");
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Matter Brain
+// ---------------------------------------------------------------------------
+export async function askMatterAction(fd: FormData): Promise<void> {
+  const matterId = text(fd, "matterId") ?? "";
+  let answerId = "";
+  return act(`/matters/${matterId}/brain`, "Answer ready.", async () => {
+    answerId = await withSession((s) => askMatter(s, matterId, fd.get("question")));
+    return { redirectTo: `/matters/${matterId}/brain?a=${answerId}` };
+  });
+}
+
+export async function deleteAnswerAction(fd: FormData): Promise<void> {
+  const matterId = text(fd, "matterId") ?? "";
+  return act(`/matters/${matterId}/brain`, "Question removed.", () => withSession(async (s) => { await deleteAnswer(s, text(fd, "answerId") ?? ""); }));
+}
+
+export async function addNoteAction(fd: FormData): Promise<void> {
+  const matterId = text(fd, "matterId") ?? "";
+  return act(`/matters/${matterId}/brain`, "Note saved. Huis adds it to the Matter Brain.", () => withSession(async (s) => {
+    await addNote(s, matterId, { title: fd.get("title"), body: fd.get("body") });
+  }));
+}
+
+export async function updateNoteAction(fd: FormData): Promise<void> {
+  const matterId = text(fd, "matterId") ?? "";
+  return act(`/matters/${matterId}/brain`, "Note updated.", () => withSession(async (s) => {
+    await updateNote(s, text(fd, "noteId") ?? "", { title: fd.get("title"), body: fd.get("body") });
+  }));
+}
+
+export async function deleteNoteAction(fd: FormData): Promise<void> {
+  const matterId = text(fd, "matterId") ?? "";
+  return act(`/matters/${matterId}/brain`, "Note deleted.", () => withSession(async (s) => { await deleteNote(s, text(fd, "noteId") ?? ""); }));
+}
+
+export async function aiProviderAction(fd: FormData): Promise<void> {
+  const matterId = text(fd, "matterId") ?? "";
+  return act(matterId ? `/matters/${matterId}/brain` : "/", "AI setting saved.", () => withSession(async (s) => {
+    await setAiProviderSetting(s, text(fd, "provider") ?? "");
   }));
 }

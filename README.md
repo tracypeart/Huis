@@ -2,7 +2,7 @@
 
 The Legal Intelligence Operating System: an AI-powered platform that connects the communications, evidence, documents, people, deadlines, research and strategy behind every legal matter.
 
-**Status:** Phase 1 complete (hosting deferred to the end). Phase 2 (secure evidence intake, reading, search, viewer and copies) complete. Phase 3 (Huis Inbox for Outlook and Gmail, matter suggestions, filing modes) merged; Gmail opens to outside firms after Google verification. Every part merged after an independent security review. See [`docs/PHASE-2.md`](docs/PHASE-2.md) and [`docs/PHASE-3.md`](docs/PHASE-3.md).
+**Status:** Phase 1 complete (hosting deferred to the end). Phase 2 (secure evidence intake, reading, search, viewer and copies) complete. Phase 3 (Huis Inbox for Outlook and Gmail, matter suggestions, filing modes) merged; Gmail opens to outside firms after Google verification. Phase 4 (Matter Brain + Case DNA™) in progress. Every part merged after an independent security review. See [`docs/PHASE-2.md`](docs/PHASE-2.md) and [`docs/PHASE-3.md`](docs/PHASE-3.md) and [`docs/PHASE-4.md`](docs/PHASE-4.md).
 
 ## Start here
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — the master architecture: decisions, non-negotiables, the 10 phases, and open questions. **This is the authority.**
