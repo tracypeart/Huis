@@ -6,7 +6,6 @@ import type { FirmSession, HuisDb, RequestContext } from "../db/tenant";
 import { PermissionDeniedError, UserFacingError } from "../errors";
 import { INTERNAL_ROLES } from "../security/permissions";
 import { type EvidenceVault, storageKeys } from "../storage/store";
-import { recordAudit } from "./audit";
 import { getMatter } from "./matters";
 
 /**
@@ -36,38 +35,60 @@ export async function canExportMatter(s: FirmSession, matterId: string): Promise
 // ---------------------------------------------------------------------------
 // Safe names inside the ZIP
 // ---------------------------------------------------------------------------
-const RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i;
+const RESERVED = /^(con|prn|aux|nul|conin\$|conout\$|com[0-9\u00b9\u00b2\u00b3]|lpt[0-9\u00b9\u00b2\u00b3])(\..*)?$/i;
+const MAX_SEGMENT = 120;
+
+/** Trim the ends Windows strips (spaces, dots) and keep away from reserved device names. */
+function finishSegment(s: string, fallback: string): string {
+  s = s.replace(/^[\s.]+|[\s.]+$/gu, "");
+  if (!s || s === "." || s === "..") s = fallback;
+  if (RESERVED.test(s)) s = `_${s}`;
+  return s;
+}
 /** One path segment that is safe on Windows, macOS and Linux: no separators, control characters or traversal. */
 export function safeSegment(name: string, fallback = "unnamed"): string {
   // Typographic punctuation as plain characters, so older ZIP tools keep names intact
   // (the manifest keeps every original name exactly).
-  let s = name.normalize("NFC").replace(/[\u2010-\u2015\u2212]/g, "-").replace(/[\u2018\u2019\u201a\u201b]/g, "'")
-    .replace(/[\u201c\u201d\u201e\u201f]/g, "\"").replace(/\u2026/g, "...").replace(/[\u00a0\u2000-\u200b\u202f\u205f\u3000]/g, " ").replace(/[\u0000-\u001f\u007f<>:"/\\|?*]+/g, "_").replace(/^[\s.]+|[\s.]+$/g, "");
-  if (!s || s === "." || s === "..") s = fallback;
-  if (RESERVED.test(s)) s = `_${s}`;
-  if (s.length > 120) {
+  // No unpaired surrogates (a broken half-character). \p{Cf}: no invisible or direction-changing characters (bidi overrides
+  // could make "invoice\u202Efdp.exe" look like a PDF).
+  let s = name.replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, "\ufffd").normalize("NFC").replace(/\p{Cf}/gu, "").replace(/[\u2010-\u2015\u2212]/g, "-").replace(/[\u2018\u2019\u201a\u201b]/g, "'")
+    .replace(/[\u201c\u201d\u201e\u201f]/g, "\"").replace(/\u2026/g, "...").replace(/[\u00a0\u2000-\u200b\u202f\u205f\u3000]/g, " ").replace(/[\u0000-\u001f\u007f-\u009f<>:"/\\|?*]+/g, "_");
+  s = finishSegment(s, fallback);
+  // Shorten by whole characters (never half an emoji), keeping a short extension, then tidy the ends again.
+  const chars = Array.from(s);
+  if (chars.length > MAX_SEGMENT) {
     const dot = s.lastIndexOf(".");
-    const ext = dot > 0 && s.length - dot <= 12 ? s.slice(dot) : "";
-    s = s.slice(0, 120 - ext.length) + ext;
+    const ext = dot > 0 && Array.from(s.slice(dot)).length <= 12 ? Array.from(s.slice(dot)) : [];
+    s = chars.slice(0, MAX_SEGMENT - ext.length).join("").replace(/[\s.]+$/u, "") + ext.join("");
+    s = finishSegment(s, fallback);
   }
   return s;
 }
 
-/** Unique (case-insensitively) within a folder: "letter.pdf", "letter (2).pdf"… */
-function uniquePath(used: Set<string>, folder: string, file: string): string {
+/** How Windows/macOS compare names: compatibility forms and case folded together (σ and ς, ß and SS, ﬁ and fi). */
+function collisionKey(p: string): string {
+  return p.normalize("NFKC").toLowerCase().toUpperCase().normalize("NFKC");
+}
+
+/** Unique within a folder however the computer compares names: "letter.pdf", "letter (2).pdf"… */
+export function uniquePath(used: Set<string>, folder: string, file: string): string {
   const dot = file.lastIndexOf(".");
   const [stem, ext] = dot > 0 ? [file.slice(0, dot), file.slice(dot)] : [file, ""];
   for (let i = 1; ; i++) {
     const candidate = `${folder}/${i === 1 ? file : `${stem} (${i})${ext}`}`;
-    if (!used.has(candidate.toLowerCase())) { used.add(candidate.toLowerCase()); return candidate; }
+    const key = collisionKey(candidate);
+    if (!used.has(key)) { used.add(key); return candidate; }
   }
 }
 
-/** CSV cell, also defused for spreadsheets (a cell starting with = + - @ can't run as a formula). */
-function csv(v: unknown): string {
+/**
+ * CSV cell, always quoted, and defused for spreadsheets: a value whose first visible character is
+ * = + - @ (or their full-width forms) gets a leading apostrophe so it can't run as a formula.
+ */
+export function csv(v: unknown): string {
   let s = v === null || v === undefined ? "" : v instanceof Date ? v.toISOString() : String(v);
-  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
-  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  if (/^[\s\p{Cc}\p{Cf}]*[=+\-@\uff1d\uff0b\uff0d\uff20]/u.test(s)) s = `'${s}`;
+  return `"${s.replace(/"/g, '""')}"`;
 }
 
 // ---------------------------------------------------------------------------
@@ -144,7 +165,7 @@ export async function prepareMatterExport(s: FirmSession, matterId: string, ackn
     const p = uniquePath(used, folder, safeSegment(it.original_filename));
     pathOf.set(it.id, p);
     originals.push({ path: p, evidenceId: it.id, matterId: it.matter_id, sha256: it.sha256 });
-    if (it.has_text) texts.push({ path: uniquePath(used, `evidence/text/${safeSegment(it.folder_name, "Folder")}`, `${safeSegment(it.original_filename)}.txt`), evidenceId: it.id });
+    if (it.has_text) texts.push({ path: uniquePath(used, `evidence/text/${safeSegment(it.folder_name, "Folder")}`, safeSegment(`${safeSegment(it.original_filename)}.txt`)), evidenceId: it.id });
   }
 
   const header = ["evidence_id", "file_in_export", "original_filename", "folder", "folder_classification", "privileged_area", "scan_status",
@@ -199,7 +220,7 @@ export async function prepareMatterExport(s: FirmSession, matterId: string, ackn
   ];
 
   const recorded = (await q<{ n: number }>("SELECT huis.record_matter_export($1, $2) AS n", [matterId, exportId]))[0]?.n ?? 0;
-  await recordAudit(s, "matter.exported", { targetType: "matter", targetId: matterId, matterId, metadata: { export_id: exportId, items: String(recorded) } });
+  // record_matter_export also writes the "matter.exported" audit event (with the export id and item count, never content).
 
   const stamp = now.toISOString().slice(0, 10);
   return {
@@ -221,9 +242,10 @@ function hashing(onDone: (hex: string) => void): Transform {
 }
 
 /**
- * Streams the export. Originals come from the encrypted vault one at a time;
- * each item's text is read when its turn comes, in a fresh database session
- * as the same person (so access is checked again). Ends with SHA256SUMS.txt.
+ * Streams the export. Each original comes from the encrypted vault when its
+ * turn comes, followed by its text; before each, access and the item's scan
+ * status are checked again in a fresh database session as the same person.
+ * Ends with SHA256SUMS.txt.
  */
 export function streamMatterExport(plan: ExportPlan, deps: { db: HuisDb; vault: EvidenceVault; ctx: RequestContext }): Readable {
   const zip = new ZipFile();
@@ -241,9 +263,21 @@ export function streamMatterExport(plan: ExportPlan, deps: { db: HuisDb; vault: 
     add(d.path, createHash("sha256").update(buf).digest("hex"));
     zip.addBuffer(buf, d.path, { mtime });
   }
+  // Before each item is sent, check again, as the same person in a fresh database session, that they can
+  // still export this Matter and the item is still clean in it (access can be removed, or a file found
+  // infected, while a large export is downloading). If not, the download ends with an error.
+  const stillAllowed = (s: FirmSession, evidenceId: string) => s.client.query<{ ok: boolean }>(
+    `SELECT huis.can_export_matter($1) AND EXISTS (SELECT 1 FROM huis.evidence_items i WHERE i.id = $2 AND i.matter_id = $1 AND i.status = 'clean') AS ok`,
+    [plan.matterId, evidenceId]).then((r) => Boolean(r.rows[0]?.ok));
+  const refused = (path: string) => new Error(`export stopped: access to ${path} changed during the download`);
+  const textOf = new Map(plan.texts.map((t) => [t.evidenceId, t]));
+
   for (const o of plan.originals) {
     zip.addReadStreamLazy(o.path, { mtime, compress: true }, (cb) => {
-      deps.vault.get(plan.firmId, storageKeys.original(plan.firmId, o.matterId, o.evidenceId)).then((plain) => {
+      deps.db.withFirm(deps.ctx, (s) => stillAllowed(s, o.evidenceId)).then(async (ok) => {
+        if (!ok) throw refused(o.path);
+        return deps.vault.get(plan.firmId, storageKeys.original(plan.firmId, o.matterId, o.evidenceId));
+      }).then((plain) => {
         const h = hashing((hex) => {
           add(o.path, hex);
           if (hex !== o.sha256) fail(new Error(`integrity check failed for ${o.path}`));
@@ -254,12 +288,17 @@ export function streamMatterExport(plan: ExportPlan, deps: { db: HuisDb; vault: 
         cb(null, plain.pipe(h));
       }, (e) => { fail(e); cb(e, undefined as never); });
     });
-  }
-  for (const t of plan.texts) {
+    // The item's text goes right after its original, checked the same way.
+    const t = textOf.get(o.evidenceId);
+    if (!t) continue;
     zip.addReadStreamLazy(t.path, { mtime }, (cb) => {
-      deps.db.withFirm(deps.ctx, async (s) => (await s.client.query<{ content: string }>(
-        "SELECT t.content FROM huis.evidence_text t JOIN huis.evidence_items i ON i.id = t.evidence_id WHERE t.evidence_id = $1 AND i.status = 'clean'",
-        [t.evidenceId])).rows[0]?.content ?? "").then((content) => {
+      deps.db.withFirm(deps.ctx, async (s) => {
+        if (!(await stillAllowed(s, t.evidenceId))) throw refused(t.path);
+        const row = (await s.client.query<{ content: string }>(
+          "SELECT t.content FROM huis.evidence_text t WHERE t.evidence_id = $1", [t.evidenceId])).rows[0];
+        if (!row) throw refused(t.path);
+        return row.content;
+      }).then((content) => {
         const buf = Buffer.from(content, "utf8");
         add(t.path, createHash("sha256").update(buf).digest("hex"));
         const p = new PassThrough();

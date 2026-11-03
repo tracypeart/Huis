@@ -23,10 +23,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     plan = await prepareMatterExport(s, id, acknowledged);
     return new Response(null, { status: 204 });
   });
-  if (!plan) {
+  // Stream only when preparing (and recording the export) succeeded and was committed.
+  if (!plan || res.status !== 204) {
     // Back to the Matter with the reason (the form posts here directly).
     if (res.status === 401) return NextResponse.redirect(new URL("/signin?reason=expired", authConfig().baseUrl), 303);
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    const body = (await res.clone().json().catch(() => ({}))) as { error?: string };
     const f = await setFlash({ kind: "error", message: body.error ?? "The export couldn't be prepared." });
     return NextResponse.redirect(new URL(`/matters/${encodeURIComponent(id)}?f=${f}`, authConfig().baseUrl), 303);
   }

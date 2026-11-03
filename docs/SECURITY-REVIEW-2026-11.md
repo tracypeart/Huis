@@ -151,6 +151,22 @@ The reviewer wrote 23 attack tests and confirmed 8 problems. **All fixed**, with
 
 **Lesson applied going forward:** every database rule that allows a change must also include the rule for seeing the row, because PostgreSQL applies the "see" rule only when a change reads rows (a WHERE clause or a returned value). Earlier tables were checked against this: their change rules already limit people to rows they own or can see.
 
+## Tenth review — Phase 4 part 3 (full export of a Matter)
+
+**Scope:** the export of a whole Matter (who can export, what goes in, the ZIP itself, file names, the manifest spreadsheet, chain-of-custody and audit records, and the download route).
+**Result:** walls, read-only staff, outside users and other firms were kept out, and the export never included another person's private Matter Brain questions. The reviewer confirmed 7 problems and raised 1 suspicion. **All fixed**, with regression tests (`test/export.test.ts`, "review 10"); all 10 of the reviewer's attacks now fail.
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| R10-1 | High | Access was checked once, when the export started. Someone taken off the Matter or disabled during a long download, or a file found infected meanwhile, could still receive originals; a refused text file came back empty and the ZIP still looked complete | Before **every** item, Huis checks again (as that person, in a fresh database session) that they can still export the Matter and the item is still clean. If not, the download stops with an error. Each item's text now follows its original, and a missing text stops the download rather than producing an empty file |
+| R10-2 | Medium | Invisible and direction-changing characters survived into file names (e.g. a name that displays as a PDF but is really a program) | Those characters, and broken half-characters, are removed from names in the export |
+| R10-3 | Medium | Some spreadsheet cells could still run as formulas (a leading space or line break, full-width ＝＋－＠, or a `;` separator) | Every cell is quoted, and any value whose first visible character is a formula sign gets a leading apostrophe |
+| R10-4 | Low-Medium | Shortening a long name could leave a trailing dot or space (which Windows drops, so two files could collide) or cut an emoji in half | Names are shortened by whole characters and tidied again afterwards; text file names get the same limit |
+| R10-5 | Low | Names that Windows or macOS treat as the same (e.g. σ and ς, ﬁ and fi) weren't told apart | Names are compared the way those systems compare them, and given "(2)" when they would collide |
+| R10-6 | Low | Some Windows device names (COM¹, LPT², CONIN$, CONOUT$) weren't recognised | Recognised and renamed |
+| R10-7 | Low | Someone allowed to export could write "exported" chain-of-custody entries directly, with no audit record | The database step that records custody also writes the audit entry itself, so neither can exist without the other; each export number can be used once |
+| R10-8 | Suspected | If saving the export records failed at the last moment, the download could in principle still start | The download starts only after the records are saved |
+
 ## Still open (tracked, not code defects)
 1. **MFA enforcement** — Microsoft sign-in doesn't yet require proof of MFA. Plan: require the firm's Microsoft MFA (Conditional Access) or a Huis passkey. Part of the end-of-build Azure/hosting step.
 2. **Administrator-level tampering** — someone with full database superuser access could switch off the protective rules and rewrite history consistently. The hash chains make ordinary tampering detectable, but defeating a superuser needs the chain's latest fingerprint stored outside the database (e.g. a daily signed export). Planned with production hosting.

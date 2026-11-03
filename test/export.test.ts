@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -11,9 +11,9 @@ import { addNote, askMatter } from "../src/services/brain";
 import { createClient } from "../src/services/clients";
 import { addClaimFromTemplate } from "../src/services/dna";
 import { assembleOriginal, getUploadSession, markChunkReceived, newEvidenceId, recordEvidence, startUpload, storeChunk } from "../src/services/evidence";
-import { addMatterMember, createMatter } from "../src/services/matters";
-import { canExportMatter, prepareMatterExport, safeSegment, streamMatterExport } from "../src/services/matterExport";
-import { inviteUser } from "../src/services/users";
+import { addMatterMember, createMatter, removeMatterMember } from "../src/services/matters";
+import { canExportMatter, csv, prepareMatterExport, safeSegment, streamMatterExport, uniquePath } from "../src/services/matterExport";
+import { disableUser, inviteUser } from "../src/services/users";
 import { MasterKeyProvider } from "../src/storage/encryption";
 import type { MalwareScanner } from "../src/storage/scanner";
 import { EvidenceVault, LocalObjectStore } from "../src/storage/store";
@@ -215,5 +215,90 @@ describe("exporting a Matter", () => {
     await writeFile(stored[0]!, bytes);
     expect((await stat(stored[0]!)).size).toBe(bytes.length);
     await expect(exportAs(x.owner, x.matter.id)).rejects.toThrow();
+  });
+  // ---- Review 10 regressions ----------------------------------------------------------------------
+  it("access and scan status are checked again for every item while the export downloads (review 10)", async () => {
+    const x = await setup();
+    await db.withFirm(x.owner, (s) => addMatterMember(s, { matterId: x.matter.id, userId: x.attorney.id, access: "owner" }));
+    const a = await upload(x.owner, x.matter.id, "a.txt", Buffer.from(LETTER));
+    await upload(x.owner, x.matter.id, "b.txt", Buffer.from("Second item."));
+    await processor.drain();
+    const drain = async (out: Readable) => { for await (const _ of out) { /* read */ } };
+    const plan = () => db.withFirm(x.ctx(x.attorney.id), (s) => prepareMatterExport(s, x.matter.id, true));
+
+    // Normal export: each item's text comes right after its original.
+    const { files } = await exportAs(x.ctx(x.attorney.id), x.matter.id);
+    const order = [...files.keys()].filter((n) => n.startsWith("evidence/files/") || n.startsWith("evidence/text/"));
+    expect(order.map((n) => n.split("/")[1])).toEqual(["files", "text", "files", "text"]);
+
+    // 1. An item found infected after planning: the download stops.
+    let p = await plan();
+    await t.admin.query(`SET session_replication_role = replica; UPDATE huis.evidence_items SET status = 'infected' WHERE id = '${a.id}'; SET session_replication_role = origin;`);
+    await expect(drain(streamMatterExport(p, { db, vault, ctx: x.ctx(x.attorney.id) }))).rejects.toThrow(/access to .* changed/);
+    await t.admin.query(`SET session_replication_role = replica; UPDATE huis.evidence_items SET status = 'clean' WHERE id = '${a.id}'; SET session_replication_role = origin;`);
+
+    // 2. The exporter is taken off the Matter after planning: the download stops.
+    p = await plan();
+    await db.withFirm(x.owner, (s) => removeMatterMember(s, x.matter.id, x.attorney.id));
+    await expect(drain(streamMatterExport(p, { db, vault, ctx: x.ctx(x.attorney.id) }))).rejects.toThrow();
+
+    // 3. The exporter is disabled after planning: the download stops.
+    await db.withFirm(x.owner, (s) => addMatterMember(s, { matterId: x.matter.id, userId: x.attorney.id, access: "owner" }));
+    p = await plan();
+    await db.withFirm(x.owner, (s) => disableUser(s, x.attorney.id));
+    await expect(drain(streamMatterExport(p, { db, vault, ctx: x.ctx(x.attorney.id) }))).rejects.toThrow();
+  });
+
+  it("tricky names: invisible and direction characters, long names, Windows look-alikes and device names (review 10)", () => {
+    expect(safeSegment("invoice\u202Efdp.exe")).toBe("invoicefdp.exe");
+    expect(safeSegment("a\u200Bb\uFEFFc\u2066.pdf")).toBe("abc.pdf");
+    expect(safeSegment("bad\ud800half.txt")).toBe("bad\ufffdhalf.txt");
+    // Shortening never leaves a trailing dot or space, or half an emoji.
+    const dots = safeSegment(`${"a".repeat(118)}. .${"b".repeat(20)}`);
+    expect(dots).not.toMatch(/[ .]$/);
+    const emoji = safeSegment("😀".repeat(200));
+    expect(Array.from(emoji).length).toBeLessThanOrEqual(120);
+    expect(emoji).toBe(emoji.toWellFormed());
+    const long = safeSegment(`${"x".repeat(300)}.pdf`);
+    expect(long.endsWith(".pdf")).toBe(true);
+    expect(Array.from(long).length).toBeLessThanOrEqual(120);
+    // Device names Windows reserves.
+    for (const n of ["COM¹.txt", "lpt².log", "CONIN$", "conout$.txt", "nul", "Com3.pdf"]) expect(safeSegment(n).startsWith("_")).toBe(true);
+    expect(safeSegment("console.txt")).toBe("console.txt");
+    // Names Windows or macOS treat as the same file get different names.
+    const used = new Set<string>();
+    const a = uniquePath(used, "f", "Σίσυφος.txt");
+    const b = uniquePath(used, "f", "ΣΊΣΥΦΟΣ.txt");
+    const c = uniquePath(used, "f", "σίσυφοσ.txt");
+    const d = uniquePath(used, "f", "ﬁle.txt");
+    const e = uniquePath(used, "f", "FILE.txt");
+    expect(new Set([a, b, c]).size).toBe(3);
+    expect(b).toBe("f/ΣΊΣΥΦΟΣ (2).txt");
+    expect(e).toBe("f/FILE (2).txt");
+    expect(d).toBe("f/ﬁle.txt");
+  });
+
+  it("every spreadsheet cell is quoted and formula-like values are defused however they start (review 10)", () => {
+    for (const v of ["=1+1", " =1+1", "\n=cmd", "\t+1", "\u200B@SUM(A1)", "＝HYPERLINK(1)", "＋1", "－1", "＠x", "-2"]) {
+      expect(csv(v)).toBe(`"'${v.replace(/"/g, '""')}"`);
+    }
+    expect(csv("x;=cmd|' /C calc'!A0")).toBe(`"x;=cmd|' /C calc'!A0"`);
+    expect(csv('say "hi"')).toBe('"say ""hi"""');
+    expect(csv(null)).toBe('""');
+  });
+
+  it("recording an export always writes its audit entry, and an export id can be used only once (review 10)", async () => {
+    const x = await setup();
+    await upload(x.owner, x.matter.id, "a.txt", Buffer.from(LETTER));
+    await processor.drain();
+    const id = randomUUID();
+    const n = await db.withFirm(x.owner, async (s) => (await s.client.query<{ n: number }>("SELECT huis.record_matter_export($1, $2) AS n", [x.matter.id, id])).rows[0]!.n);
+    expect(n).toBe(1);
+    const audit = await t.admin.query("SELECT actor_user_id, metadata FROM huis.audit_events WHERE action = 'matter.exported' AND metadata->>'export_id' = $1", [id]);
+    expect(audit.rowCount).toBe(1);
+    expect(audit.rows[0].metadata.items).toBe("1");
+    await expect(db.withFirm(x.owner, (s) => s.client.query("SELECT huis.record_matter_export($1, $2)", [x.matter.id, id]))).rejects.toThrow(/already used/);
+    const custody = await t.admin.query("SELECT count(*)::int AS n FROM huis.evidence_custody_events WHERE event = 'exported' AND details->>'export_id' = $1", [id]);
+    expect(custody.rows[0].n).toBe(1);
   });
 });

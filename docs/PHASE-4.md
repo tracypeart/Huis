@@ -1,13 +1,13 @@
 # Phase 4 — Matter Brain + Case DNA™
 
-**Status:** Part 1 (Matter Brain) merged after independent security review 8. Part 2 (Case DNA™) merged after independent security review 9. Part 3 (full export) built and tested; under independent review.
+**Status:** Part 1 (Matter Brain) merged after independent security review 8. Part 2 (Case DNA™) merged after independent security review 9. Part 3 (full export) merged after independent security review 10.
 
 ## Plan
 | Part | What | Status |
 |---|---|---|
 | 4.1 | **Matter Brain**: each Matter's knowledge base (documents, filed email, transcripts, client uploads, attorney notes), split into passages, searchable by words and by meaning; **Ask this Matter** with cited answers; attorney notes; AI Gateway with a firm-level AI setting and a usage log | Merged |
 | 4.2 | **Case DNA™**: the relationship map: people, organizations, events, claims, defenses, legal elements, witnesses, damages, each linked to the evidence behind it. AI suggests; attorneys confirm. Click a claim to see its elements, supporting and contradicting facts, evidence, witnesses and emails | Merged |
-| 4.3 | Full export of a Matter (evidence, Matter Brain notes, Case DNA). Written answers from an outside AI provider follow once its zero-retention terms are signed (O-3) | Export built, in review |
+| 4.3 | Full export of a Matter (evidence, Matter Brain notes, Case DNA). Written answers from an outside AI provider follow once its zero-retention terms are signed (O-3) | Export merged (review 10) |
 
 PostgreSQL stays the single source of truth. Passages and meaning fingerprints live in PostgreSQL (pgvector); a separate graph database is added only if Case DNA outgrows it.
 
@@ -54,11 +54,11 @@ The firm owns its data and can take a complete copy of a Matter at any time.
 | Confirming | Exporting requires confirming that the export contains privileged material and will be stored securely |
 | No copies kept | The ZIP is built as it downloads, from what the person can see at that moment, under the same database rules as everything else. Huis keeps no copy |
 | Records | Each item's chain of custody records the export (with an export number), and the audit log records that the Matter was exported. Neither records any content |
-| Safety | File names are made safe for every system (no folder tricks, reserved Windows names or unusual punctuation) and unique; the manifest keeps the original names. Spreadsheet cells in the manifest can't run as formulas. If any original fails its integrity check while exporting, the download stops with an error rather than producing an incomplete copy |
+| Safety | File names are made safe for every system (no folder tricks, reserved Windows names or unusual punctuation) and unique; the manifest keeps the original names. Spreadsheet cells in the manifest can't run as formulas. Invisible and direction-changing characters are removed from names, and names Windows or macOS would treat as the same are told apart. If any original fails its integrity check, or the person's access (or the item's scan result) changes while the export downloads, the download stops with an error rather than producing an incomplete copy. Access is checked again before every file |
 
 Other people's Matter Brain questions stay private and are not exported.
 
-**Tests:** `test/export.test.ts`, 4 tests: everything included and byte-for-byte identical, checksums for every file, the infected file left out, only the exporter's own questions, custody and audit records without content; who can and can't export, including an administrator outside a wall, with confirmation required; hostile file names and spreadsheet formulas; and a tampered original stopping the export. Also checked in a real browser: the download opens with standard tools and every checksum passes. The full page check (`scripts/qa`) is clean.
+**Tests:** `test/export.test.ts`, 8 tests: everything included and byte-for-byte identical, checksums for every file, the infected file left out, only the exporter's own questions, custody and audit records without content; who can and can't export, including an administrator outside a wall, with confirmation required; hostile file names and spreadsheet formulas; a tampered original stopping the export; and the review 10 regressions (access removed, user disabled or file found infected mid-download; invisible characters, long names, look-alike and device names; formula-proof spreadsheet cells; custody and audit records written together, export numbers used once). Also checked in a real browser: the download opens with standard tools and every checksum passes. The full page check (`scripts/qa`) is clean.
 
 ## Check before part 3 (pre-release check)
 
