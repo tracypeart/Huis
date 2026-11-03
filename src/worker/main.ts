@@ -3,6 +3,7 @@ import { scannerFromEnv } from "../storage/scanner";
 import { evidenceVault } from "../storage/store";
 import { EvidenceProcessor } from "./processor";
 import { sandboxMode } from "../extract/sandbox";
+import { MailWorker } from "../mail/worker";
 
 /**
  * Evidence worker process. Run alongside the web app:
@@ -24,12 +25,19 @@ async function main() {
 
   const pool = new pg.Pool({ connectionString: url, max: 2 });
   const processor = new EvidenceProcessor(pool, evidenceVault(), scanner);
+  const clientId = process.env.MICROSOFT_CLIENT_ID;
+  const clientSecret = process.env.MICROSOFT_CLIENT_SECRET;
+  const mail = new MailWorker(pool, evidenceVault(), {
+    masterKey: process.env.HUIS_STORAGE_MASTER_KEY!,
+    microsoft: clientId && clientSecret ? { clientId, clientSecret } : null,
+  });
   let stopping = false;
   for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => { stopping = true; });
 
   console.log(`[huis-worker] started with ${scanner.name}`);
   while (!stopping) {
-    const did = await processor.runOnce().catch((e) => {
+    // Evidence first (scans and reading), then filing requests, then mailbox sync.
+    const did = await (async () => (await processor.runOnce()) || (await mail.fileOnce()) || (await mail.syncOnce()))().catch((e) => {
       console.error("[huis-worker] error:", e instanceof Error ? e.message : e);
       return false;
     });

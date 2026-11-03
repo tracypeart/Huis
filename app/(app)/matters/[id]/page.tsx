@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { addMatterMemberAction, linkContactAction, setCourtCaseNumberAction } from "../../../../lib/actions";
+import { addMatterMemberAction, linkContactAction, matterColorAction, setCourtCaseNumberAction } from "../../../../lib/actions";
 import { getFlash, withSession } from "../../../../lib/server";
 import { CLASSIFICATION_LABELS, CONTACT_LABELS, date, FlashBanner, ROLE_LABELS } from "../../../../lib/ui";
 import { NotFoundError } from "../../../../src/errors";
@@ -89,6 +89,13 @@ export default async function MatterOverview({ params, searchParams }: {
               <input type="hidden" name="matterId" value={m.id} />
               <label>Court case number<input name="courtCaseNumber" defaultValue={m.courtCaseNumber ?? ""} maxLength={100} /></label>
               <button type="submit" className="secondary">Save</button>
+            </form>
+          ) : null}
+          {data.canEdit ? (
+            <form action={matterColorAction} className="row" style={{ marginTop: 12 }}>
+              <input type="hidden" name="matterId" value={m.id} />
+              <label>Color (inbox and lists)<input type="color" name="color" defaultValue={m.color ?? "#2563eb"} /></label>
+              <button type="submit" className="secondary">Save color</button>
             </form>
           ) : null}
         </div>
