@@ -147,9 +147,14 @@ CREATE FUNCTION huis.can_see_mailbox(p_connection_id uuid) RETURNS boolean
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = huis, pg_temp AS $$
   SELECT huis.is_internal_role(huis.app_role()) AND EXISTS (
     SELECT 1 FROM huis.mail_connections c
+      JOIN huis.users o ON o.id = c.owner_user_id
      WHERE c.id = p_connection_id AND c.firm_id = huis.current_firm_id() AND c.status <> 'disconnected'
+       -- The owner must still be active firm staff (not someone who has left).
+       AND o.status = 'active' AND huis.is_internal_role(o.role)
        AND (c.owner_user_id = huis.current_user_id()
-            OR EXISTS (SELECT 1 FROM huis.mail_delegates d WHERE d.connection_id = c.id AND d.user_id = huis.current_user_id())))
+            OR EXISTS (SELECT 1 FROM huis.mail_delegates d JOIN huis.users u ON u.id = d.user_id
+                        WHERE d.connection_id = c.id AND d.user_id = huis.current_user_id()
+                          AND u.status = 'active' AND huis.is_internal_role(u.role) AND u.role <> 'read_only')))
 $$;
 ALTER FUNCTION huis.can_see_mailbox(uuid) OWNER TO huis_security;
 
@@ -210,9 +215,22 @@ BEGIN
   END IF;
   SELECT * INTO c FROM huis.mail_connections
    WHERE firm_id = huis.current_firm_id() AND provider = p_provider AND account_subject = p_account_subject FOR UPDATE;
-  IF FOUND THEN
-    -- One owner per mailbox: someone else can't take over a connected mailbox.
-    IF c.owner_user_id <> huis.current_user_id() THEN RETURN NULL; END IF;
+  IF FOUND AND c.owner_user_id <> huis.current_user_id() THEN
+    -- One owner per mailbox. A connection that never worked (never synced),
+    -- needs reconnecting or was disconnected can be taken over by whoever
+    -- next connects with a working sign-in — so nobody can block a colleague
+    -- by claiming their account first. Taking over wipes everything held
+    -- for the old connection (credentials, mail, folders, delegates).
+    IF c.last_synced_at IS NOT NULL AND c.status IN ('active', 'paused') THEN RETURN NULL; END IF;
+    DELETE FROM huis.mail_messages WHERE connection_id = c.id;
+    DELETE FROM huis.mail_folders WHERE connection_id = c.id;
+    DELETE FROM huis.mail_delegates WHERE connection_id = c.id;
+    DELETE FROM huis.mail_credentials WHERE connection_id = c.id;
+    UPDATE huis.mail_connections SET owner_user_id = huis.current_user_id(), status = 'active', last_error = NULL,
+           last_synced_at = NULL, scope = 'all', sync_since = NULL, manage = false, lock_token = NULL, locked_until = NULL,
+           account_address = left(p_account_address, 320), display_name = left(p_display_name, 200), next_sync_at = now()
+     WHERE id = c.id RETURNING * INTO c;
+  ELSIF FOUND THEN
     UPDATE huis.mail_connections SET status = 'active', last_error = NULL, account_address = left(p_account_address, 320),
            display_name = left(p_display_name, 200), next_sync_at = now() WHERE id = c.id;
   ELSE
@@ -234,6 +252,7 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path = huis, public, pg_temp AS $$
 DECLARE
   c huis.mail_connections;
 BEGIN
+  IF NOT huis.is_internal_role(huis.app_role()) THEN RETURN false; END IF;
   SELECT * INTO c FROM huis.mail_connections
    WHERE id = p_connection_id AND firm_id = huis.current_firm_id() AND owner_user_id = huis.current_user_id() FOR UPDATE;
   IF NOT FOUND OR c.status = 'disconnected' THEN RETURN false; END IF;
@@ -245,8 +264,9 @@ BEGIN
   IF p_status = 'disconnected' THEN
     -- Disconnecting deletes the credentials and all unfiled mail; filed copies stay in their Matters.
     DELETE FROM huis.mail_credentials WHERE connection_id = c.id;
-    DELETE FROM huis.mail_messages WHERE connection_id = c.id
-      AND NOT EXISTS (SELECT 1 FROM huis.mail_filings f WHERE f.message_id = mail_messages.id AND f.status IN ('queued', 'running'));
+    -- Every message goes, including ones waiting to be filed (their filing
+    -- requests go with them; a filing already in progress then can't complete).
+    DELETE FROM huis.mail_messages WHERE connection_id = c.id;
     DELETE FROM huis.mail_folders WHERE connection_id = c.id;
     DELETE FROM huis.mail_delegates WHERE connection_id = c.id;
   END IF;
@@ -256,6 +276,7 @@ END $$;
 CREATE FUNCTION huis.set_mail_folder_included(p_folder_id uuid, p_included boolean) RETURNS boolean
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = huis, public, pg_temp AS $$
 BEGIN
+  IF NOT huis.is_internal_role(huis.app_role()) THEN RETURN false; END IF;
   UPDATE huis.mail_folders f SET included = coalesce(p_included, false)
    WHERE f.id = p_folder_id AND f.firm_id = huis.current_firm_id()
      AND EXISTS (SELECT 1 FROM huis.mail_connections c WHERE c.id = f.connection_id AND c.owner_user_id = huis.current_user_id());
@@ -269,11 +290,16 @@ DECLARE
   c huis.mail_connections;
   u huis.users;
 BEGIN
+  IF NOT huis.is_internal_role(huis.app_role()) THEN RETURN false; END IF;
   SELECT * INTO c FROM huis.mail_connections
    WHERE id = p_connection_id AND firm_id = huis.current_firm_id() AND owner_user_id = huis.current_user_id();
   IF NOT FOUND THEN RETURN false; END IF;
   IF NOT coalesce(p_granted, false) THEN
     DELETE FROM huis.mail_delegates WHERE connection_id = c.id AND user_id = p_user_id;
+    -- Their filing requests that haven't run yet are cancelled too.
+    UPDATE huis.mail_filings f SET status = 'failed', last_error = 'access removed', lock_token = NULL
+     WHERE f.requested_by = p_user_id AND f.status = 'queued'
+       AND EXISTS (SELECT 1 FROM huis.mail_messages m WHERE m.id = f.message_id AND m.connection_id = c.id);
     RETURN true;
   END IF;
   SELECT * INTO u FROM huis.users WHERE id = p_user_id AND firm_id = c.firm_id AND status = 'active';
@@ -340,9 +366,10 @@ DECLARE
   c huis.mail_connections;
   v_token uuid := gen_random_uuid();
 BEGIN
-  SELECT * INTO c FROM huis.mail_connections
-   WHERE status = 'active' AND next_sync_at <= now() AND (locked_until IS NULL OR locked_until < now())
-   ORDER BY next_sync_at FOR UPDATE SKIP LOCKED LIMIT 1;
+  SELECT mc.* INTO c FROM huis.mail_connections mc JOIN huis.users o ON o.id = mc.owner_user_id
+   WHERE mc.status = 'active' AND mc.next_sync_at <= now() AND (mc.locked_until IS NULL OR mc.locked_until < now())
+     AND o.status = 'active' AND huis.is_internal_role(o.role)
+   ORDER BY mc.next_sync_at FOR UPDATE OF mc SKIP LOCKED LIMIT 1;
   IF NOT FOUND THEN RETURN; END IF;
   UPDATE huis.mail_connections SET lock_token = v_token, locked_until = now() + interval '30 minutes' WHERE id = c.id;
   RETURN QUERY SELECT c.id, v_token, c.firm_id, c.provider, c.account_subject, c.scope, c.sync_since,
@@ -410,6 +437,7 @@ BEGIN
   END IF;
   IF jsonb_typeof(p_messages) <> 'array' OR jsonb_array_length(p_messages) > 500 THEN RAISE EXCEPTION 'invalid batch'; END IF;
   FOR r IN SELECT * FROM jsonb_array_elements(p_messages) LOOP
+   BEGIN
     IF (r->>'removed')::boolean IS TRUE THEN
       UPDATE huis.mail_messages SET removed_at = coalesce(removed_at, now()), updated_at = now()
        WHERE connection_id = c.id AND provider_message_id = r->>'id';
@@ -428,6 +456,11 @@ BEGIN
               preview = EXCLUDED.preview, body_text = EXCLUDED.body_text, removed_at = NULL, updated_at = now();
     END IF;
     n := n + 1;
+   EXCEPTION WHEN others THEN
+    -- One malformed message (bad characters, impossible dates) is skipped;
+    -- it must never stop the rest of the mailbox from syncing.
+    NULL;
+   END;
   END LOOP;
   RETURN n;
 END $$;
@@ -451,7 +484,57 @@ BEGIN
    WHERE id = c.id;
 END $$;
 
+-- Is the person who asked for this filing still allowed to make it? Checked
+-- again when the worker picks it up and when it completes, as that person:
+-- still active staff, still able to see the mailbox, still able to add to the
+-- Matter (walls included), and the folder hasn't become visible to outsiders
+-- without the privilege acknowledgement.
+CREATE FUNCTION huis.filing_still_allowed(p_filing_id uuid) RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = huis, public, pg_temp AS $$
+DECLARE
+  r huis.mail_filings;
+  m huis.mail_messages;
+  u huis.users;
+  f huis.matter_folders;
+  v_exposes boolean;
+BEGIN
+  SELECT * INTO r FROM huis.mail_filings WHERE id = p_filing_id;
+  IF NOT FOUND THEN RETURN false; END IF;
+  SELECT * INTO m FROM huis.mail_messages WHERE id = r.message_id;
+  IF NOT FOUND OR m.removed_at IS NOT NULL THEN RETURN false; END IF;
+  SELECT * INTO u FROM huis.users WHERE id = r.requested_by AND firm_id = r.firm_id;
+  IF NOT FOUND OR u.status <> 'active' OR NOT huis.is_internal_role(u.role) OR u.role = 'read_only' THEN RETURN false; END IF;
+  -- Evaluate the permission checks as the requester, for this transaction only.
+  PERFORM set_config('app.firm_id', r.firm_id::text, true);
+  PERFORM set_config('app.user_id', r.requested_by::text, true);
+  IF NOT huis.can_see_mailbox(m.connection_id) OR NOT huis.can_see_matter(r.matter_id)
+     OR NOT huis.can_manage_matter_content(r.matter_id) THEN
+    RETURN false;
+  END IF;
+  SELECT * INTO f FROM huis.matter_folders WHERE id = r.folder_id AND matter_id = r.matter_id;
+  IF NOT FOUND THEN RETURN false; END IF;
+  v_exposes := NOT f.is_privileged_area
+    AND f.classification IN ('client_accessible', 'co_counsel_accessible', 'expert_accessible', 'public');
+  RETURN NOT v_exposes OR r.shared_outside_firm;
+END $$;
+ALTER FUNCTION huis.filing_still_allowed(uuid) OWNER TO huis_security;
+REVOKE ALL ON FUNCTION huis.filing_still_allowed(uuid) FROM PUBLIC;
+
 -- Filing: claim, complete, fail.
+-- Saves a refresh token Microsoft rotated while a filing was being fetched.
+CREATE FUNCTION huis.worker_save_filing_credentials(p_filing_id uuid, p_lock_token uuid, p_ciphertext bytea) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = huis, pg_temp AS $$
+DECLARE r huis.mail_filings;
+BEGIN
+  SELECT * INTO r FROM huis.mail_filings WHERE id = p_filing_id AND status = 'running' AND lock_token = p_lock_token;
+  IF NOT FOUND THEN RAISE EXCEPTION 'filing is not held by this worker'; END IF;
+  UPDATE huis.mail_credentials k SET ciphertext = p_ciphertext, updated_at = now()
+    FROM huis.mail_messages m WHERE m.id = r.message_id AND k.connection_id = m.connection_id;
+END $$;
+ALTER FUNCTION huis.worker_save_filing_credentials(uuid, uuid, bytea) OWNER TO huis_security;
+REVOKE ALL ON FUNCTION huis.worker_save_filing_credentials(uuid, uuid, bytea) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION huis.worker_save_filing_credentials(uuid, uuid, bytea) TO huis_worker;
+
 CREATE FUNCTION huis.worker_claim_mail_filing()
 RETURNS TABLE (filing_id uuid, lock_token uuid, firm_id uuid, matter_id uuid, connection_id uuid, provider text,
                account_subject text, provider_message_id text, ciphertext bytea, attempts int)
@@ -463,10 +546,15 @@ DECLARE
   c huis.mail_connections;
   v_token uuid := gen_random_uuid();
 BEGIN
-  SELECT * INTO r FROM huis.mail_filings
-   WHERE (status = 'queued' OR (status = 'running' AND locked_until < now())) AND attempts < 5
-   ORDER BY requested_at FOR UPDATE SKIP LOCKED LIMIT 1;
-  IF NOT FOUND THEN RETURN; END IF;
+  LOOP
+    SELECT * INTO r FROM huis.mail_filings
+     WHERE (status = 'queued' OR (status = 'running' AND locked_until < now())) AND attempts < 5
+     ORDER BY requested_at FOR UPDATE SKIP LOCKED LIMIT 1;
+    IF NOT FOUND THEN RETURN; END IF;
+    EXIT WHEN huis.filing_still_allowed(r.id);
+    UPDATE huis.mail_filings SET status = 'failed', last_error = 'the requester no longer has access', lock_token = NULL
+     WHERE id = r.id;
+  END LOOP;
   UPDATE huis.mail_filings SET status = 'running', lock_token = v_token, attempts = attempts + 1,
          locked_until = now() + interval '30 minutes' WHERE id = r.id;
   SELECT * INTO m FROM huis.mail_messages WHERE id = r.message_id;
@@ -477,7 +565,7 @@ END $$;
 
 CREATE FUNCTION huis.worker_complete_mail_filing(
   p_filing_id uuid, p_lock_token uuid, p_evidence_id uuid, p_size bigint, p_sha256 text, p_storage_key text
-) RETURNS void
+) RETURNS boolean
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = huis, public, pg_temp AS $$
 DECLARE
   r huis.mail_filings;
@@ -489,6 +577,10 @@ BEGIN
   IF NOT FOUND THEN RAISE EXCEPTION 'filing is not held by this worker'; END IF;
   IF p_storage_key IS DISTINCT FROM format('firm/%s/matter/%s/evidence/%s/original', r.firm_id, r.matter_id, p_evidence_id) THEN
     RAISE EXCEPTION 'unexpected storage location';
+  END IF;
+  IF NOT huis.filing_still_allowed(r.id) THEN
+    UPDATE huis.mail_filings SET status = 'failed', last_error = 'the requester no longer has access', lock_token = NULL WHERE id = r.id;
+    RETURN false;
   END IF;
   SELECT * INTO m FROM huis.mail_messages WHERE id = r.message_id;
   SELECT * INTO c FROM huis.mail_connections WHERE id = m.connection_id;
@@ -510,6 +602,7 @@ BEGIN
   UPDATE huis.mail_filings SET status = 'done', evidence_id = p_evidence_id, completed_at = now(), lock_token = NULL WHERE id = r.id;
   UPDATE huis.mail_messages SET filed_matter_id = r.matter_id, filed_evidence_id = p_evidence_id, filed_at = now(),
          filed_by = r.requested_by, updated_at = now() WHERE id = m.id;
+  RETURN true;
 END $$;
 
 CREATE FUNCTION huis.worker_fail_mail_filing(p_filing_id uuid, p_lock_token uuid, p_error text, p_final boolean) RETURNS void

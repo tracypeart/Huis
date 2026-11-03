@@ -30,6 +30,10 @@ export class FakeMicrosoft {
   tokenCalls: Record<string, string>[] = [];
   /** A delta link to return instead of the real one (to test link checks). */
   deltaOverride: string | null = null;
+  /** Misbehave: empty pages that always point to another page. */
+  endlessEmptyPages = false;
+  /** Raw JSON subject override (e.g. containing \u0000). */
+  rawSubjects: Record<string, string> = {};
   privateKey!: CryptoKey | import("node:crypto").KeyObject;
   jwks!: ReturnType<typeof createLocalJWKSet>;
   idNonce = "";
@@ -69,6 +73,10 @@ export class FakeMicrosoft {
     const delta = /^\/v1\.0\/me\/mailFolders\/([^/]+)\/messages\/delta$/.exec(url.pathname);
     if (delta) {
       const folder = decodeURIComponent(delta[1]!);
+      if (this.endlessEmptyPages) {
+        const n = Number(url.searchParams.get("$skiptoken") ?? "0") + 1;
+        return this.json(res, 200, { value: [], "@odata.nextLink": `${this.base}/v1.0/me/mailFolders/${encodeURIComponent(folder)}/messages/delta?$skiptoken=${n}` });
+      }
       const token = url.searchParams.get("$deltatoken");
       const skip = Number(url.searchParams.get("$skiptoken") ?? "0");
       // A delta round returns changes since the token's moment (here: index into the list).
@@ -96,7 +104,7 @@ export class FakeMicrosoft {
   private graphMessage(m: FakeMessage) {
     return {
       id: m.id, internetMessageId: `<${m.id}@lawfirm.example>`, conversationId: `conv-${m.subject.replace(/^(re|fwd): /i, "")}`,
-      subject: m.subject, from: { emailAddress: { address: m.from, name: m.from.split("@")[0] } },
+      subject: this.rawSubjects[m.id] ?? m.subject, from: { emailAddress: { address: m.from, name: m.from.split("@")[0] } },
       toRecipients: m.to.map((a) => ({ emailAddress: { address: a } })), ccRecipients: [],
       receivedDateTime: m.received, sentDateTime: m.received, hasAttachments: Boolean(m.attachments), importance: "normal",
       isRead: false, bodyPreview: m.body.slice(0, 100), body: { contentType: "text", content: m.body },

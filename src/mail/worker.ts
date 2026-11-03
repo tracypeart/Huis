@@ -65,6 +65,8 @@ export class MailWorker {
         if (!row.included) continue;
         if (budget <= 0) { more = true; continue; }
         let link = row.delta_link;
+        const seen = new Set<string>();
+        let emptyInARow = 0;
         for (;;) {
           const page = await provider.deltaPage(f.providerId, link);
           // Optional "only mail since" setting is applied here (Graph's own date filter caps results).
@@ -73,7 +75,13 @@ export class MailWorker {
             await this.pool.query("SELECT huis.worker_save_mail_messages($1, $2, $3, $4)",
               [...args, row.folder_id, JSON.stringify(keep.slice(i, i + 500))]);
           }
-          budget -= page.messages.length;
+          // Every page costs at least 1, so empty pages can't loop forever.
+          budget -= Math.max(1, page.messages.length);
+          if (page.nextLink && seen.has(page.nextLink)) throw new Error("mail sync did not move forward");
+          // Microsoft occasionally sends an empty page; a long run of them means something is wrong.
+          emptyInARow = page.messages.length === 0 && page.nextLink ? emptyInARow + 1 : 0;
+          if (emptyInARow > 20) throw new Error("mail service kept returning empty pages");
+          if (page.nextLink) seen.add(page.nextLink);
           link = page.nextLink ?? page.deltaLink ?? link;
           // Save where to resume after every page, so progress is never lost.
           await this.pool.query("SELECT huis.worker_save_mail_folder_state($1, $2, $3, $4)", [...args, row.folder_id, link]);
@@ -99,8 +107,8 @@ export class MailWorker {
     const key = storageKeys.original(f.firm_id, f.matter_id, evidenceId);
     let stored = false;
     try {
-      // Rotated tokens during filing are saved on the next sync (filing doesn't hold the mailbox).
-      const provider = await this.open(f, async () => undefined);
+      const provider = await this.open(f, (sealed) =>
+        this.pool.query("SELECT huis.worker_save_filing_credentials($1, $2, $3)", [f.filing_id, f.lock_token, sealed]).then(() => undefined));
       let size = 0;
       const cap = new Transform({
         transform(chunk: Buffer, _e, cb) {
@@ -114,8 +122,10 @@ export class MailWorker {
       const put = await this.vault.put(f.firm_id, key, mime.pipe(cap));
       stored = true;
       if (put.size === 0) throw new Error("empty message");
-      await this.pool.query("SELECT huis.worker_complete_mail_filing($1, $2, $3, $4, $5, $6)",
-        [f.filing_id, f.lock_token, evidenceId, put.size, put.sha256, key]);
+      const done = (await this.pool.query<{ ok: boolean }>("SELECT huis.worker_complete_mail_filing($1, $2, $3, $4, $5, $6) AS ok",
+        [f.filing_id, f.lock_token, evidenceId, put.size, put.sha256, key])).rows[0]?.ok;
+      // The requester lost access before it finished: the filing was cancelled, so remove the stored copy.
+      if (!done) await this.vault.delete(key).catch(() => undefined);
     } catch (err) {
       if (stored) await this.vault.delete(key).catch(() => undefined);
       await this.pool.query("SELECT huis.worker_fail_mail_filing($1, $2, $3, $4)",

@@ -60,7 +60,7 @@ export async function connectMailbox(s: FirmSession, p: {
   const id = (await s.client.query<{ id: string | null }>("SELECT huis.connect_mailbox($1, $2, $3, $4, $5, $6) AS id",
     [p.provider, p.subject, p.address, p.displayName, sealed, randomUUID()])).rows[0]!.id;
   if (!id) throw new UserFacingError("This mailbox is already connected to Huis by someone else in your firm.");
-  await recordAudit(s, "mailbox.connected", { targetType: "mailbox", targetId: id, metadata: { provider: p.provider, address: p.address } });
+  await recordAudit(s, "mailbox.connected", { targetType: "mailbox", targetId: id, metadata: { provider: p.provider } });
   return id;
 }
 
@@ -78,7 +78,9 @@ export async function updateMailbox(s: FirmSession, id: string, input: unknown):
   const ok = (await s.client.query<{ ok: boolean }>("SELECT huis.update_mailbox($1, $2, $3, $4, $5) AS ok",
     [id, v.scope, v.syncSince ?? null, v.manage, v.status])).rows[0]!.ok;
   if (!ok) throw new NotFoundError("Mailbox");
-  await recordAudit(s, v.status === "disconnected" ? "mailbox.disconnected" : "mailbox.updated", { targetType: "mailbox", targetId: id, metadata: v });
+  await recordAudit(s, v.status === "disconnected" ? "mailbox.disconnected" : "mailbox.updated", {
+    targetType: "mailbox", targetId: id, metadata: { scope: v.scope, manage: v.manage, status: v.status },
+  });
 }
 
 export interface MailFolder { id: string; path: string; included: boolean; total: number | null; lastSyncedAt: Date | null }
@@ -171,7 +173,9 @@ export async function listMessages(s: FirmSession, input: unknown): Promise<Mail
   params.push(v.limit, v.offset);
   const { rows } = await s.client.query(
     `${MESSAGE_SELECT} WHERE ${where.join(" AND ")} ORDER BY ${order} LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
-  if (v.q) await recordAudit(s, "mailbox.searched", { metadata: { query: v.q, results: rows.length } });
+  // Recorded without the search text or results: the audit log is readable by
+  // firm administrators, who must not learn what's in someone's mailbox.
+  if (v.q) await recordAudit(s, "mailbox.searched", { targetType: "mailbox", targetId: v.connectionId });
   return rows.map(toMessage);
 }
 

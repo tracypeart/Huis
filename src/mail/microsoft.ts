@@ -127,12 +127,27 @@ async function graphFetch(token: string, url: string, init: { prefer?: string[];
   }
 }
 
+/** Largest JSON response read from Graph (checked while reading, not after). */
+const MAX_JSON_BYTES = 50 * 1024 * 1024;
+
 async function graphJson<T>(token: string, url: string, prefer?: string[]): Promise<T> {
   const res = await graphFetch(token, url, { prefer });
-  const text = await res.text();
-  if (text.length > 50 * 1024 * 1024) throw new Error("Graph response too large");
-  return JSON.parse(text) as T;
+  const reader = res.body?.getReader();
+  if (!reader) return {} as T;
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > MAX_JSON_BYTES) { await reader.cancel().catch(() => undefined); throw new Error("Graph response too large"); }
+    parts.push(value);
+  }
+  return JSON.parse(Buffer.concat(parts).toString("utf8")) as T;
 }
+
+/** Text from Graph, minus NUL characters (Postgres can't store them in text). */
+const clean = (v: string | null | undefined): string | null => (v == null ? null : v.replace(/\u0000/g, ""));
 
 type GraphAddress = { emailAddress?: { address?: string; name?: string } };
 interface GraphMessage {
@@ -149,13 +164,18 @@ export class MicrosoftMailProvider implements MailProvider {
 
   async listFolders(): Promise<MailFolderInfo[]> {
     const out: MailFolderInfo[] = [];
+    // Bounded however Graph responds: a page cap, and paging must move forward.
+    let requests = 0;
+    const seen = new Set<string>();
     const walk = async (url: string, parentPath: string, depth: number): Promise<void> => {
       let next: string | undefined = url;
       while (next && out.length < 2000) {
+        if (++requests > 500 || seen.has(next)) throw new Error("mail folder listing did not finish");
+        seen.add(next);
         const page: { value?: { id: string; displayName?: string; parentFolderId?: string; childFolderCount?: number; totalItemCount?: number }[]; "@odata.nextLink"?: string } =
           await graphJson(this.accessToken, next);
         for (const f of page.value ?? []) {
-          const name = (f.displayName ?? "(unnamed)").slice(0, 300);
+          const name = (clean(f.displayName) || "(unnamed)").slice(0, 300);
           const path = parentPath ? `${parentPath}/${name}` : name;
           out.push({ providerId: f.id, parentProviderId: f.parentFolderId ?? null, name, path, total: f.totalItemCount ?? null });
           if ((f.childFolderCount ?? 0) > 0 && depth < 10) {
@@ -178,13 +198,13 @@ export class MicrosoftMailProvider implements MailProvider {
     const messages: MailMessageInfo[] = (page.value ?? []).map((m) => m["@removed"] !== undefined
       ? { id: m.id, removed: true }
       : {
-          id: m.id, removed: false, internetMessageId: m.internetMessageId ?? null, conversationId: m.conversationId ?? null,
-          subject: m.subject ?? null, fromAddress: addr(m.from), fromName: m.from?.emailAddress?.name ?? null,
-          to: (m.toRecipients ?? []).map(addr).filter((x): x is string => Boolean(x)),
-          cc: (m.ccRecipients ?? []).map(addr).filter((x): x is string => Boolean(x)),
+          id: m.id, removed: false, internetMessageId: clean(m.internetMessageId), conversationId: clean(m.conversationId),
+          subject: clean(m.subject), fromAddress: clean(addr(m.from)), fromName: clean(m.from?.emailAddress?.name),
+          to: (m.toRecipients ?? []).map((a) => clean(addr(a))).filter((x): x is string => Boolean(x)),
+          cc: (m.ccRecipients ?? []).map((a) => clean(addr(a))).filter((x): x is string => Boolean(x)),
           receivedAt: m.receivedDateTime ?? null, sentAt: m.sentDateTime ?? null, hasAttachments: Boolean(m.hasAttachments),
-          importance: m.importance ?? null, isRead: m.isRead ?? null, preview: m.bodyPreview ?? null,
-          body: m.body?.content ?? null,
+          importance: clean(m.importance), isRead: m.isRead ?? null, preview: clean(m.bodyPreview),
+          body: clean(m.body?.content),
         });
     return { messages, nextLink: page["@odata.nextLink"] ?? null, deltaLink: page["@odata.deltaLink"] ?? null };
   }
