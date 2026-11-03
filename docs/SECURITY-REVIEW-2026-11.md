@@ -63,6 +63,22 @@
 | R4-5 | Low | A copy shared with a client revealed the privileged source's id, name, fingerprint and requester in the copy's custody record | The copy's own record says only what the copy is (labels, Bates, number of redactions); the link to the source is kept where only firm staff can see it |
 | Suspected | Low | Copies could be made from a document quarantined after the request; unlimited mark sizes and counts | Requests from no-longer-clean sources fail; mark requests capped at 16 KB; 5,000 marks per document and 2,000 redactions per copy |
 
+## Fifth review — Phase 3 part 1 (Huis Inbox: Outlook connection, sync, filing)
+
+**Scope:** connecting mailboxes, credential storage, sync, private inbox, search, filing email into Matters, matter colors.
+**Result:** firm owners, administrators, other staff, outside users and other firms could not read anyone's mail, folders or filings; the app couldn't read credentials or call worker functions; tokens were only ever sent to Microsoft; the sign-in flow (state, PKCE, nonce, user binding) held; hostile subjects couldn't escape file names or inject into pages. The reviewer confirmed 7 problems. **All fixed**, with regression tests (`test/inbox.test.ts`, "review 5"); the reviewer's attack tests now fail.
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| R5-1 | Medium-High | Mailbox searches were written to the audit log with their search text and hit counts, which firm administrators can read | The audit log records only that a search happened; no search text, results or mailbox addresses |
+| R5-2 | Medium | Disconnecting kept any email with a pending filing, permanently | Disconnecting removes every email and cancels pending filings |
+| R5-3 | Medium | A filing completed even if the person had lost access to the Matter (or been removed as a delegate) before it ran | Filings are re-checked as the requester when picked up and again before completion; removing a delegate cancels their waiting filings |
+| R5-4 | Medium | Mailbox access didn't follow later changes: a delegate made read-only kept reading; a departed owner's delegates kept reading and syncing continued | Access requires the owner to be active staff and delegates to be active, non-read-only staff; Huis stops syncing a departed owner's mailbox |
+| R5-5 | Low-Medium | A colleague could claim someone's mailbox id first and block them from connecting (no mail exposed) | A connection that never worked, needs reconnecting or was disconnected is taken over (and wiped) by the next working sign-in |
+| R5-6 | Medium | A misbehaving or spoofed mail service could keep a sync or folder listing looping forever | Every page counts against the budget, paging must move forward, folder listing is capped, and long runs of empty pages stop the sync with an error |
+| R5-7 | Medium | One email with a hidden NUL character stopped the whole mailbox from syncing | NUL characters are removed, and each email is saved on its own so a bad one is skipped |
+| Also | Low | Rotated Microsoft tokens during filing were dropped; large responses were read before the size check; owner-only settings didn't re-check the owner's role | Rotated tokens saved; size checked while reading; owner settings require current staff role |
+
 ## Still open (tracked, not code defects)
 1. **MFA enforcement** — Microsoft sign-in doesn't yet require proof of MFA. Plan: require the firm's Microsoft MFA (Conditional Access) or a Huis passkey. Part of the end-of-build Azure/hosting step.
 2. **Administrator-level tampering** — someone with full database superuser access could switch off the protective rules and rewrite history consistently. The hash chains make ordinary tampering detectable, but defeating a superuser needs the chain's latest fingerprint stored outside the database (e.g. a daily signed export). Planned with production hosting.

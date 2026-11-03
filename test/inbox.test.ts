@@ -15,8 +15,8 @@ import {
   connectMailbox, fileMessage, getMessage, listMailboxes, listMailFolders, listMessages, requestSync, setDelegate,
   setFolderIncluded, setMatterColor, updateMailbox,
 } from "../src/services/inbox";
-import { addMatterMember, createMatter, listMatterFolders } from "../src/services/matters";
-import { inviteUser } from "../src/services/users";
+import { addMatterMember, createMatter, listMatterFolders, removeMatterMember } from "../src/services/matters";
+import { changeUserRole, disableUser, inviteUser } from "../src/services/users";
 import { MasterKeyProvider } from "../src/storage/encryption";
 import type { MalwareScanner } from "../src/storage/scanner";
 import { EvidenceVault, LocalObjectStore } from "../src/storage/store";
@@ -75,6 +75,8 @@ beforeEach(() => {
   ms.rotateTo = null;
   ms.refreshError = null;
   ms.deltaOverride = null;
+  ms.endlessEmptyPages = false;
+  ms.rawSubjects = {};
   ms.graphCalls = [];
 });
 
@@ -125,10 +127,110 @@ describe("connecting an Outlook mailbox", () => {
     expect(() => openCredential(MASTER, { firmId: randomUUID(), provider: "microsoft", subject: `${TID}:${OID}` }, row.ciphertext)).toThrow();
     await expect(db.withFirm(x.avery, (s) => s.client.query("SELECT * FROM huis.mail_credentials"))).rejects.toThrow(/permission/);
     await expect(db.withFirm(x.avery, (s) => s.client.query("SELECT delta_link FROM huis.mail_folders"))).rejects.toThrow(/permission/);
-    // A second person in the firm can't take over the same mailbox.
+    // Once the mailbox works (has synced), a second person in the firm can't take it over.
+    await syncAll();
     await expect(db.withFirm(x.sam, (s) => connectMailbox(s, {
       provider: "microsoft", subject: `${TID}:${OID}`, address: "x", displayName: "x", refreshToken: "RT-evil", masterKey: MASTER,
     }))).rejects.toThrow(/already connected/);
+  });
+});
+
+describe("review 5 regressions", () => {
+  it("R5-5: claiming a colleague's mailbox id can't block them; a never-working connection is taken over and wiped", async () => {
+    const x = await setup();
+    // Sam (a colleague) squats Avery's real Microsoft account id with a bogus token on a fresh mailbox id.
+    const SUBJ = `${TID}:99999999-9999-9999-9999-999999999999`;
+    const squat = await db.withFirm(x.sam, (s) => connectMailbox(s, { provider: "microsoft", subject: SUBJ, address: "victim@lawfirm.example", displayName: "x", refreshToken: "garbage", masterKey: MASTER }));
+    const real = await db.withFirm(x.avery, (s) => connectMailbox(s, { provider: "microsoft", subject: SUBJ, address: "victim@lawfirm.example", displayName: "Avery", refreshToken: "RT-1", masterKey: MASTER }));
+    expect(real).toBe(squat);
+    expect((await db.withFirm(x.sam, (s) => listMailboxes(s))).map((m) => m.id)).not.toContain(squat);
+    expect((await db.withFirm(x.avery, (s) => listMailboxes(s))).find((m) => m.id === real)?.mine).toBe(true);
+  });
+});
+
+describe("review 5 regressions (2)", () => {
+  it("R5-1: the audit log never holds what someone searched for in their mailbox, or the mailbox address", async () => {
+    const x = await setup();
+    await syncAll();
+    await db.withFirm(x.avery, (s) => listMessages(s, { q: "settlement 80000" }));
+    const rows = (await db.withFirm(x.owner, async (s) => (await s.client.query(
+      "SELECT action, metadata::text AS m FROM huis.audit_events WHERE action LIKE 'mailbox.%'")).rows));
+    expect(rows.map((r) => r.action)).toContain("mailbox.searched");
+    const all = rows.map((r) => r.m).join(" ");
+    expect(all).not.toMatch(/settlement|80000|avery@lawfirm/);
+  });
+
+  it("R5-2: disconnecting removes every email, including ones waiting to be filed", async () => {
+    const x = await setup();
+    await syncAll();
+    const msg = (await db.withFirm(x.avery, (s) => listMessages(s, { q: "settlement" })))[0]!;
+    const folder = (await db.withFirm(x.avery, (s) => listMatterFolders(s, x.matter.id))).find((f) => f.name === "Correspondence")!;
+    await db.withFirm(x.avery, (s) => fileMessage(s, msg.id, { matterId: x.matter.id, folderId: folder.id }));
+    await db.withFirm(x.avery, (s) => updateMailbox(s, x.connectionId, { scope: "all", manage: false, status: "disconnected" }));
+    expect((await t.admin.query("SELECT count(*)::int n FROM huis.mail_messages WHERE connection_id = $1", [x.connectionId])).rows[0].n).toBe(0);
+    expect((await t.admin.query("SELECT count(*)::int n FROM huis.mail_filings WHERE message_id = $1", [msg.id])).rows[0].n).toBe(0);
+    expect(await mail.fileOnce()).toBe(false);
+  });
+
+  it("R5-3: a filing doesn't complete if the requester lost access to the Matter or the mailbox first", async () => {
+    const x = await setup();
+    await syncAll();
+    await db.withFirm(x.owner, (s) => addMatterMember(s, { matterId: x.walled.id, userId: x.attorney.id, access: "edit" }));
+    const msg = (await db.withFirm(x.avery, (s) => listMessages(s, { q: "settlement" })))[0]!;
+    const walledFolder = (await db.withFirm(x.avery, (s) => listMatterFolders(s, x.walled.id))).find((f) => f.name === "Correspondence")!;
+    await db.withFirm(x.avery, (s) => fileMessage(s, msg.id, { matterId: x.walled.id, folderId: walledFolder.id }));
+    await db.withFirm(x.owner, (s) => removeMatterMember(s, x.walled.id, x.attorney.id));
+    await mail.fileOnce();
+    expect((await t.admin.query("SELECT count(*)::int n FROM huis.evidence_items WHERE matter_id = $1", [x.walled.id])).rows[0].n).toBe(0);
+    expect((await t.admin.query("SELECT status, last_error FROM huis.mail_filings WHERE message_id = $1", [msg.id])).rows[0])
+      .toMatchObject({ status: "failed", last_error: "the requester no longer has access" });
+
+    // A delegate whose access is removed: their waiting filings are cancelled.
+    await db.withFirm(x.avery, (s) => setDelegate(s, x.connectionId, x.assistant.id, true));
+    const other = (await db.withFirm(x.sam, (s) => listMessages(s, { q: "deposition -witness" })))[0]!;
+    const folder = (await db.withFirm(x.sam, (s) => listMatterFolders(s, x.matter.id))).find((f) => f.name === "Correspondence")!;
+    await db.withFirm(x.sam, (s) => fileMessage(s, other.id, { matterId: x.matter.id, folderId: folder.id }));
+    await db.withFirm(x.avery, (s) => setDelegate(s, x.connectionId, x.assistant.id, false));
+    await mail.fileOnce();
+    expect((await t.admin.query("SELECT status FROM huis.mail_filings WHERE message_id = $1", [other.id])).rows[0].status).toBe("failed");
+    expect((await db.withFirm(x.avery, (s) => getMessage(s, other.id))).filedMatterId).toBeNull();
+  });
+
+  it("R5-4: access follows later changes — a delegate made read-only, or an owner who leaves the firm", async () => {
+    const x = await setup();
+    await syncAll();
+    await db.withFirm(x.avery, (s) => setDelegate(s, x.connectionId, x.assistant.id, true));
+    expect(await db.withFirm(x.sam, (s) => listMessages(s, {}))).toHaveLength(4);
+    await db.withFirm(x.owner, (s) => changeUserRole(s, x.assistant.id, "read_only"));
+    expect(await db.withFirm(x.sam, (s) => listMessages(s, {}))).toEqual([]);
+    await db.withFirm(x.owner, (s) => changeUserRole(s, x.assistant.id, "legal_assistant"));
+    expect(await db.withFirm(x.sam, (s) => listMessages(s, {}))).toHaveLength(4);
+    // The owner leaves: nobody can read their mailbox and Huis stops syncing it.
+    await db.withFirm(x.owner, (s) => disableUser(s, x.attorney.id));
+    expect(await db.withFirm(x.sam, (s) => listMessages(s, {}))).toEqual([]);
+    ms.messages.push({ id: "M9", folder: "F-inbox", subject: "After departure", from: "x@y.example", to: [], received: "2026-10-09T00:00:00Z", body: "z", mime: "z" });
+    await t.admin.query("UPDATE huis.mail_connections SET next_sync_at = now() WHERE id = $1", [x.connectionId]);
+    expect(await mail.syncOnce()).toBe(false);
+    expect((await t.admin.query("SELECT count(*)::int n FROM huis.mail_messages WHERE subject = 'After departure'")).rows[0].n).toBe(0);
+  });
+
+  it("R5-6: a misbehaving mail service can't keep a sync running forever", async () => {
+    const x = await setup();
+    ms.endlessEmptyPages = true;
+    ms.graphCalls = [];
+    await mail.syncOnce();
+    expect(ms.graphCalls.length).toBeLessThan(3500);
+    expect((await db.withFirm(x.avery, (s) => listMailboxes(s)))[0]!.lastError ?? "").not.toBe("");
+  });
+
+  it("R5-7: one email with a NUL character can't stop the mailbox from syncing", async () => {
+    const x = await setup();
+    ms.rawSubjects = { M2: "Lunch\u0000 Friday?" };
+    await syncAll();
+    const subjects = (await db.withFirm(x.avery, (s) => listMessages(s, {}))).map((m) => m.subject);
+    expect(subjects).toHaveLength(4);
+    expect(subjects).toContain("Lunch Friday?");
+    expect((await db.withFirm(x.avery, (s) => listMailboxes(s)))[0]!.lastError).toBeNull();
   });
 });
 
