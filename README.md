@@ -28,3 +28,8 @@ Tests: `HUIS_TEST_ADMIN_URL=postgres://postgres:<password>@localhost:5432/postgr
 1. Attorney-client privilege and security come first. Read §2 of the architecture before writing code.
 2. Never commit real client data, privileged documents, API keys or tokens to this repository.
 3. Work on a branch; merge to `main` only after review and passing tests.
+4. **Before any step or phase is called complete, and before moving on to the next one:**
+   1. **Test:** every automated test, the type check, the production build and the dependency vulnerability scan pass, and new work comes with its own tests.
+   2. **Check it works:** try it in a real browser on made-up data, then run the pre-release check (`scripts/qa`). It opens every page as owner, attorney, paralegal, read-only staff and a client, and reports errors and broken links. Also check the links in the documentation.
+   3. **Check for bugs:** an independent reviewer who didn't write the code attacks it with working tests. Every confirmed problem is fixed, with a test so it can't come back.
+   4. **Review:** update the docs, FAQ and security-review record. Merge only once GitHub's automated tests pass on the final version.
