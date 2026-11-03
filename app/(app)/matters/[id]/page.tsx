@@ -68,6 +68,7 @@ export default async function MatterOverview({ params, searchParams }: {
       <p className="sub">
         {m.huisNumber} {m.restricted ? <span className="badge walled">Ethical wall — members only</span> : null}
       </p>
+      {data.internal ? <p><Link className="button" href={`/matters/${m.id}/brain`}>Matter Brain — ask this Matter</Link></p> : null}
       <FlashBanner flash={flash} />
 
       <div className="grid">

@@ -1,4 +1,5 @@
 import pg from "pg";
+import { BrainWorker } from "../brain/worker";
 import { scannerFromEnv } from "../storage/scanner";
 import { evidenceVault } from "../storage/store";
 import { EvidenceProcessor } from "./processor";
@@ -33,13 +34,14 @@ async function main() {
     google: process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
       ? { clientId: process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_CLIENT_SECRET } : null,
   });
+  const brain = new BrainWorker(pool);
   let stopping = false;
   for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => { stopping = true; });
 
   console.log(`[huis-worker] started with ${scanner.name}`);
   while (!stopping) {
-    // Evidence first (scans and reading), then filing requests, then mailbox sync.
-    const did = await (async () => (await processor.runOnce()) || (await mail.fileOnce()) || (await mail.syncOnce()))().catch((e) => {
+    // Evidence first (scans and reading), then filing requests, then the Matter Brain, then mailbox sync.
+    const did = await (async () => (await processor.runOnce()) || (await mail.fileOnce()) || (await brain.indexOnce()) || (await mail.syncOnce()))().catch((e) => {
       console.error("[huis-worker] error:", e instanceof Error ? e.message : e);
       return false;
     });
