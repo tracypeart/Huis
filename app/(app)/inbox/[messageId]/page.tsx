@@ -45,7 +45,7 @@ export default async function MessagePage({ params, searchParams }: {
           <tr><th>To</th><td>{m.to.join(", ") || "—"}</td></tr>
           {m.cc.length ? <tr><th>Cc</th><td>{m.cc.join(", ")}</td></tr> : null}
           <tr><th>Received</th><td>{when(m.receivedAt)}</td></tr>
-          <tr><th>Folder</th><td>{m.folderPath ?? "—"}</td></tr>
+          <tr><th>Folder / label</th><td>{m.folderPath ?? "—"}</td></tr>
           <tr><th>Attachments</th><td>{m.hasAttachments ? "Yes (each becomes its own evidence item when filed)" : "None"}</td></tr>
           <tr><th>Matter</th><td>
             {m.filedMatterId ? (m.filedMatterTitle

@@ -93,6 +93,29 @@
 | R6-5 | Low | Automatic filings already queued still ran after automatic filing was switched off | Automatic filings are re-checked against the firm mode, the mailbox setting and the owner's membership when picked up and before completion |
 | Also | Low | Very long recipient lists made suggestions slower; with several "Correspondence" folders, which one was picked was arbitrary | Recipients considered are capped at 200; the earliest-created Correspondence folder is used. Mode changes are audited by the app (the database functions are callable only by the app) |
 
+## Seventh review — Phase 3 part 3 (Gmail)
+
+**Scope:** Google sign-in for mailboxes, the Gmail provider (labels, full import, change history, raw MIME), the whole-mailbox sync path, and the connect pages for both providers.
+**Result:**
+- **Connecting held.** A Microsoft connect request couldn't complete on the Google page or the reverse, and wrong state values and other people's requests were refused.
+- **Tokens stayed with Google.** They never left Google's hosts, and redirects weren't followed.
+- **Bad responses were refused.** Hostile ids, page tokens and stored positions, and responses claiming to be a different message, were all rejected.
+- **Spam, Trash and Drafts stayed out** in normal syncs.
+
+The reviewer wrote 23 attack tests and confirmed 8 problems. **All fixed**, with regression tests (`test/gmail.test.ts`, "review 7"). The reviewer's attack tests now pass, except one that expected an unreadable saved position to raise an error; it now starts a fresh import instead (R7-8).
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| R7-1 | High | One crafted email (huge HTML of "<" characters, or a giant address header) took seconds to minutes to read, stalling all mailbox work and retrying forever | HTML is cut to 2 MB and read with linear-time scanning; address headers are split and checked piece by piece; a test confirms the same inputs now take milliseconds |
+| R7-2 | Medium | Mail trashed or deleted while Gmail's history had expired (or when labels were re-chosen) stayed in Huis | Each message records when sync last saw it; when a fresh import finishes, anything it didn't see is marked removed |
+| R7-3 | Medium | A very large batch of changes was cut short and the rest silently skipped | Nothing is dropped: an oversized batch triggers a fresh import instead |
+| R7-4 | Low-Medium | Endless empty pages kept the worker busy | Same guard as Outlook: a long run of empty pages stops the sync with an error |
+| R7-5 | Low | Error messages could quote text from the mail service (possibly mail content or a token) | Errors are fixed phrases; only Google's and Microsoft's short error codes are kept (applied to Outlook too) |
+| R7-6 | Low | One malformed message stopped the whole mailbox syncing | Messages are read defensively; one Huis can't read is kept as "(message Huis couldn't read)" and can still be filed from the original |
+| R7-7 | Low | With a "mail since" date, mail with no date got in | Undated mail stays out when a date is set (applied to Outlook too) |
+| R7-8 | Low | An unreadable saved position failed every sync | Huis starts a fresh import instead |
+| Also | Low | Long rate-limit waits; large raw-message memory; re-imports whenever a new label appeared; unverified Google email used as a fallback | Waits capped at 10 seconds; raw message limit cut to Gmail's real maximum; "whole mailbox" no longer re-imports on new labels; the email address is used only if Google verified it |
+
 ## Still open (tracked, not code defects)
 1. **MFA enforcement** — Microsoft sign-in doesn't yet require proof of MFA. Plan: require the firm's Microsoft MFA (Conditional Access) or a Huis passkey. Part of the end-of-build Azure/hosting step.
 2. **Administrator-level tampering** — someone with full database superuser access could switch off the protective rules and rewrite history consistently. The hash chains make ordinary tampering detectable, but defeating a superuser needs the chain's latest fingerprint stored outside the database (e.g. a daily signed export). Planned with production hosting.

@@ -27,7 +27,7 @@ export async function GET() {
   const verifier = randomToken(48);
   const jar = await cookies();
   jar.set(MAILBOX_OAUTH_COOKIE,
-    await seal({ state, nonce, verifier, firmId: session.firmId, userId: session.userId }, cfg.sessionKey, "mailbox-oauth", 10 * 60),
+    await seal({ provider: "microsoft", state, nonce, verifier, firmId: session.firmId, userId: session.userId }, cfg.sessionKey, "mailbox-oauth", 10 * 60),
     { httpOnly: true, secure: cfg.secureCookies, sameSite: "lax", path: "/api/mailboxes", maxAge: 10 * 60 });
   return NextResponse.redirect(mailboxAuthorizeUrl({
     clientId: cfg.microsoft.clientId, redirectUri: `${cfg.baseUrl}/api/mailboxes/microsoft/callback`, state, nonce, verifier,

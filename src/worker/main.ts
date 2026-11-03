@@ -30,6 +30,8 @@ async function main() {
   const mail = new MailWorker(pool, evidenceVault(), {
     masterKey: process.env.HUIS_STORAGE_MASTER_KEY!,
     microsoft: clientId && clientSecret ? { clientId, clientSecret } : null,
+    google: process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
+      ? { clientId: process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_CLIENT_SECRET } : null,
   });
   let stopping = false;
   for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => { stopping = true; });

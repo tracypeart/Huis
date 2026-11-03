@@ -56,7 +56,8 @@ async function tokenRequest(params: Record<string, string>): Promise<TokenRespon
   });
   const body = (await res.json().catch(() => ({}))) as TokenResponse;
   if (!res.ok || !body.access_token) {
-    const err = new Error(`Microsoft token request failed (${body.error ?? res.status})`);
+    const code = typeof body.error === "string" && /^[a-z_]{1,40}$/.test(body.error) ? body.error : String(res.status);
+    const err = new Error(`Microsoft token request failed (${code})`);
     (err as Error & { reconnect?: boolean }).reconnect = body.error === "invalid_grant" || body.error === "interaction_required";
     throw err;
   }
@@ -143,7 +144,12 @@ async function graphJson<T>(token: string, url: string, prefer?: string[]): Prom
     if (size > MAX_JSON_BYTES) { await reader.cancel().catch(() => undefined); throw new Error("Graph response too large"); }
     parts.push(value);
   }
-  return JSON.parse(Buffer.concat(parts).toString("utf8")) as T;
+  try {
+    return JSON.parse(Buffer.concat(parts).toString("utf8")) as T;
+  } catch {
+    // Never echo the response: it may be mail content.
+    throw new Error("Microsoft sent an unreadable response");
+  }
 }
 
 /** Text from Graph, minus NUL characters (Postgres can't store them in text). */

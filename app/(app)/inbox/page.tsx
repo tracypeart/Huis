@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { authConfig } from "../../../src/auth/config";
 import { ZodError } from "zod";
 import { filingModeAction, syncMailboxAction } from "../../../lib/actions";
 import { getFlash, withSession } from "../../../lib/server";
@@ -38,7 +39,7 @@ export default async function Inbox({ searchParams }: { searchParams: Promise<{ 
     }
     return {
       mailboxes, messages, error, connectionId, suggested, canConnect: s.actor.role !== "read_only",
-      mode: await getFilingMode(s), isAdmin: can(s.actor.role, "firm.manage"),
+      mode: await getFilingMode(s), isAdmin: can(s.actor.role, "firm.manage"), gmail: Boolean(authConfig().google),
     };
   });
   if (!data) {
@@ -57,10 +58,15 @@ export default async function Inbox({ searchParams }: { searchParams: Promise<{ 
       <div className="card">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <h2 style={{ margin: 0 }}>Mailboxes</h2>
-          {data.canConnect ? <a className="button" href="/api/mailboxes/microsoft/start">Connect Outlook</a> : null}
+          {data.canConnect ? (
+            <div className="row">
+              <a className="button" href="/api/mailboxes/microsoft/start">Connect Outlook</a>
+              {data.gmail ? <a className="button" href="/api/mailboxes/google/start">Connect Gmail</a> : null}
+            </div>
+          ) : null}
         </div>
         {data.mailboxes.length === 0 ? (
-          <p className="notice">No mailbox connected yet. Connecting asks Microsoft for read-only access: Huis can read your mail but can&apos;t send, change or delete it. Gmail is coming next.</p>
+          <p className="notice">No mailbox connected yet. Connecting asks Microsoft or Google for read-only access: Huis can read your mail but can&apos;t send, change or delete it.</p>
         ) : (
           <table>
             <thead><tr><th>Mailbox</th><th>Status</th><th>Mail</th><th>Last synced</th><th /></tr></thead>
@@ -69,13 +75,13 @@ export default async function Inbox({ searchParams }: { searchParams: Promise<{ 
                 <tr key={m.id}>
                   <td><Link href={`/inbox?mailbox=${m.id}`}>{m.accountAddress ?? m.displayName}</Link>
                     <div className="notice">{m.mine ? "Your mailbox" : "Shared with you"}{m.manage ? " · Huis keeps it in sync" : ""}</div></td>
-                  <td>{STATUS[m.status] ?? m.status}{m.lastError ? <div className="notice">{m.status === "needs_reconnect" ? "Microsoft access expired — reconnect." : "Last sync had a problem; Huis will retry."}</div> : null}</td>
+                  <td>{STATUS[m.status] ?? m.status}{m.lastError ? <div className="notice">{m.status === "needs_reconnect" ? `${m.provider === "google" ? "Google" : "Microsoft"} access expired — reconnect.` : "Last sync had a problem; Huis will retry."}</div> : null}</td>
                   <td>{m.unfiledCount.toLocaleString()} unfiled · {m.messageCount.toLocaleString()} total</td>
                   <td>{when(m.lastSyncedAt)}</td>
                   <td className="row">
                     <form action={syncMailboxAction}><input type="hidden" name="connectionId" value={m.id} /><button type="submit" className="secondary">Sync now</button></form>
                     {m.mine ? <Link className="button secondary" href={`/inbox/mailboxes/${m.id}`}>Settings</Link> : null}
-                    {m.mine && m.status === "needs_reconnect" ? <a className="button" href="/api/mailboxes/microsoft/start">Reconnect</a> : null}
+                    {m.mine && m.status === "needs_reconnect" ? <a className="button" href={`/api/mailboxes/${m.provider === "google" ? "google" : "microsoft"}/start`}>Reconnect</a> : null}
                   </td>
                 </tr>
               ))}
