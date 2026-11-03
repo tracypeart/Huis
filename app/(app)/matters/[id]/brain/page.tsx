@@ -28,7 +28,7 @@ export default async function MatterBrainPage({ params, searchParams }: {
     let answer: BrainAnswer | null = null;
     if (sp.a && UUID.test(sp.a)) {
       try { answer = await getAnswer(s, sp.a); } catch (e) { if (!(e instanceof NotFoundError) && !(e instanceof PermissionDeniedError)) throw e; }
-      if (answer && answer.matterId !== id) answer = null;
+      if (answer && !answer.withheld && answer.matterId !== id) answer = null;
     }
     return {
       matter, answer,
@@ -76,8 +76,8 @@ export default async function MatterBrainPage({ params, searchParams }: {
 
       {data.answer ? (
         <div className="card">
-          <h2>{data.answer.question}</h2>
-          <p className="notice">{when(data.answer.createdAt)} · <span className="badge privileged">{WORK_PRODUCT_LABEL}</span></p>
+          <h2>{data.answer.withheld ? "Answer withheld" : data.answer.question}</h2>
+          <p className="notice">{data.answer.withheld ? "" : `${when(data.answer.createdAt)} · `}<span className="badge privileged">{WORK_PRODUCT_LABEL}</span></p>
           {data.answer.withheld ? (
             <p>One of the sources for this answer is no longer available to you, so the answer is withheld.</p>
           ) : (
@@ -98,10 +98,10 @@ export default async function MatterBrainPage({ params, searchParams }: {
               ) : null}
             </>
           )}
-          <form action={deleteAnswerAction}>
+          {data.answer.withheld ? null : <form action={deleteAnswerAction}>
             <input type="hidden" name="matterId" value={m.id} /><input type="hidden" name="answerId" value={data.answer.id} />
             <button type="submit" className="secondary">Remove from my questions</button>
-          </form>
+          </form>}
         </div>
       ) : null}
 
@@ -109,7 +109,7 @@ export default async function MatterBrainPage({ params, searchParams }: {
         <div className="card">
           <h2>What the Brain holds</h2>
           <table><tbody>
-            <tr><th>Documents</th><td>{st.documentsReady} of {st.documents} ready{st.waiting ? ` · ${st.waiting} being added` : ""}{st.failed ? ` · ${st.failed} couldn't be added` : ""}</td></tr>
+            <tr><th>Documents</th><td>{st.documentsReady} of {st.documents} ready{st.waiting ? ` · ${st.waiting} being added` : ""}{st.failed ? ` · ${st.failed} couldn't be added` : ""}{st.partial ? ` · ${st.partial} very large, only partly included` : ""}</td></tr>
             <tr><th>Attorney notes</th><td>{st.notes}</td></tr>
             <tr><th>Passages</th><td>{st.passages.toLocaleString()}</td></tr>
           </tbody></table>

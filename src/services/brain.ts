@@ -27,6 +27,9 @@ const writer = (s: FirmSession, what: string) => {
   if (s.actor.role === "read_only") throw new PermissionDeniedError(what);
 };
 
+/** A generous limit that stops runaway scripts filling the index. */
+const NOTES_PER_HOUR = 200;
+
 /** Passages used for one answer. */
 const PASSAGES = 8;
 const PER_SOURCE = 3;
@@ -64,6 +67,9 @@ export async function addNote(s: FirmSession, matterId: string, input: unknown):
   writer(s, "add attorney notes");
   await getMatter(s, matterId);
   const v = noteInput.parse(input);
+  const recent = (await s.client.query<{ n: number }>(
+    "SELECT count(*)::int AS n FROM huis.matter_notes WHERE author_id = $1 AND created_at > now() - interval '1 hour'", [s.actor.userId])).rows[0]!.n;
+  if (recent >= NOTES_PER_HOUR) throw new UserFacingError("You've added a lot of notes in the last hour. Please wait a little before adding more.");
   const id = (await s.client.query<{ id: string }>(
     "INSERT INTO huis.matter_notes (firm_id, matter_id, author_id, title, body) VALUES ($1, $2, $3, $4, $5) RETURNING id",
     [s.actor.firmId, matterId, s.actor.userId, v.title, v.body])).rows[0]!.id;
@@ -81,7 +87,7 @@ export async function updateNote(s: FirmSession, noteId: string, input: unknown)
 }
 
 export async function deleteNote(s: FirmSession, noteId: string): Promise<void> {
-  staffOnly(s, "delete attorney notes");
+  writer(s, "delete attorney notes");
   if (!uuid.safeParse(noteId).success) throw new NotFoundError("Note");
   const r = await s.client.query("DELETE FROM huis.matter_notes WHERE id = $1 RETURNING matter_id", [noteId]);
   if (!r.rowCount) throw new NotFoundError("Note");
@@ -91,7 +97,7 @@ export async function deleteNote(s: FirmSession, noteId: string): Promise<void> 
 // ---------------------------------------------------------------------------
 // Status
 // ---------------------------------------------------------------------------
-export interface BrainStatus { documents: number; documentsReady: number; notes: number; passages: number; waiting: number; failed: number }
+export interface BrainStatus { documents: number; documentsReady: number; notes: number; passages: number; waiting: number; failed: number; partial: number }
 
 export async function brainStatus(s: FirmSession, matterId: string): Promise<BrainStatus> {
   staffOnly(s, "use the Matter Brain");
@@ -102,9 +108,10 @@ export async function brainStatus(s: FirmSession, matterId: string): Promise<Bra
             count(*) FILTER (WHERE note_id IS NOT NULL)::int AS notes,
             coalesce(sum(chunk_count) FILTER (WHERE status = 'indexed'), 0)::int AS passages,
             count(*) FILTER (WHERE status IN ('queued', 'running'))::int AS waiting,
-            count(*) FILTER (WHERE status = 'failed')::int AS failed
+            count(*) FILTER (WHERE status = 'failed')::int AS failed,
+            count(*) FILTER (WHERE status = 'indexed' AND partial)::int AS partial
        FROM huis.brain_sources WHERE matter_id = $1`, [matterId])).rows[0];
-  return { documents: r.documents, documentsReady: r.ready, notes: r.notes, passages: r.passages, waiting: r.waiting, failed: r.failed };
+  return { documents: r.documents, documentsReady: r.ready, notes: r.notes, passages: r.passages, waiting: r.waiting, failed: r.failed, partial: r.partial };
 }
 
 // ---------------------------------------------------------------------------
@@ -137,19 +144,25 @@ export async function askMatter(s: FirmSession, matterId: string, question: unkn
     throw e;
   }
   const started = Date.now();
-  const [vec] = await provider.embed([q]);
+  const [raw] = await provider.embed([q]);
+  // A question with no meaningful words has no direction to compare: use word matching only.
+  const vec = raw && raw.every(Number.isFinite) && raw.some((x) => x !== 0) ? raw : null;
   const lex = lexicalQuery(q);
   // Row-level security limits this to passages from sources this person can open.
   const { rows } = await s.client.query(
     `WITH scored AS (
        SELECT c.id, c.content, c.evidence_id, c.note_id, c.source_id, c.char_start, c.char_end,
               CASE WHEN $3::text IS NULL THEN 0 ELSE ts_rank_cd(c.tsv, to_tsquery('english', $3::text), 32) END AS lex,
-              CASE WHEN c.model = $4 AND c.embedding IS NOT NULL AND vector_dims(c.embedding) = vector_dims($2::vector)
-                   THEN 1 - (c.embedding <=> $2::vector) ELSE 0 END AS sem
+              CASE WHEN $2::text IS NOT NULL AND c.model = $4 AND c.embedding IS NOT NULL
+                        AND vector_dims(c.embedding) = vector_dims($2::text::vector)
+                   THEN c.embedding <=> $2::text::vector END AS dist
          FROM huis.brain_chunks c WHERE c.matter_id = $1
+     ), scored2 AS (
+       -- A distance that isn't a normal number (NaN) never ranks a passage.
+       SELECT *, CASE WHEN dist IS NULL OR dist = 'NaN'::float8 THEN 0 ELSE greatest(0, least(1, 1 - dist)) END AS sem FROM scored
      ), ranked AS (
        SELECT *, sem + least(lex * 2, 1) AS score, row_number() OVER (PARTITION BY source_id ORDER BY sem + least(lex * 2, 1) DESC) AS k
-         FROM scored
+         FROM scored2
      )
      SELECT r.*, coalesce(i.original_filename, n.title) AS source_title
        FROM ranked r
@@ -157,22 +170,19 @@ export async function askMatter(s: FirmSession, matterId: string, question: unkn
        LEFT JOIN huis.matter_notes n ON n.id = r.note_id
       WHERE r.k <= $5 AND r.score > 0.05
       ORDER BY r.score DESC LIMIT $6`,
-    [matterId, JSON.stringify(vec), lex, provider.model, PER_SOURCE, PASSAGES]);
+    [matterId, vec ? JSON.stringify(vec) : null, lex, provider.model, PER_SOURCE, PASSAGES]);
   const passages: Passage[] = rows.map((r, i) => ({ n: i + 1, text: r.content }));
   const result = await provider.answer(q, passages);
-  const citations: Citation[] = rows.map((r, i) => ({
-    n: i + 1, evidenceId: r.evidence_id, noteId: r.note_id, start: r.char_start, end: r.char_end,
-    excerpt: String(r.content).slice(0, 400), sourceTitle: String(r.source_title ?? "Source").slice(0, 300),
-  }));
+  // References only: excerpts are read back from the (protected) passages each time.
+  const refs = rows.map((r, i) => ({ n: i + 1, chunkId: String(r.id), evidenceId: r.evidence_id, noteId: r.note_id, start: r.char_start, end: r.char_end }));
   const id = (await s.client.query<{ id: string }>(
-    `INSERT INTO huis.brain_answers (firm_id, matter_id, asked_by, question, answer, citations, provider, model)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-    [s.actor.firmId, matterId, s.actor.userId, q, result.text.slice(0, 100_000), JSON.stringify(citations), provider.name, provider.model])).rows[0]!.id;
-  await s.client.query(
-    `INSERT INTO huis.ai_requests (firm_id, user_id, matter_id, purpose, provider, model, input_chars, output_chars, duration_ms)
-     VALUES ($1, $2, $3, 'ask', $4, $5, $6, $7, $8)`,
-    [s.actor.firmId, s.actor.userId, matterId, provider.name, provider.model,
-      q.length + passages.reduce((a, p) => a + p.text.length, 0), result.text.length, Date.now() - started]);
+    `INSERT INTO huis.brain_answers (firm_id, matter_id, asked_by, question, answer, citations, source_evidence, source_notes, provider, model)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+    [s.actor.firmId, matterId, s.actor.userId, q, result.text.slice(0, 100_000), JSON.stringify(refs),
+      [...new Set(refs.map((r) => r.evidenceId).filter(Boolean))], [...new Set(refs.map((r) => r.noteId).filter(Boolean))],
+      provider.name, provider.model])).rows[0]!.id;
+  await s.client.query("SELECT huis.log_ai_ask($1, $2, $3, $4, $5, $6)", [matterId, provider.name, provider.model,
+    q.length + passages.reduce((a, p) => a + p.text.length, 0), result.text.length, Date.now() - started]);
   // The question itself is work product: never in the audit log administrators read.
   await recordAudit(s, "matter.brain_asked", { targetType: "matter", targetId: matterId, matterId, metadata: { provider: provider.name } });
   return id;
@@ -181,21 +191,27 @@ export async function askMatter(s: FirmSession, matterId: string, question: unkn
 export async function getAnswer(s: FirmSession, answerId: string): Promise<BrainAnswer> {
   staffOnly(s, "use the Matter Brain");
   if (!uuid.safeParse(answerId).success) throw new NotFoundError("Answer");
+  // The database only returns an answer while every source it drew on is still available to this person.
   const r = (await s.client.query("SELECT * FROM huis.brain_answers WHERE id = $1", [answerId])).rows[0];
-  if (!r) throw new NotFoundError("Answer");
-  const citations = (Array.isArray(r.citations) ? r.citations : []) as Citation[];
-  // Re-check every source as it stands now: if any is no longer available to this person, withhold the answer.
-  const evidence = citations.map((c) => c.evidenceId).filter((x): x is string => Boolean(x));
-  const notes = citations.map((c) => c.noteId).filter((x): x is string => Boolean(x));
-  const visible = (await s.client.query<{ id: string }>(
-    `SELECT id FROM huis.evidence_items WHERE id = ANY($1::uuid[]) AND matter_id = $3 AND status = 'clean'
-     UNION SELECT id FROM huis.matter_notes WHERE id = ANY($2::uuid[]) AND matter_id = $3`, [evidence, notes, r.matter_id])).rows;
-  const seen = new Set(visible.map((x) => x.id));
-  const withheld = citations.some((c) => !seen.has((c.evidenceId ?? c.noteId)!));
-  return {
-    id: r.id, matterId: r.matter_id, question: r.question, provider: r.provider, createdAt: r.created_at, withheld,
-    answer: withheld ? "" : r.answer, citations: withheld ? [] : citations,
-  };
+  if (!r) {
+    const withheld = (await s.client.query<{ w: boolean }>("SELECT huis.brain_answer_withheld($1) AS w", [answerId])).rows[0]?.w;
+    if (!withheld) throw new NotFoundError("Answer");
+    return { id: answerId, matterId: "", question: "", answer: "", citations: [], provider: "", createdAt: new Date(0), withheld: true };
+  }
+  const refs = (Array.isArray(r.citations) ? r.citations : []) as { n: number; chunkId: string; evidenceId: string | null; noteId: string | null; start: number; end: number }[];
+  const chunkIds = refs.map((c) => c.chunkId).filter((x) => /^[0-9]{1,19}$/.test(String(x)));
+  const excerpts = new Map((await s.client.query<{ id: string; content: string }>(
+    "SELECT id::text, left(content, 400) AS content FROM huis.brain_chunks WHERE id = ANY($1::bigint[]) AND matter_id = $2", [chunkIds, r.matter_id])).rows
+    .map((x) => [x.id, x.content]));
+  const titles = new Map((await s.client.query<{ id: string; title: string }>(
+    `SELECT id::text, original_filename AS title FROM huis.evidence_items WHERE id = ANY($1::uuid[])
+     UNION ALL SELECT id::text, title FROM huis.matter_notes WHERE id = ANY($2::uuid[])`,
+    [r.source_evidence, r.source_notes])).rows.map((x) => [x.id, x.title]));
+  const citations: Citation[] = refs.map((c) => ({
+    n: c.n, evidenceId: c.evidenceId, noteId: c.noteId, start: c.start, end: c.end,
+    excerpt: excerpts.get(String(c.chunkId)) ?? "", sourceTitle: titles.get((c.evidenceId ?? c.noteId)!) ?? "Source",
+  }));
+  return { id: r.id, matterId: r.matter_id, question: r.question, provider: r.provider, createdAt: r.created_at, withheld: false, answer: r.answer, citations };
 }
 
 export async function listMyQuestions(s: FirmSession, matterId: string): Promise<{ id: string; question: string; createdAt: Date }[]> {

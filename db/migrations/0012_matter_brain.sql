@@ -20,6 +20,24 @@
 CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public;
 
 ALTER TABLE huis.firms ADD COLUMN ai_provider text NOT NULL DEFAULT 'local' CHECK (ai_provider IN ('off', 'local'));
+-- Indexing takes turns between firms, so one firm's backlog can't hold up the others.
+ALTER TABLE huis.firms ADD COLUMN brain_claimed_at timestamptz;
+
+-- Firm settings with their own audited functions can only change through them
+-- (also covers the mail filing mode from Phase 3).
+CREATE FUNCTION huis.firms_settings_guard() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF current_user <> 'huis_security' AND (
+       NEW.ai_provider IS DISTINCT FROM OLD.ai_provider OR NEW.brain_claimed_at IS DISTINCT FROM OLD.brain_claimed_at
+       OR NEW.mail_filing_mode IS DISTINCT FROM OLD.mail_filing_mode
+       OR NEW.mail_filing_mode_since IS DISTINCT FROM OLD.mail_filing_mode_since) THEN
+    RAISE EXCEPTION 'This setting can only be changed from its settings page';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER firms_settings_guard BEFORE UPDATE ON huis.firms
+  FOR EACH ROW EXECUTE FUNCTION huis.firms_settings_guard();
 
 -- ---------------------------------------------------------------------------
 -- Attorney notes (work product)
@@ -54,7 +72,8 @@ CREATE POLICY matter_notes_update ON huis.matter_notes FOR UPDATE TO huis_app
          AND huis.app_role() <> 'read_only' AND huis.can_see_matter(matter_id))
   WITH CHECK (firm_id = huis.current_firm_id() AND author_id = huis.current_user_id());
 CREATE POLICY matter_notes_delete ON huis.matter_notes FOR DELETE TO huis_app
-  USING (firm_id = huis.current_firm_id() AND author_id = huis.current_user_id() AND huis.can_see_matter(matter_id));
+  USING (firm_id = huis.current_firm_id() AND author_id = huis.current_user_id() AND huis.is_internal_role(huis.app_role())
+         AND huis.app_role() <> 'read_only' AND huis.can_see_matter(matter_id));
 
 -- A note never moves to another Matter or author.
 CREATE FUNCTION huis.matter_notes_guard() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -82,6 +101,8 @@ CREATE TABLE huis.brain_sources (
   model         text,
   content_hash  text,
   chunk_count   int NOT NULL DEFAULT 0,
+  -- Only the first part of a very large document could be indexed.
+  partial       boolean NOT NULL DEFAULT false,
   last_error    text,
   attempts      int NOT NULL DEFAULT 0,
   lock_token    uuid,
@@ -118,7 +139,7 @@ ALTER TABLE huis.brain_sources ENABLE ROW LEVEL SECURITY;
 ALTER TABLE huis.brain_chunks  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE huis.brain_sources FORCE ROW LEVEL SECURITY;
 ALTER TABLE huis.brain_chunks  FORCE ROW LEVEL SECURITY;
-GRANT SELECT (id, firm_id, matter_id, evidence_id, note_id, status, chunk_count, indexed_at, queued_at) ON huis.brain_sources TO huis_app;
+GRANT SELECT (id, firm_id, matter_id, evidence_id, note_id, status, chunk_count, partial, indexed_at, queued_at) ON huis.brain_sources TO huis_app;
 GRANT SELECT (id, firm_id, matter_id, source_id, evidence_id, note_id, chunk_no, content, char_start, char_end, model, embedding, tsv)
   ON huis.brain_chunks TO huis_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON huis.brain_sources, huis.brain_chunks TO huis_security;
@@ -166,8 +187,12 @@ BEGIN
     ON CONFLICT (note_id) DO UPDATE SET status = 'queued', attempts = 0, last_error = NULL, queued_at = now();
   RETURN NEW;
 END $$;
-CREATE TRIGGER brain_queue_note AFTER INSERT OR UPDATE OF title, body ON huis.matter_notes
+CREATE TRIGGER brain_queue_note AFTER INSERT ON huis.matter_notes
   FOR EACH ROW EXECUTE FUNCTION huis.brain_queue_note();
+-- Only a real change re-indexes a note.
+CREATE TRIGGER brain_requeue_note AFTER UPDATE OF title, body ON huis.matter_notes
+  FOR EACH ROW WHEN (OLD.title IS DISTINCT FROM NEW.title OR OLD.body IS DISTINCT FROM NEW.body)
+  EXECUTE FUNCTION huis.brain_queue_note();
 ALTER FUNCTION huis.brain_queue_evidence() OWNER TO huis_security;
 ALTER FUNCTION huis.brain_queue_note() OWNER TO huis_security;
 REVOKE ALL ON FUNCTION huis.brain_queue_evidence(), huis.brain_queue_note() FROM PUBLIC;
@@ -176,26 +201,28 @@ REVOKE ALL ON FUNCTION huis.brain_queue_evidence(), huis.brain_queue_note() FROM
 -- Worker: claim a source, save its passages, or fail it
 -- ---------------------------------------------------------------------------
 CREATE FUNCTION huis.worker_claim_brain_source()
-RETURNS TABLE (source_id uuid, lock_token uuid, firm_id uuid, matter_id uuid, kind text, content text, ai_provider text, attempts int)
+RETURNS TABLE (source_id uuid, lock_token uuid, firm_id uuid, matter_id uuid, kind text, content text, full_length int, ai_provider text, attempts int)
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = huis, pg_temp AS $$
 #variable_conflict use_column
 DECLARE
   r huis.brain_sources;
   v_token uuid := gen_random_uuid();
   v_text text;
+  v_full int;
   v_provider text;
 BEGIN
   SELECT b.* INTO r FROM huis.brain_sources b JOIN huis.firms f ON f.id = b.firm_id
    WHERE (b.status = 'queued' OR (b.status = 'running' AND b.locked_until < now())) AND b.attempts < 5 AND f.ai_provider <> 'off'
-   ORDER BY b.queued_at LIMIT 1 FOR UPDATE OF b SKIP LOCKED;
+   ORDER BY f.brain_claimed_at NULLS FIRST, b.queued_at LIMIT 1 FOR UPDATE OF b SKIP LOCKED;
   IF NOT FOUND THEN RETURN; END IF;
+  UPDATE huis.firms SET brain_claimed_at = clock_timestamp() WHERE id = r.firm_id;
   SELECT ai_provider INTO v_provider FROM huis.firms WHERE id = r.firm_id;
   IF r.evidence_id IS NOT NULL THEN
     -- Only clean evidence is indexed; anything else leaves the Brain.
-    SELECT left(t.content, 2000000) INTO v_text FROM huis.evidence_text t JOIN huis.evidence_items i ON i.id = t.evidence_id
+    SELECT left(t.content, 2000000), length(t.content) INTO v_text, v_full FROM huis.evidence_text t JOIN huis.evidence_items i ON i.id = t.evidence_id
      WHERE t.evidence_id = r.evidence_id AND i.status = 'clean' AND i.matter_id = r.matter_id;
   ELSE
-    SELECT n.title || E'\n\n' || n.body INTO v_text FROM huis.matter_notes n WHERE n.id = r.note_id AND n.matter_id = r.matter_id;
+    SELECT n.title || E'\n\n' || n.body, length(n.title) + length(n.body) + 2 INTO v_text, v_full FROM huis.matter_notes n WHERE n.id = r.note_id AND n.matter_id = r.matter_id;
   END IF;
   IF v_text IS NULL THEN
     DELETE FROM huis.brain_chunks WHERE source_id = r.id;
@@ -205,11 +232,11 @@ BEGIN
   UPDATE huis.brain_sources SET status = 'running', lock_token = v_token, locked_until = now() + interval '10 minutes',
          attempts = attempts + 1 WHERE id = r.id;
   RETURN QUERY SELECT r.id, v_token, r.firm_id, r.matter_id, CASE WHEN r.evidence_id IS NOT NULL THEN 'evidence' ELSE 'note' END,
-                      v_text, v_provider, r.attempts + 1;
+                      v_text, v_full, v_provider, r.attempts + 1;
 END $$;
 
 CREATE FUNCTION huis.worker_save_brain_chunks(
-  p_source_id uuid, p_lock_token uuid, p_provider text, p_model text, p_content_hash text, p_chunks jsonb
+  p_source_id uuid, p_lock_token uuid, p_provider text, p_model text, p_content_hash text, p_chunks jsonb, p_partial boolean
 ) RETURNS int
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = huis, public, pg_temp AS $$
 DECLARE
@@ -217,6 +244,7 @@ DECLARE
   c jsonb;
   n int := 0;
   v_dims int;
+  v_vec vector;
 BEGIN
   SELECT * INTO r FROM huis.brain_sources WHERE id = p_source_id AND status = 'running' AND lock_token = p_lock_token FOR UPDATE;
   IF NOT FOUND THEN RAISE EXCEPTION 'source is not held by this worker'; END IF;
@@ -229,14 +257,18 @@ BEGIN
       IF v_dims IS NULL THEN v_dims := jsonb_array_length(c->'embedding');
       ELSIF v_dims <> jsonb_array_length(c->'embedding') THEN RAISE EXCEPTION 'inconsistent embeddings'; END IF;
     END IF;
+    v_vec := CASE WHEN jsonb_typeof(c->'embedding') = 'array' THEN (c->>'embedding')::vector END;
+    -- A fingerprint with no direction (all zeros) can't be compared: store none rather than one that matches everything.
+    IF v_vec IS NOT NULL AND (vector_norm(v_vec) = 0 OR vector_norm(v_vec) = 'NaN'::float8 OR vector_norm(v_vec) = 'Infinity'::float8) THEN
+      v_vec := NULL;
+    END IF;
     INSERT INTO huis.brain_chunks (firm_id, matter_id, source_id, evidence_id, note_id, chunk_no, content, char_start, char_end, model, embedding)
       VALUES (r.firm_id, r.matter_id, r.id, r.evidence_id, r.note_id, (c->>'n')::int, c->>'content',
-              (c->>'start')::int, (c->>'end')::int, p_model,
-              CASE WHEN jsonb_typeof(c->'embedding') = 'array' THEN (c->>'embedding')::vector END);
+              (c->>'start')::int, (c->>'end')::int, p_model, v_vec);
     n := n + 1;
   END LOOP;
   UPDATE huis.brain_sources SET status = 'indexed', provider = p_provider, model = p_model, content_hash = left(p_content_hash, 64),
-         chunk_count = n, indexed_at = now(), last_error = NULL, lock_token = NULL, locked_until = NULL WHERE id = r.id;
+         chunk_count = n, partial = coalesce(p_partial, false), indexed_at = now(), last_error = NULL, lock_token = NULL, locked_until = NULL WHERE id = r.id;
   RETURN n;
 END $$;
 
@@ -250,11 +282,11 @@ BEGIN
 END $$;
 
 ALTER FUNCTION huis.worker_claim_brain_source() OWNER TO huis_security;
-ALTER FUNCTION huis.worker_save_brain_chunks(uuid, uuid, text, text, text, jsonb) OWNER TO huis_security;
+ALTER FUNCTION huis.worker_save_brain_chunks(uuid, uuid, text, text, text, jsonb, boolean) OWNER TO huis_security;
 ALTER FUNCTION huis.worker_fail_brain_source(uuid, uuid, text, boolean) OWNER TO huis_security;
-REVOKE ALL ON FUNCTION huis.worker_claim_brain_source(), huis.worker_save_brain_chunks(uuid, uuid, text, text, text, jsonb),
+REVOKE ALL ON FUNCTION huis.worker_claim_brain_source(), huis.worker_save_brain_chunks(uuid, uuid, text, text, text, jsonb, boolean),
   huis.worker_fail_brain_source(uuid, uuid, text, boolean) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION huis.worker_claim_brain_source(), huis.worker_save_brain_chunks(uuid, uuid, text, text, text, jsonb),
+GRANT EXECUTE ON FUNCTION huis.worker_claim_brain_source(), huis.worker_save_brain_chunks(uuid, uuid, text, text, text, jsonb, boolean),
   huis.worker_fail_brain_source(uuid, uuid, text, boolean) TO huis_worker;
 
 -- ---------------------------------------------------------------------------
@@ -267,7 +299,10 @@ CREATE TABLE huis.brain_answers (
   asked_by    uuid NOT NULL,
   question    text NOT NULL CHECK (length(question) BETWEEN 1 AND 2000),
   answer      text NOT NULL CHECK (length(answer) <= 100000),
+  -- References only (source, passage, position) — never copies of the passages.
   citations   jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(citations) = 'array'),
+  source_evidence uuid[] NOT NULL DEFAULT '{}',
+  source_notes    uuid[] NOT NULL DEFAULT '{}',
   provider    text NOT NULL,
   model       text NOT NULL,
   created_at  timestamptz NOT NULL DEFAULT now(),
@@ -278,14 +313,47 @@ CREATE INDEX brain_answers_mine ON huis.brain_answers (firm_id, asked_by, matter
 ALTER TABLE huis.brain_answers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE huis.brain_answers FORCE ROW LEVEL SECURITY;
 GRANT SELECT, INSERT, DELETE ON huis.brain_answers TO huis_app;
+-- Every source an answer drew on must still be available to the asker, or the database withholds the answer.
+CREATE FUNCTION huis.brain_answer_sources_visible(p_matter_id uuid, p_evidence uuid[], p_notes uuid[]) RETURNS boolean
+LANGUAGE sql STABLE AS $$
+  SELECT NOT EXISTS (SELECT 1 FROM unnest(p_evidence) e(id) WHERE NOT EXISTS (
+           SELECT 1 FROM huis.evidence_items i WHERE i.id = e.id AND i.matter_id = p_matter_id AND i.status = 'clean'))
+     AND NOT EXISTS (SELECT 1 FROM unnest(p_notes) x(id) WHERE NOT EXISTS (
+           SELECT 1 FROM huis.matter_notes n WHERE n.id = x.id AND n.matter_id = p_matter_id))
+$$;
+GRANT EXECUTE ON FUNCTION huis.brain_answer_sources_visible(uuid, uuid[], uuid[]) TO huis_app;
 CREATE POLICY brain_answers_select ON huis.brain_answers FOR SELECT TO huis_app
   USING (firm_id = huis.current_firm_id() AND asked_by = huis.current_user_id()
-         AND huis.is_internal_role(huis.app_role()) AND huis.can_see_matter(matter_id));
+         AND huis.is_internal_role(huis.app_role()) AND huis.can_see_matter(matter_id)
+         AND huis.brain_answer_sources_visible(matter_id, source_evidence, source_notes));
 CREATE POLICY brain_answers_insert ON huis.brain_answers FOR INSERT TO huis_app
   WITH CHECK (firm_id = huis.current_firm_id() AND asked_by = huis.current_user_id()
               AND huis.is_internal_role(huis.app_role()) AND huis.can_see_matter(matter_id));
 CREATE POLICY brain_answers_delete ON huis.brain_answers FOR DELETE TO huis_app
-  USING (firm_id = huis.current_firm_id() AND asked_by = huis.current_user_id());
+  USING (firm_id = huis.current_firm_id() AND asked_by = huis.current_user_id() AND huis.is_internal_role(huis.app_role()));
+
+-- Tells the asker that an answer of theirs exists but is withheld (and nothing else).
+CREATE FUNCTION huis.brain_answer_withheld(p_answer_id uuid) RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = huis, pg_temp AS $$
+  SELECT EXISTS (SELECT 1 FROM huis.brain_answers a
+                  WHERE a.id = p_answer_id AND a.firm_id = huis.current_firm_id() AND a.asked_by = huis.current_user_id()
+                    AND huis.is_internal_role(huis.app_role()))
+$$;
+ALTER FUNCTION huis.brain_answer_withheld(uuid) OWNER TO huis_security;
+REVOKE ALL ON FUNCTION huis.brain_answer_withheld(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION huis.brain_answer_withheld(uuid) TO huis_app;
+
+-- A deleted note takes saved answers built on it with it.
+CREATE FUNCTION huis.brain_note_deleted() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = huis, pg_temp AS $$
+BEGIN
+  DELETE FROM huis.brain_answers WHERE OLD.id = ANY (source_notes);
+  RETURN OLD;
+END $$;
+ALTER FUNCTION huis.brain_note_deleted() OWNER TO huis_security;
+REVOKE ALL ON FUNCTION huis.brain_note_deleted() FROM PUBLIC;
+GRANT SELECT, DELETE ON huis.brain_answers TO huis_security;
+CREATE TRIGGER brain_note_deleted AFTER DELETE ON huis.matter_notes FOR EACH ROW EXECUTE FUNCTION huis.brain_note_deleted();
 
 -- ---------------------------------------------------------------------------
 -- AI usage log: who used which provider, how much. Never any content.
@@ -296,24 +364,44 @@ CREATE TABLE huis.ai_requests (
   user_id       uuid,
   matter_id     uuid,
   purpose       text NOT NULL CHECK (purpose IN ('ask', 'index')),
+  FOREIGN KEY (firm_id, matter_id) REFERENCES huis.matters(firm_id, id),
   provider      text NOT NULL CHECK (provider ~ '^[a-z]{1,30}$'),
   model         text NOT NULL CHECK (model ~ '^[A-Za-z0-9._:-]{1,100}$'),
-  input_chars   int NOT NULL CHECK (input_chars >= 0),
-  output_chars  int NOT NULL CHECK (output_chars >= 0),
-  duration_ms   int NOT NULL CHECK (duration_ms >= 0),
+  input_chars   int NOT NULL CHECK (input_chars BETWEEN 0 AND 100000000),
+  output_chars  int NOT NULL CHECK (output_chars BETWEEN 0 AND 100000000),
+  duration_ms   int NOT NULL CHECK (duration_ms BETWEEN 0 AND 86400000),
   created_at    timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX ai_requests_firm ON huis.ai_requests (firm_id, created_at DESC);
 ALTER TABLE huis.ai_requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE huis.ai_requests FORCE ROW LEVEL SECURITY;
-GRANT SELECT, INSERT ON huis.ai_requests TO huis_app;
-GRANT USAGE ON SEQUENCE huis.ai_requests_id_seq TO huis_app, huis_security;
+-- The app reads (administrators only, and only for Matters they can see); it writes only through huis.log_ai_ask.
+GRANT SELECT ON huis.ai_requests TO huis_app;
+GRANT USAGE ON SEQUENCE huis.ai_requests_id_seq TO huis_security;
 GRANT INSERT ON huis.ai_requests TO huis_security;
 CREATE POLICY ai_requests_select ON huis.ai_requests FOR SELECT TO huis_app
-  USING (firm_id = huis.current_firm_id() AND huis.is_admin_role(huis.app_role()));
-CREATE POLICY ai_requests_insert ON huis.ai_requests FOR INSERT TO huis_app
-  WITH CHECK (firm_id = huis.current_firm_id() AND user_id = huis.current_user_id() AND purpose = 'ask'
-              AND huis.is_internal_role(huis.app_role()));
+  USING (firm_id = huis.current_firm_id() AND huis.is_admin_role(huis.app_role())
+         AND (matter_id IS NULL OR huis.can_see_matter(matter_id)));
+
+-- Known providers and models only (no free text, so nothing else can be smuggled into the log).
+CREATE FUNCTION huis.known_ai_model(p_provider text, p_model text) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+  SELECT (p_provider, p_model) IN (('local', 'huis-local-1'))
+$$;
+
+CREATE FUNCTION huis.log_ai_ask(p_matter_id uuid, p_provider text, p_model text, p_input int, p_output int, p_ms int) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = huis, pg_temp AS $$
+BEGIN
+  IF NOT huis.is_internal_role(huis.app_role()) OR NOT huis.can_see_matter(p_matter_id) THEN
+    RAISE EXCEPTION 'not permitted' USING ERRCODE = '42501';
+  END IF;
+  IF NOT huis.known_ai_model(p_provider, p_model) THEN RAISE EXCEPTION 'unknown AI model'; END IF;
+  INSERT INTO huis.ai_requests (firm_id, user_id, matter_id, purpose, provider, model, input_chars, output_chars, duration_ms)
+    VALUES (huis.current_firm_id(), huis.current_user_id(), p_matter_id, 'ask', p_provider, p_model,
+            least(greatest(p_input, 0), 100000000), least(greatest(p_output, 0), 100000000), least(greatest(p_ms, 0), 86400000));
+END $$;
+ALTER FUNCTION huis.log_ai_ask(uuid, text, text, int, int, int) OWNER TO huis_security;
+REVOKE ALL ON FUNCTION huis.log_ai_ask(uuid, text, text, int, int, int) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION huis.log_ai_ask(uuid, text, text, int, int, int) TO huis_app;
 
 -- Worker records indexing usage (no content).
 CREATE FUNCTION huis.worker_log_ai(p_source_id uuid, p_lock_token uuid, p_provider text, p_model text, p_input int, p_output int, p_ms int) RETURNS void
@@ -322,8 +410,10 @@ DECLARE r huis.brain_sources;
 BEGIN
   SELECT * INTO r FROM huis.brain_sources WHERE id = p_source_id AND status = 'running' AND lock_token = p_lock_token;
   IF NOT FOUND THEN RAISE EXCEPTION 'source is not held by this worker'; END IF;
+  IF NOT huis.known_ai_model(p_provider, p_model) THEN RAISE EXCEPTION 'unknown AI model'; END IF;
   INSERT INTO huis.ai_requests (firm_id, matter_id, purpose, provider, model, input_chars, output_chars, duration_ms)
-    VALUES (r.firm_id, r.matter_id, 'index', p_provider, p_model, greatest(p_input, 0), greatest(p_output, 0), greatest(p_ms, 0));
+    VALUES (r.firm_id, r.matter_id, 'index', p_provider, p_model,
+            least(greatest(p_input, 0), 100000000), least(greatest(p_output, 0), 100000000), least(greatest(p_ms, 0), 86400000));
 END $$;
 ALTER FUNCTION huis.worker_log_ai(uuid, uuid, text, text, int, int, int) OWNER TO huis_security;
 REVOKE ALL ON FUNCTION huis.worker_log_ai(uuid, uuid, text, text, int, int, int) FROM PUBLIC;

@@ -116,6 +116,23 @@ The reviewer wrote 23 attack tests and confirmed 8 problems. **All fixed**, with
 | R7-8 | Low | An unreadable saved position failed every sync | Huis starts a fresh import instead |
 | Also | Low | Long rate-limit waits; large raw-message memory; re-imports whenever a new label appeared; unverified Google email used as a fallback | Waits capped at 10 seconds; raw message limit cut to Gmail's real maximum; "whole mailbox" no longer re-imports on new labels; the email address is used only if Google verified it |
 
+## Eighth review — Phase 4 part 1 (Matter Brain)
+
+**Scope:** attorney notes, the Matter Brain index, Ask this Matter, saved answers, the AI Gateway and its firm setting, the AI usage log.
+**Result:** other firms, ethical walls and outside users held against direct database attacks. Clients who are members of a Matter saw nothing of the Brain, even for their own uploads. The app couldn't write passages or run worker steps. The reviewer confirmed 6 problems. **All fixed**, with regression tests (`test/brain.test.ts`, "review 8"); all 7 of the reviewer's attacks now fail.
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| R8-1 | Medium-High | A client could upload text with no real words (e.g. spelled out in single letters) whose meaning fingerprint was empty; the comparison came out as "not a number", which ranked it first, so it appeared at the top of every attorney's answer | Empty or invalid fingerprints are never stored, a comparison that isn't a normal number never ranks a passage, and a question with no meaningful words uses word matching only |
+| R8-2 | Medium | "Withheld" answers were hidden only by the app; the asker could still read the answer and stored excerpts through the database | Saved answers keep references only (no copies of passages). The database itself withholds an answer once any source is unavailable to the asker. Deleting a note deletes the answers built on it |
+| R8-3 | Low-Medium | Staff could write made-up rows into the AI usage log (other Matters, any text, any size) | The app can't write the log directly; Huis logs through a checked function (Matter must be visible, known provider and model only, sizes bounded) |
+| R8-4 | Low | An administrator outside an ethical wall could see AI activity (who, when, how much) on the walled Matter | Administrators see usage only for Matters they can see |
+| R8-5 | Low | Administrators could change the AI setting (and, from Phase 3, the mail filing mode) directly, without the audit record | These settings can only change through their audited settings |
+| R8-6 | Low | Someone made read-only could still delete their old notes | Read-only staff can't delete notes |
+| Also | Low | One firm's indexing backlog could hold up others (and mailbox sync); unchanged notes were re-indexed; very large documents showed as fully "ready" | Indexing takes turns between firms and runs after mailbox sync; only real changes re-index a note; very large documents are shown as "only partly included" |
+
+**Noted:** "Expert consultant" is a firm-side role (a consulting expert retained by the firm, whose work is protected work product), so it is treated as firm staff. Outside experts (expert witnesses) are not, and never see the Brain. The built-in AI is on by default because it sends nothing outside Huis; administrators can turn it off.
+
 ## Still open (tracked, not code defects)
 1. **MFA enforcement** — Microsoft sign-in doesn't yet require proof of MFA. Plan: require the firm's Microsoft MFA (Conditional Access) or a Huis passkey. Part of the end-of-build Azure/hosting step.
 2. **Administrator-level tampering** — someone with full database superuser access could switch off the protective rules and rewrite history consistently. The hash chains make ordinary tampering detectable, but defeating a superuser needs the chain's latest fingerprint stored outside the database (e.g. a daily signed export). Planned with production hosting.

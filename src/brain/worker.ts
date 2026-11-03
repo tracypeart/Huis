@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
 import pg from "pg";
 import { aiProvider } from "../ai/gateway";
-import { chunkText } from "./chunk";
+import { chunkText, MAX_CHUNKS } from "./chunk";
 
 const MAX_ATTEMPTS = 5;
 /** Passages embedded per request (keeps any one call to a provider small). */
 const BATCH = 64;
 
-interface Claimed { source_id: string; lock_token: string; firm_id: string; matter_id: string; kind: string; content: string; ai_provider: string; attempts: number }
+interface Claimed { source_id: string; lock_token: string; firm_id: string; matter_id: string; kind: string; content: string; full_length: number; ai_provider: string; attempts: number }
 
 /**
  * Builds each Matter's Brain: splits newly readable evidence and notes into
@@ -35,9 +35,11 @@ export class BrainWorker {
       await this.pool.query("SELECT huis.worker_log_ai($1, $2, $3, $4, $5, $6, $7)",
         [job.source_id, job.lock_token, provider.name, provider.model, job.content.length, 0, Date.now() - started]);
       const hash = createHash("sha256").update(job.content).digest("hex");
-      await this.pool.query("SELECT huis.worker_save_brain_chunks($1, $2, $3, $4, $5, $6)", [
+      // Very large documents: only the first part fits; the Brain says so.
+      const partial = job.full_length > job.content.length || chunks.length >= MAX_CHUNKS;
+      await this.pool.query("SELECT huis.worker_save_brain_chunks($1, $2, $3, $4, $5, $6, $7)", [
         job.source_id, job.lock_token, provider.name, provider.model, hash,
-        JSON.stringify(chunks.map((c, i) => ({ ...c, embedding: vectors[i] }))),
+        JSON.stringify(chunks.map((c, i) => ({ ...c, embedding: vectors[i] }))), partial,
       ]);
     } catch (err) {
       const message = err instanceof Error ? err.message.slice(0, 200) : "indexing error";

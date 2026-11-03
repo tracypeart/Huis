@@ -40,8 +40,8 @@ async function main() {
 
   console.log(`[huis-worker] started with ${scanner.name}`);
   while (!stopping) {
-    // Evidence first (scans and reading), then filing requests, then the Matter Brain, then mailbox sync.
-    const did = await (async () => (await processor.runOnce()) || (await mail.fileOnce()) || (await brain.indexOnce()) || (await mail.syncOnce()))().catch((e) => {
+    // Evidence first (scans and reading), then filing requests, then mailbox sync, then the Matter Brain (so indexing never holds up mail).
+    const did = await (async () => (await processor.runOnce()) || (await mail.fileOnce()) || (await mail.syncOnce()) || (await brain.indexOnce()))().catch((e) => {
       console.error("[huis-worker] error:", e instanceof Error ? e.message : e);
       return false;
     });
