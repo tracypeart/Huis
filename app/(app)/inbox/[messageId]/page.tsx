@@ -1,15 +1,16 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { fileMessageAction } from "../../../../lib/actions";
+import { fileMessageAction, fileSuggestionAction } from "../../../../lib/actions";
 import { getFlash, withSession } from "../../../../lib/server";
 import { CLASSIFICATION_LABELS, FlashBanner } from "../../../../lib/ui";
 import { NotFoundError, PermissionDeniedError } from "../../../../src/errors";
-import { getMessage } from "../../../../src/services/inbox";
+import { getFilingMode, getMessage, suggestMatters } from "../../../../src/services/inbox";
 import { listMatterFolders, listMatters } from "../../../../src/services/matters";
 
 export const dynamic = "force-dynamic";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const strength = (score: number) => (score >= 85 ? "Strong match" : score >= 55 ? "Likely" : "Possible");
 const when = (d: Date | null) => (d ? new Date(d).toLocaleString("en-US", { timeZone: "America/Denver" }) : "—");
 
 export default async function MessagePage({ params, searchParams }: {
@@ -27,7 +28,8 @@ export default async function MessagePage({ params, searchParams }: {
     const matters = await listMatters(s);
     const matterId = sp.matter && UUID.test(sp.matter) && matters.some((x) => x.id === sp.matter) ? sp.matter : null;
     const folders = matterId ? await listMatterFolders(s, matterId) : [];
-    return { m, matters, matterId, folders };
+    const suggestions = !m.filedMatterId && !m.removed ? await suggestMatters(s, m.id) : [];
+    return { m, matters, matterId, folders, suggestions, mode: await getFilingMode(s) };
   });
   if (!data) notFound();
   const { m } = data;
@@ -53,6 +55,38 @@ export default async function MessagePage({ params, searchParams }: {
           </td></tr>
         </tbody></table>
       </div>
+
+      {data.suggestions.length ? (
+        <div className="card">
+          <h2>Suggested Matters</h2>
+          <p className="notice">
+            Based on what&apos;s in this email. Only Matters you can see and add to are suggested.
+            {data.mode === "manual" ? " Your firm files email manually: use the form below." : " One click files the email into that Matter's internal Correspondence folder."}
+          </p>
+          <table>
+            <tbody>
+              {data.suggestions.map((x) => (
+                <tr key={x.matterId}>
+                  <td style={{ width: "35%" }}>
+                    <span className="badge" style={x.color ? { background: x.color, color: "#fff" } : undefined}>{x.title}</span>
+                    <div className="notice">{strength(x.score)}</div>
+                  </td>
+                  <td><ul style={{ margin: 0, paddingLeft: 18 }}>{x.reasons.map((r) => <li key={r}>{r}</li>)}</ul></td>
+                  <td style={{ width: 1, whiteSpace: "nowrap" }}>
+                    {data.mode !== "manual" && !m.pendingFiling ? (
+                      <form action={fileSuggestionAction}>
+                        <input type="hidden" name="messageId" value={m.id} />
+                        <input type="hidden" name="matterId" value={x.matterId} />
+                        <button type="submit">File here</button>
+                      </form>
+                    ) : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
 
       {!m.removed ? (
         <div className="card">

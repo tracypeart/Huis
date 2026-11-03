@@ -95,7 +95,10 @@ BEGIN
       LEFT JOIN huis.matter_contacts mc ON mc.matter_id = mt.id
       LEFT JOIN huis.contacts ct ON ct.id = mc.contact_id
       CROSS JOIN LATERAL unnest(ARRAY[huis.email_domain(cl.email), huis.email_domain(ct.email)]) d
-     WHERE d IS NOT NULL AND NOT huis.is_public_mail_domain(d) AND d = ANY (v_domains)
+     WHERE d IS NOT NULL AND NOT huis.is_public_mail_domain(d)
+       -- Someone else at the same organization (an exact match already counts above).
+       AND EXISTS (SELECT 1 FROM unnest(v_people) a
+                    WHERE huis.email_domain(a) = d AND a <> lower(coalesce(cl.email, '')) AND a <> lower(coalesce(ct.email, '')))
     UNION ALL
     SELECT mt.id, 40, false, 'The Matter''s title is in the subject'
       FROM candidates mt
@@ -128,6 +131,7 @@ END $$;
 CREATE FUNCTION huis.set_mailbox_auto_file(p_connection_id uuid, p_on boolean) RETURNS boolean
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = huis, public, pg_temp AS $$
 BEGIN
+  IF NOT huis.is_internal_role(huis.app_role()) OR huis.app_role() = 'read_only' THEN RETURN false; END IF;
   UPDATE huis.mail_connections SET auto_file = coalesce(p_on, false)
    WHERE id = p_connection_id AND firm_id = huis.current_firm_id() AND owner_user_id = huis.current_user_id() AND status <> 'disconnected';
   RETURN FOUND;
@@ -152,7 +156,7 @@ BEGIN
   SELECT s.reasons INTO v_reasons FROM huis.suggest_matters(p_message_id) s WHERE s.matter_id = p_matter_id;
   IF NOT FOUND THEN RETURN 'not_suggested'; END IF;
   SELECT f.id INTO v_folder FROM huis.matter_folders f
-   WHERE f.matter_id = p_matter_id AND f.name = 'Correspondence' AND NOT f.is_privileged_area AND f.classification = 'internal'
+   WHERE f.matter_id = p_matter_id AND f.name = 'Correspondence' AND NOT f.is_privileged_area AND f.classification = 'internal_firm_only'
    ORDER BY f.id LIMIT 1;
   IF v_folder IS NULL THEN RETURN 'no_folder'; END IF;
   v_r := huis.request_mail_filing(p_message_id, p_matter_id, v_folder, false, 'assisted');
@@ -199,7 +203,7 @@ BEGIN
     SELECT max(s.score) INTO second_score FROM huis.suggest_matters(msg.id) s WHERE s.matter_id <> best.matter_id;
     CONTINUE WHEN second_score IS NOT NULL AND second_score >= best.score - 10;
     SELECT f.id INTO v_folder FROM huis.matter_folders f
-     WHERE f.matter_id = best.matter_id AND f.name = 'Correspondence' AND NOT f.is_privileged_area AND f.classification = 'internal'
+     WHERE f.matter_id = best.matter_id AND f.name = 'Correspondence' AND NOT f.is_privileged_area AND f.classification = 'internal_firm_only'
      ORDER BY f.id LIMIT 1;
     CONTINUE WHEN v_folder IS NULL;
     CONTINUE WHEN EXISTS (SELECT 1 FROM huis.mail_filings WHERE message_id = msg.id AND status <> 'failed');
@@ -216,7 +220,7 @@ GRANT EXECUTE ON FUNCTION huis.worker_auto_file(uuid, uuid) TO huis_worker;
 -- Record why an email was filed (suggestion reasons) in its chain of custody.
 CREATE OR REPLACE FUNCTION huis.worker_complete_mail_filing(
   p_filing_id uuid, p_lock_token uuid, p_evidence_id uuid, p_size bigint, p_sha256 text, p_storage_key text
-) RETURNS void
+) RETURNS boolean
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = huis, public, pg_temp AS $$
 DECLARE
   r huis.mail_filings;
@@ -229,8 +233,13 @@ BEGIN
   IF p_storage_key IS DISTINCT FROM format('firm/%s/matter/%s/evidence/%s/original', r.firm_id, r.matter_id, p_evidence_id) THEN
     RAISE EXCEPTION 'unexpected storage location';
   END IF;
+  IF NOT huis.filing_still_allowed(r.id) THEN
+    UPDATE huis.mail_filings SET status = 'failed', last_error = 'the requester no longer has access', lock_token = NULL WHERE id = r.id;
+    RETURN false;
+  END IF;
   SELECT * INTO m FROM huis.mail_messages WHERE id = r.message_id;
   SELECT * INTO c FROM huis.mail_connections WHERE id = m.connection_id;
+  -- "2025-04-18 Re March meeting.eml"
   v_name := left(coalesce(to_char(m.received_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') || ' ', '') ||
             coalesce(nullif(btrim(regexp_replace(regexp_replace(m.subject, '[\x00-\x1f/\\:*?"<>|]+', ' ', 'g'), '\s+', ' ', 'g')), ''), '(no subject)'), 200) || '.eml';
   INSERT INTO huis.evidence_items (id, firm_id, matter_id, folder_id, original_filename, declared_content_type,
@@ -249,4 +258,5 @@ BEGIN
   UPDATE huis.mail_filings SET status = 'done', evidence_id = p_evidence_id, completed_at = now(), lock_token = NULL WHERE id = r.id;
   UPDATE huis.mail_messages SET filed_matter_id = r.matter_id, filed_evidence_id = p_evidence_id, filed_at = now(),
          filed_by = r.requested_by, updated_at = now() WHERE id = m.id;
+  RETURN true;
 END $$;

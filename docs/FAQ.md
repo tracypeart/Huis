@@ -98,7 +98,20 @@ Microsoft's long-lived sign-in token is encrypted with a key specific to your fi
 Huis deletes its Microsoft credentials and every unfiled email it brought in. Emails you already filed stay in their Matters.
 
 ### Can Huis suggest which Matter an email belongs to?
-Yes, in the next step. Huis will suggest a Matter from case numbers, Huis numbers, the people involved and earlier emails in the same conversation, and your firm chooses Manual, Assisted or Automatic filing. Every suggestion shows why it was made.
+Yes. Each email shows suggested Matters with the reasons, for example:
+- "Court case number 250901234 appears in the email"
+- "Olivia Opposing (opposing counsel) is on this email"
+- "An earlier email in this conversation was filed here"
+
+Only Matters you can see and add to are ever suggested.
+
+### Can Huis file email automatically?
+Your firm chooses:
+- **Manual:** Huis suggests and you file.
+- **Assisted:** one click files to a suggested Matter.
+- **Automatic:** Huis files by itself.
+
+Automatic filing is deliberately cautious. Each attorney must also turn it on for their own mailbox. It only acts on strong, unambiguous matches: a Huis number, a court case number, or a conversation already filed in that Matter. It only ever files into the Matter's internal Correspondence folder, never somewhere a client can see. Every automatic filing records why it was made.
 
 ---
 

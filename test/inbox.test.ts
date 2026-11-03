@@ -12,10 +12,11 @@ import { MailWorker } from "../src/mail/worker";
 import { createClient } from "../src/services/clients";
 import { getEmailHeaders, getEvidence, listContainedItems } from "../src/services/evidence";
 import {
-  connectMailbox, fileMessage, getMessage, listMailboxes, listMailFolders, listMessages, requestSync, setDelegate,
-  setFolderIncluded, setMatterColor, updateMailbox,
+  connectMailbox, fileMessage, fileToSuggestion, getMessage, listMailboxes, listMailFolders, listMessages, requestSync, setAutoFile, setDelegate,
+  setFilingMode, setFolderIncluded, setMatterColor, suggestMatters, updateMailbox,
 } from "../src/services/inbox";
-import { addMatterMember, createMatter, listMatterFolders, removeMatterMember } from "../src/services/matters";
+import { createContact } from "../src/services/contacts";
+import { addMatterMember, createMatter, linkContactToMatter, listMatterFolders, removeMatterMember, setCourtCaseNumber } from "../src/services/matters";
 import { changeUserRole, disableUser, inviteUser } from "../src/services/users";
 import { MasterKeyProvider } from "../src/storage/encryption";
 import type { MalwareScanner } from "../src/storage/scanner";
@@ -421,5 +422,122 @@ describe("filing email into a Matter", () => {
     expect((await db.withFirm(x.avery, (s) => getMessage(s, msg.id))).filedMatterColor).toBe("#2563EB");
     await expect(db.withFirm(x.pat, (s) => setMatterColor(s, x.matter.id, "#000000"))).rejects.toThrow();
     await expect(db.withFirm(x.owner, (s) => setMatterColor(s, x.matter.id, "red; drop table"))).rejects.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Part 2: matter suggestions and filing modes
+// ---------------------------------------------------------------------------
+describe("part 3.2: suggestions and filing modes", () => {
+  async function setupWithLinks() {
+    const x = await setup();
+    await db.withFirm(x.owner, async (s) => {
+      await setCourtCaseNumber(s, x.matter.id, "250901234");
+      const client = await createClient(s, { kind: "person", displayName: "Pat Smith (client)", email: "client.smith@example.com" });
+      const other = await createMatter(s, { title: "Smith Family Trust", clientId: client.id, leadAttorneyId: x.ownerUserId, jurisdictionState: "UT" });
+      const opposing = await createContact(s, { kind: "opposing_counsel", fullName: "Olivia Opposing", email: "opposing@biglaw.example" });
+      await linkContactToMatter(s, x.matter.id, opposing.id, "opposing counsel");
+      return other;
+    }).then((other) => Object.assign(x, { other }));
+    return x as typeof x & { other: { id: string } };
+  }
+
+  it("suggests Matters with the reasons, only among Matters the person can see and add to", async () => {
+    const x = await setupWithLinks();
+    await syncAll();
+    const msgs = await db.withFirm(x.avery, (s) => listMessages(s, {}));
+    const byId = (subj: string) => msgs.find((m) => m.subject === subj)!;
+    const s1 = await db.withFirm(x.avery, (s) => suggestMatters(s, byId("Smith v. Acme — deposition notice").id));
+    expect(s1[0]).toMatchObject({ matterId: x.matter.id, strong: true });
+    expect(s1[0]!.reasons).toEqual(expect.arrayContaining(["Court case number 250901234 appears in the email", "Olivia Opposing (opposing counsel) is on this email"]));
+    const s3 = await db.withFirm(x.avery, (s) => suggestMatters(s, byId("Re: settlement range").id));
+    expect(s3.map((m) => m.matterId)).toEqual([x.other.id]);
+    expect(s3[0]!.reasons).toEqual(["The client (Pat Smith (client)) is on this email"]);
+    expect(await db.withFirm(x.avery, (s) => suggestMatters(s, byId("Lunch Friday?").id))).toEqual([]);
+    // Nobody else learns anything about this mailbox through suggestions.
+    expect(await db.withFirm(x.owner, (s) => suggestMatters(s, byId("Smith v. Acme — deposition notice").id))).toEqual([]);
+    // A walled Matter the person isn't on is never suggested, even with its case number in the email.
+    await db.withFirm(x.owner, (s) => setCourtCaseNumber(s, x.walled.id, "250901234"));
+    const again = await db.withFirm(x.avery, (s) => suggestMatters(s, byId("Smith v. Acme — deposition notice").id));
+    expect(again.map((m) => m.matterId)).not.toContain(x.walled.id);
+  });
+
+  it("assisted: one click files into the Matter's internal Correspondence folder, recording why", async () => {
+    const x = await setupWithLinks();
+    await syncAll();
+    const msg = (await db.withFirm(x.avery, (s) => listMessages(s, { q: "deposition -witness" })))[0]!;
+    await expect(db.withFirm(x.avery, (s) => fileToSuggestion(s, msg.id, x.other.id))).rejects.toThrow(/isn't a current suggestion/);
+    await db.withFirm(x.avery, (s) => fileToSuggestion(s, msg.id, x.matter.id));
+    await mail.fileOnce();
+    const filed = await db.withFirm(x.avery, (s) => getMessage(s, msg.id));
+    const ev = (await db.withFirm(x.avery, (s) => getEvidence(s, filed.filedEvidenceId!)))!;
+    expect(ev.folderName).toBe("Correspondence");
+    const custody = (await t.admin.query("SELECT details FROM huis.evidence_custody_events WHERE evidence_id = $1 AND event = 'filed_from_mailbox'", [ev.id])).rows[0];
+    expect(custody.details).toMatchObject({ method: "assisted" });
+    expect(custody.details.reasons).toContain("Court case number 250901234 appears in the email");
+    // In Manual mode one-click filing is off.
+    await db.withFirm(x.owner, (s) => setFilingMode(s, "manual"));
+    const other = (await db.withFirm(x.avery, (s) => listMessages(s, { q: "witness" })))[0]!;
+    await expect(db.withFirm(x.avery, (s) => fileToSuggestion(s, other.id, x.matter.id))).rejects.toThrow(/manually/);
+    // Only administrators choose the mode.
+    await expect(db.withFirm(x.avery, (s) => setFilingMode(s, "automatic"))).rejects.toThrow();
+  });
+
+  it("an email in a conversation already filed in a Matter is suggested strongly for it", async () => {
+    const x = await setupWithLinks();
+    ms.messages.push({ id: "M7", folder: "F-inbox", subject: "Re: Smith v. Acme — deposition notice", from: "someone@else.example", to: ["avery@lawfirm.example"], received: "2026-10-05T15:00:00Z", body: "Confirming.", mime: "m" });
+    await syncAll();
+    const first = (await db.withFirm(x.avery, (s) => listMessages(s, { q: "250901234" })))[0]!;
+    const correspondence = (await db.withFirm(x.avery, (s) => listMatterFolders(s, x.other.id))).find((f) => f.name === "Correspondence")!;
+    await db.withFirm(x.avery, (s) => fileMessage(s, first.id, { matterId: x.other.id, folderId: correspondence.id }));
+    await mail.fileOnce();
+    const reply = (await db.withFirm(x.avery, (s) => listMessages(s, { q: "confirming" })))[0]!;
+    const sug = await db.withFirm(x.avery, (s) => suggestMatters(s, reply.id));
+    expect(sug.find((m) => m.matterId === x.other.id)?.reasons).toContain("An earlier email in this conversation was filed here");
+  });
+
+  it("automatic: files only strong, unambiguous matches, only when the firm and the mailbox owner both turned it on", async () => {
+    const x = await setupWithLinks();
+    await db.withFirm(x.owner, (s) => setFilingMode(s, "automatic"));
+    await db.withFirm(x.avery, (s) => updateMailbox(s, x.connectionId, { scope: "all", manage: true, status: "active" }));
+    // Not yet opted in by the mailbox owner: nothing is filed.
+    await syncAll();
+    expect(await mail.fileOnce()).toBe(false);
+    await db.withFirm(x.avery, (s) => setAutoFile(s, x.connectionId, true));
+    await t.admin.query("UPDATE huis.mail_messages SET auto_checked_at = NULL WHERE connection_id = $1", [x.connectionId]);
+    await db.withFirm(x.avery, (s) => requestSync(s, x.connectionId));
+    await syncAll();
+    let n = 0;
+    while (await mail.fileOnce()) n += 1;
+    expect(n).toBe(1);
+    const filed = (await db.withFirm(x.avery, (s) => listMessages(s, { status: "filed" })));
+    expect(filed.map((m) => m.subject)).toEqual(["Smith v. Acme — deposition notice"]);
+    const ev = (await db.withFirm(x.avery, (s) => getEvidence(s, filed[0]!.filedEvidenceId!)))!;
+    expect(ev.folderName).toBe("Correspondence");
+    const custody = (await t.admin.query("SELECT details FROM huis.evidence_custody_events WHERE evidence_id = $1 AND event = 'filed_from_mailbox'", [ev.id])).rows[0];
+    expect(custody.details).toMatchObject({ method: "automatic" });
+    // The client email (only a "likely" match) and lunch were left for a person to decide.
+    const unfiled = (await db.withFirm(x.avery, (s) => listMessages(s, { status: "unfiled" }))).map((m) => m.subject);
+    expect(unfiled).toEqual(expect.arrayContaining(["Re: settlement range", "Lunch Friday?"]));
+    // Someone else can't turn on automatic filing for this mailbox.
+    await db.withFirm(x.avery, (s) => setDelegate(s, x.connectionId, x.assistant.id, true));
+    await expect(db.withFirm(x.sam, (s) => setAutoFile(s, x.connectionId, false))).rejects.toThrow();
+  });
+
+  it("automatic filing never acts when two Matters match equally", async () => {
+    const x = await setupWithLinks();
+    await db.withFirm(x.owner, (s) => setCourtCaseNumber(s, x.other.id, "250901234"));
+    await db.withFirm(x.owner, (s) => setFilingMode(s, "automatic"));
+    await db.withFirm(x.avery, (s) => updateMailbox(s, x.connectionId, { scope: "all", manage: true, status: "active" }));
+    await db.withFirm(x.avery, (s) => setAutoFile(s, x.connectionId, true));
+    await syncAll();
+    // Both Matters have the case number; one also has opposing counsel and its title in the email (100 vs 90): within 10, too close to call.
+    const ambiguous = (await db.withFirm(x.avery, (s) => listMessages(s, { q: "250901234" })))[0]!;
+    const sug = await db.withFirm(x.avery, (s) => suggestMatters(s, ambiguous.id));
+    expect(sug.slice(0, 2).map((m) => m.score)).toEqual([100, 90]);
+    let queued = 0;
+    while (await mail.fileOnce()) queued += 1;
+    expect(queued).toBe(0);
+    expect(await db.withFirm(x.avery, (s) => listMessages(s, { status: "filed" }))).toEqual([]);
   });
 });

@@ -11,7 +11,9 @@ import { addMatterMember, createMatter, linkContactToMatter, setCourtCaseNumber 
 import { changeUserRole, disableUser, endUserSessions, inviteUser, issueInvitation } from "../src/services/users";
 import { moveEvidence } from "../src/services/evidence";
 import { requestCopy } from "../src/services/workingCopies";
-import { fileMessage, requestSync, setDelegate, setFolderIncluded, setMatterColor, updateMailbox } from "../src/services/inbox";
+import {
+  fileMessage, fileToSuggestion, requestSync, setAutoFile, setDelegate, setFilingMode, setFolderIncluded, setMatterColor, updateMailbox,
+} from "../src/services/inbox";
 import { ROLES } from "../src/security/permissions";
 import { act, db, getPending, setSessionCookie, withSession } from "./server";
 
@@ -233,6 +235,24 @@ export async function mailDelegateAction(fd: FormData): Promise<void> {
 export async function syncMailboxAction(fd: FormData): Promise<void> {
   const id = text(fd, "connectionId") ?? "";
   return act("/inbox", "Sync requested.", () => withSession(async (s) => { await requestSync(s, id); }));
+}
+
+export async function fileSuggestionAction(fd: FormData): Promise<void> {
+  const messageId = text(fd, "messageId") ?? "";
+  return act(`/inbox/${messageId}`, "Filing… Huis is copying the original email into the Matter's Correspondence folder.", () => withSession(async (s) => {
+    await fileToSuggestion(s, messageId, text(fd, "matterId") ?? "");
+  }));
+}
+
+export async function filingModeAction(fd: FormData): Promise<void> {
+  return act("/inbox", "Filing mode saved.", () => withSession(async (s) => { await setFilingMode(s, text(fd, "mode") ?? ""); }));
+}
+
+export async function autoFileAction(fd: FormData): Promise<void> {
+  const id = text(fd, "connectionId") ?? "";
+  return act(`/inbox/mailboxes/${id}`, "Automatic filing setting saved.", () => withSession(async (s) => {
+    await setAutoFile(s, id, fd.get("on") === "true");
+  }));
 }
 
 export async function matterColorAction(fd: FormData): Promise<void> {
