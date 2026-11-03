@@ -133,6 +133,24 @@ The reviewer wrote 23 attack tests and confirmed 8 problems. **All fixed**, with
 
 **Noted:** "Expert consultant" is a firm-side role (a consulting expert retained by the firm, whose work is protected work product), so it is treated as firm staff. Outside experts (expert witnesses) are not, and never see the Brain. The built-in AI is on by default because it sends nothing outside Huis; administrators can turn it off.
 
+## Ninth review — Phase 4 part 2 (Case DNA™)
+
+**Scope:** the Case DNA map (people, events, claims, elements, facts, damages, links, citations), Huis's suggestions, claim templates, finding evidence for elements, and the Case DNA pages.
+**Result:** outside users, read-only staff and administrators outside a wall were kept out. History couldn't be rewritten: forged decisions were overwritten with the real person and time. The worker's suggestion step resisted hostile input, the return-path field couldn't be used to redirect elsewhere, and nothing renders raw HTML. The reviewer confirmed 8 problems. **All fixed**, with regression tests (`test/dna.test.ts`, "review 9"); all 8 of the reviewer's attacks now fail.
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| R9-1 | High | A database change with **no conditions** (e.g. "delete all citations") skips the "what can you see" rule and is checked only against "what can you change". Staff could use this to bring back items hidden because their evidence was no longer clean, or to change links whose other end they couldn't see | Every change rule now repeats the visibility rule, so even an unconditional change only reaches what the person can see. Only citations an attorney added can be removed |
+| R9-2 | Medium | People suggested from a filed email stayed on the map after that email was found to be unsafe | Each suggested person is cited to every email they came from, and leaves the map when none of those emails is still clean |
+| R9-3 | Medium | Staff could attach a made-up quote to a real document | A citation's quote is always taken from the source itself; a position that isn't in the source is refused |
+| R9-4 | Low-Medium | Staff could reword a Huis suggestion so it still looked like Huis's | Suggestions can't be changed until someone confirms them |
+| R9-5 | Low-Medium | One email with many recipients could flood people suggestions and choose their names (e.g. "Judge Reyes chambers") | At most 20 people per email and a limit per Matter; suggested people are named by email address, with the name each email gave kept beside that email |
+| R9-6 | Low | A flood of suggestions could push confirmed items off the list | Confirmed items always come first, and very large maps say they are cut off |
+| R9-7 | Low | Another firm could tell whether an item id existed (from different answers or error messages) | Those checks now answer the same for another firm's items as for made-up ones |
+| R9-8 | Low | Finding dates in a deliberately built document took about 4 seconds | Only a fixed number of date-like matches are examined per document |
+
+**Lesson applied going forward:** every database rule that allows a change must also include the rule for seeing the row, because PostgreSQL applies the "see" rule only when a change reads rows (a WHERE clause or a returned value). Earlier tables were checked against this: their change rules already limit people to rows they own or can see.
+
 ## Still open (tracked, not code defects)
 1. **MFA enforcement** — Microsoft sign-in doesn't yet require proof of MFA. Plan: require the firm's Microsoft MFA (Conditional Access) or a Huis passkey. Part of the end-of-build Azure/hosting step.
 2. **Administrator-level tampering** — someone with full database superuser access could switch off the protective rules and rewrite history consistently. The hash chains make ordinary tampering detectable, but defeating a superuser needs the chain's latest fingerprint stored outside the database (e.g. a daily signed export). Planned with production hosting.

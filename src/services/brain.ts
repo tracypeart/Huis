@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { aiProvider, AiDisabledError, type Passage } from "../ai/gateway";
+import { aiProvider, AiDisabledError, type AiProvider, type Passage } from "../ai/gateway";
 import { terms } from "../ai/local";
 import type { FirmSession } from "../db/tenant";
 import { NotFoundError, PermissionDeniedError, UserFacingError } from "../errors";
@@ -134,16 +134,30 @@ function lexicalQuery(question: string): string | null {
   return words.length ? words.join(" | ") : null;
 }
 
-export async function askMatter(s: FirmSession, matterId: string, question: unknown): Promise<string> {
-  staffOnly(s, "use the Matter Brain");
-  const q = questionInput.parse(question);
-  await getMatter(s, matterId);
-  let provider;
-  try { provider = aiProvider(await getAiProviderSetting(s)); } catch (e) {
+export interface FoundPassage {
+  chunkId: string; content: string; evidenceId: string | null; noteId: string | null; start: number; end: number; sourceTitle: string; score: number;
+}
+
+/** Firm's AI provider, or a clear message when AI is off. */
+function providerFor(setting: string) {
+  try { return aiProvider(setting); } catch (e) {
     if (e instanceof AiDisabledError) throw new UserFacingError("AI features are turned off for your firm. An administrator can turn them on.");
     throw e;
   }
-  const started = Date.now();
+}
+
+/**
+ * The passages in a Matter that best match some text, by words and meaning.
+ * Row-level security limits this to passages from sources this person can open.
+ */
+export async function searchPassages(s: FirmSession, matterId: string, text: string, limit = PASSAGES, perSource = PER_SOURCE): Promise<FoundPassage[]> {
+  staffOnly(s, "use the Matter Brain");
+  await getMatter(s, matterId);
+  const provider = providerFor(await getAiProviderSetting(s));
+  return findPassages(s, provider, matterId, text, limit, perSource);
+}
+
+async function findPassages(s: FirmSession, provider: AiProvider, matterId: string, q: string, limit: number, perSource: number): Promise<FoundPassage[]> {
   const [raw] = await provider.embed([q]);
   // A question with no meaningful words has no direction to compare: use word matching only.
   const vec = raw && raw.every(Number.isFinite) && raw.some((x) => x !== 0) ? raw : null;
@@ -170,7 +184,21 @@ export async function askMatter(s: FirmSession, matterId: string, question: unkn
        LEFT JOIN huis.matter_notes n ON n.id = r.note_id
       WHERE r.k <= $5 AND r.score > 0.05
       ORDER BY r.score DESC LIMIT $6`,
-    [matterId, vec ? JSON.stringify(vec) : null, lex, provider.model, PER_SOURCE, PASSAGES]);
+    [matterId, vec ? JSON.stringify(vec) : null, lex, provider.model, perSource, Math.min(Math.max(limit, 1), 50)]);
+  return rows.map((r) => ({
+    chunkId: String(r.id), content: r.content, evidenceId: r.evidence_id, noteId: r.note_id, start: r.char_start, end: r.char_end,
+    sourceTitle: String(r.source_title ?? "Source").slice(0, 300), score: Number(r.score),
+  }));
+}
+
+export async function askMatter(s: FirmSession, matterId: string, question: unknown): Promise<string> {
+  staffOnly(s, "use the Matter Brain");
+  const q = questionInput.parse(question);
+  await getMatter(s, matterId);
+  const provider = providerFor(await getAiProviderSetting(s));
+  const started = Date.now();
+  const found = await findPassages(s, provider, matterId, q, PASSAGES, PER_SOURCE);
+  const rows = found.map((f) => ({ id: f.chunkId, content: f.content, evidence_id: f.evidenceId, note_id: f.noteId, char_start: f.start, char_end: f.end }));
   const passages: Passage[] = rows.map((r, i) => ({ n: i + 1, text: r.content }));
   const result = await provider.answer(q, passages);
   // References only: excerpts are read back from the (protected) passages each time.
