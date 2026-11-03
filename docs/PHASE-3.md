@@ -1,12 +1,12 @@
 # Phase 3 — Huis Inbox (Email Intelligence)
 
-**Status:** Part 1 (Outlook connection, sync, search, filing, color coding) merged after independent security review 5. Part 2 (suggestions, filing modes) in progress.
+**Status:** Part 1 merged after independent security review 5. Part 2 (suggestions, filing modes) merged after independent security review 6.
 
 ## Plan
 | Part | What | Status |
 |---|---|---|
 | 3.1 | Connect Outlook, whole mailbox or chosen folders, continuous sync ("Let Huis manage"), email search, file email into Matters, matter colors | Merged |
-| 3.2 | Matter suggestions (case numbers, Huis numbers, people, threads, then AI), Manual / Assisted / Automatic filing | In progress |
+| 3.2 | Matter suggestions (case numbers, Huis numbers, people, threads; AI later), Manual / Assisted / Automatic filing | Merged |
 | 3.3 | Gmail, built the same way | After Google verification (see below) |
 | Later | Semantic ("meaning") search across email, with the AI layer in Phase 6 | Phase 6 |
 
@@ -25,6 +25,37 @@
 | Disconnecting | Deletes Huis's Microsoft credentials and every unfiled email from Huis. Filed copies stay in their Matters |
 
 **Tests:** `test/inbox.test.ts`, 19 tests against a stand-in Microsoft service (no real mail is ever used in development): connect flow and ID-token checks, encrypted and bound credentials, full and incremental sync, deletions, selected folders and date limits, token rotation and expiry, refusing to send tokens to other hosts, privacy from firm owners/other staff/clients/other firms, delegation, search, filing with custody and attachments, walls and privilege acknowledgement, disconnecting, colors. Also exercised in a real browser against a production build.
+
+## Part 2 — matter suggestions and filing modes
+
+**Suggestions.** Each email gets up to five suggested Matters, each with plain reasons. Only Matters the person can see *and* add to are considered (walls apply), so a suggestion never reveals a Matter someone can't access. Closed and archived Matters are skipped.
+
+| Signal | Strength |
+|---|---|
+| The Matter's Huis number appears in the email | Strongest |
+| The Matter's court case number appears in the email (spacing and dashes ignored) | Strong |
+| An earlier email in the same conversation was filed in that Matter | Strong |
+| The client is on the email | Likely |
+| A contact linked to the Matter (e.g. opposing counsel) is on the email | Likely |
+| Someone else from the client's or a contact's organization is on the email (Gmail, Outlook.com and other public domains don't count) | Possible |
+| The Matter's title is in the subject | Possible |
+
+**Filing modes** (set by a firm administrator on the Inbox page):
+- **Manual** — suggestions are shown; people choose the Matter and folder.
+- **Assisted** (default) — **File here** next to a suggestion files the email into that Matter's internal *Correspondence* folder in one click.
+- **Automatic** — Huis files email by itself, but only when **all** of these hold:
+  - the mailbox owner has turned on automatic filing for their own mailbox, with "Let Huis manage" on;
+  - the email arrived after automatic filing was turned on (history is never filed automatically);
+  - the Matter is one the owner is on (as owner or editor), not just one they could add to;
+  - the match is strong (Huis number, court case number, or same conversation) **and** the client or a contact linked to the Matter is on the email, because anyone can type a case number into an email;
+  - no other Matter the owner can add to scores within 10 points;
+  - the target is the Matter's internal Correspondence folder, never a folder clients or other outsiders can see.
+
+  Each filing is checked again, as the owner, when it runs. If the firm or the owner switches automatic filing off, filings already queued are dropped.
+
+**Matching numbers.** Huis and court case numbers are matched as whole numbers, ignoring spacing and dashes. So 2:24-cv-0123 doesn't match inside 2:24-cv-01234, and a case number doesn't match inside a phone number. A court case number needs at least six letters or digits, including at least two digits.
+
+Every one-click or automatic filing records its reasons and method in the email's chain of custody. AI-based suggestions arrive with the AI layer (Phase 6) and will add to these signals rather than replace them.
 
 ## Needed from the end-of-build Azure step
 - Add the redirect address `https://<huis domain>/api/mailboxes/microsoft/callback` (and `http://localhost:3000/api/mailboxes/microsoft/callback` for development) to the Huis app registration.

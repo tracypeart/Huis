@@ -79,6 +79,20 @@
 | R5-7 | Medium | One email with a hidden NUL character stopped the whole mailbox from syncing | NUL characters are removed, and each email is saved on its own so a bad one is skipped |
 | Also | Low | Rotated Microsoft tokens during filing were dropped; large responses were read before the size check; owner-only settings didn't re-check the owner's role | Rotated tokens saved; size checked while reading; owner settings require current staff role |
 
+## Sixth review — Phase 3 part 2 (matter suggestions, Manual / Assisted / Automatic filing)
+
+**Scope:** suggestions, one-click and automatic filing, filing-mode settings, reasons in custody.
+**Result:** suggestions only ever named Matters the person could see and add to, and revealed nothing about mailboxes they couldn't see. One-click filing went through the same checks as manual filing, and the mode settings were limited to administrators and mailbox owners. The reviewer read the code and reported 5 suspected problems (it stopped before writing attack tests). Each one was confirmed with a test and **fixed**, with regression tests (`test/inbox.test.ts`, "review 6").
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| R6-1 | High | Automatic filing considered every Matter the owner could add to, and court case numbers were matched as loose text. A colleague could set their own Matter's case number to a common word and pull other attorneys' email into it | Automatic filing only files into Matters the owner is on. Case numbers need at least two digits and are matched as whole numbers |
+| R6-2 | Medium | Turning automatic filing on would also file the whole mailbox history | Only email received after automatic filing was turned on (by the owner and by the firm) is considered |
+| R6-3 | Medium | An outside sender could put another Matter's Huis or case number in an email and get it (and the attorney's replies in that conversation) filed there | Automatic filing also requires the client or a contact linked to the Matter on the email; a number alone only produces a suggestion for a person to decide |
+| R6-4 | Medium | Case numbers matched inside phone numbers and longer case numbers (2:24-cv-0123 inside 2:24-cv-01234) | Matching is by whole number token |
+| R6-5 | Low | Automatic filings already queued still ran after automatic filing was switched off | Automatic filings are re-checked against the firm mode, the mailbox setting and the owner's membership when picked up and before completion |
+| Also | Low | Very long recipient lists made suggestions slower; with several "Correspondence" folders, which one was picked was arbitrary | Recipients considered are capped at 200; the earliest-created Correspondence folder is used. Mode changes are audited by the app (the database functions are callable only by the app) |
+
 ## Still open (tracked, not code defects)
 1. **MFA enforcement** — Microsoft sign-in doesn't yet require proof of MFA. Plan: require the firm's Microsoft MFA (Conditional Access) or a Huis passkey. Part of the end-of-build Azure/hosting step.
 2. **Administrator-level tampering** — someone with full database superuser access could switch off the protective rules and rewrite history consistently. The hash chains make ordinary tampering detectable, but defeating a superuser needs the chain's latest fingerprint stored outside the database (e.g. a daily signed export). Planned with production hosting.

@@ -1,11 +1,11 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { mailDelegateAction, mailFolderAction, updateMailboxAction } from "../../../../../lib/actions";
+import { autoFileAction, mailDelegateAction, mailFolderAction, updateMailboxAction } from "../../../../../lib/actions";
 import { getFlash, withSession } from "../../../../../lib/server";
 import { FlashBanner } from "../../../../../lib/ui";
 import { NotFoundError, PermissionDeniedError } from "../../../../../src/errors";
 import { INTERNAL_ROLES } from "../../../../../src/security/permissions";
-import { getMailbox, listDelegates, listMailFolders } from "../../../../../src/services/inbox";
+import { getFilingMode, getMailbox, listDelegates, listMailFolders } from "../../../../../src/services/inbox";
 import { listUsers } from "../../../../../src/services/users";
 
 export const dynamic = "force-dynamic";
@@ -23,7 +23,7 @@ export default async function MailboxSettings({ params, searchParams }: { params
     const delegates = await listDelegates(s, id);
     const staff = (await listUsers(s).catch(() => [])).filter((u) =>
       INTERNAL_ROLES.has(u.role) && u.role !== "read_only" && u.id !== s.actor.userId && u.status === "active");
-    return { m, folders: await listMailFolders(s, id), delegates, staff };
+    return { m, folders: await listMailFolders(s, id), delegates, staff, mode: await getFilingMode(s) };
   });
   if (!data) notFound();
   const { m } = data;
@@ -55,6 +55,23 @@ export default async function MailboxSettings({ params, searchParams }: { params
             </select>
           </label>
           <div style={{ marginTop: 12 }}><button type="submit">Save</button></div>
+        </form>
+      </div>
+
+      <div className="card">
+        <h2>Automatic filing</h2>
+        <p className="notice">
+          When on, Huis files email received from now on into a Matter by itself — only Matters you&apos;re on, only when the email has
+          the Matter&apos;s Huis number or court case number (or belongs to a conversation already filed there) <em>and</em> the client
+          or a contact linked to the Matter is on it, and only into the Matter&apos;s internal Correspondence folder. Email already in
+          Huis is never filed automatically. Every automatic filing records why it was made. Needs “Let Huis manage” on.
+          {data.mode !== "automatic" ? " Your firm's filing mode isn't Automatic, so this has no effect until an administrator changes it." : ""}
+        </p>
+        <form action={autoFileAction} className="row">
+          <input type="hidden" name="connectionId" value={m.id} />
+          <input type="hidden" name="on" value={m.autoFile ? "false" : "true"} />
+          <span>{m.autoFile ? "On" : "Off"}</span>
+          <button type="submit" className="secondary">{m.autoFile ? "Turn off" : "Turn on"}</button>
         </form>
       </div>
 

@@ -1,10 +1,11 @@
 import Link from "next/link";
 import { ZodError } from "zod";
-import { syncMailboxAction } from "../../../lib/actions";
+import { filingModeAction, syncMailboxAction } from "../../../lib/actions";
 import { getFlash, withSession } from "../../../lib/server";
 import { FlashBanner } from "../../../lib/ui";
 import { INTERNAL_ROLES } from "../../../src/security/permissions";
-import { listMailboxes, listMessages, type MailMessage } from "../../../src/services/inbox";
+import { getFilingMode, listMailboxes, listMessages, suggestMatters, type MailMessage, type MatterSuggestion } from "../../../src/services/inbox";
+import { can } from "../../../src/security/permissions";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +29,17 @@ export default async function Inbox({ searchParams }: { searchParams: Promise<{ 
     } catch (err) {
       if (err instanceof ZodError) error = err.issues[0]?.message ?? "Check your search."; else throw err;
     }
-    return { mailboxes, messages, error, connectionId, canConnect: s.actor.role !== "read_only" };
+    // Top suggestion for unfiled email on this page (first 50).
+    const suggested = new Map<string, MatterSuggestion>();
+    for (const m of messages.slice(0, 50)) {
+      if (m.filedMatterId || m.pendingFiling) continue;
+      const top = (await suggestMatters(s, m.id))[0];
+      if (top) suggested.set(m.id, top);
+    }
+    return {
+      mailboxes, messages, error, connectionId, suggested, canConnect: s.actor.role !== "read_only",
+      mode: await getFilingMode(s), isAdmin: can(s.actor.role, "firm.manage"),
+    };
   });
   if (!data) {
     return (<><h1>Inbox</h1><div className="card"><p>The Huis Inbox is available to firm staff.</p></div></>);
@@ -73,6 +84,23 @@ export default async function Inbox({ searchParams }: { searchParams: Promise<{ 
         )}
       </div>
 
+      {data.isAdmin ? (
+        <div className="card">
+          <h2>Firm filing mode</h2>
+          <form action={filingModeAction} className="row">
+            <label>How email is filed into Matters
+              <select name="mode" defaultValue={data.mode}>
+                <option value="manual">Manual — Huis suggests; people file themselves</option>
+                <option value="assisted">Assisted — one-click filing to a suggested Matter</option>
+                <option value="automatic">Automatic — Huis files clear matches (a case or Huis number plus the client or a contact) by itself</option>
+              </select>
+            </label>
+            <button type="submit" className="secondary">Save</button>
+          </form>
+          <p className="notice">Automatic filing also has to be turned on by each attorney for their own mailbox, and only ever files into a Matter&apos;s internal Correspondence folder — never a folder the client can see.</p>
+        </div>
+      ) : null}
+
       {data.mailboxes.length ? (
         <div className="card">
           <form className="row" method="get" action="/inbox">
@@ -103,7 +131,9 @@ export default async function Inbox({ searchParams }: { searchParams: Promise<{ 
                         <span className="badge" style={m.filedMatterColor ? { background: m.filedMatterColor, color: "#fff" } : undefined}>
                           {m.filedMatterTitle ?? "Filed"}
                         </span>
-                      ) : m.pendingFiling ? <span className="badge">Filing…</span> : <span className="notice">Unfiled</span>}
+                      ) : m.pendingFiling ? <span className="badge">Filing…</span> : data.suggested.get(m.id) ? (
+                        <span className="notice">Suggested: <span className="badge" style={data.suggested.get(m.id)!.color ? { background: data.suggested.get(m.id)!.color!, color: "#fff" } : undefined}>{data.suggested.get(m.id)!.title}</span></span>
+                      ) : <span className="notice">Unfiled</span>}
                     </td>
                   </tr>
                 ))}
