@@ -1,4 +1,5 @@
 import { createContactAction } from "../../../lib/actions";
+import { notFound } from "next/navigation";
 import { getFlash, withSession } from "../../../lib/server";
 import { CONTACT_LABELS, FlashBanner } from "../../../lib/ui";
 import { CONTACT_KINDS, listContacts } from "../../../src/services/contacts";
@@ -8,9 +9,13 @@ export const dynamic = "force-dynamic";
 
 export default async function Contacts({ searchParams }: { searchParams: Promise<{ f?: string }> }) {
   const flash = await getFlash((await searchParams).f);
-  const { contacts, canCreate } = await withSession(async (s) => ({
-    contacts: await listContacts(s), canCreate: can(s.actor.role, "contacts.create"),
-  }));
+  const data = await withSession(async (s) => {
+    // Pages someone can't use look like pages that don't exist.
+    if (!can(s.actor.role, "contacts.view")) return null;
+    return { contacts: await listContacts(s), canCreate: can(s.actor.role, "contacts.create") };
+  });
+  if (!data) notFound();
+  const { contacts, canCreate } = data;
   return (
     <>
       <h1>People &amp; Contacts</h1>

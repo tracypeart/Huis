@@ -42,3 +42,23 @@ PostgreSQL stays the single source of truth. Passages and meaning fingerprints l
 | Logs | The audit log records the kind of change (added, confirmed, linked…), never the wording |
 
 **Tests:** `test/dna.test.ts`, 14 tests (5 from review 9): event finding (formats, impossible dates, abbreviations, speed on hostile text), suggestions from documents and email, confirm/reject and rejections sticking, the claim view with facts, witnesses and emails, importing people, outside users and read-only staff, walls and cross-Matter attempts (including direct database writes), planting suggestions or rewriting history, evidence that stops being clean, and audit without wording. Also checked in a real browser.
+
+## Check before part 3 (pre-release check)
+
+Before part 3, everything was tested and reviewed again:
+- all automated tests (204), the type check, the production build, and a dependency vulnerability scan (none);
+- every reachable page, opened as each kind of user (owner, attorney, paralegal, read-only staff and a client-portal user) on a made-up firm;
+- every link inside the documentation.
+
+**Fixed:**
+- A client who typed the address of the Clients or People & Contacts page got an error page instead of "not found" (the menu already hid both).
+- Signed-in people opening the sign-in page are now offered a link back to their dashboard.
+- The sign-up page no longer tells a signed-in person their session ended.
+- The dashboard's "Coming next" text was out of date.
+- Clients no longer see the firm's trial countdown.
+
+**Confirmed working:** every page a person is allowed to use loads without errors. Pages they aren't allowed to see answer "not found" (walled Matters, administrator pages, other people's mailboxes, and the Matter Brain and Case DNA for clients). Downloads, the PDF viewer, comparisons, and the Outlook and Gmail connect links all respond.
+
+**Not checked from here:** the outside web pages the architecture notes cite as research sources (this environment can't open outside sites directly).
+
+The check can be repeated at any time with `scripts/qa` (see its README).

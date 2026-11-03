@@ -1,3 +1,5 @@
+import Link from "next/link";
+import { getSession } from "../../lib/server";
 import { authConfig } from "../../src/auth/config";
 
 export const dynamic = "force-dynamic";
@@ -14,12 +16,15 @@ const REASONS: Record<string, string> = {
 export default async function SignIn({ searchParams }: { searchParams: Promise<{ reason?: string }> }) {
   const { reason } = await searchParams;
   const microsoftReady = Boolean(authConfig().microsoft);
+  // Already signed in: offer the way back (a link, not an automatic redirect, so an ended session can't loop).
+  const signedIn = !reason && Boolean(await getSession());
   return (
     <main className="centered">
       <div className="panel">
         <h1>Huis Law IP</h1>
         <p className="sub">Your entire case. Connected. Organized. Intelligent.</p>
         {reason && REASONS[reason] ? <div className={`flash ${reason === "signedout" ? "success" : "error"}`}>{REASONS[reason]}</div> : null}
+        {signedIn ? <div className="flash success">You&apos;re already signed in. <Link href="/dashboard">Go to your dashboard</Link></div> : null}
         {microsoftReady ? (
           <a className="button ms-button" href="/api/auth/microsoft/start">
             <svg width="18" height="18" viewBox="0 0 21 21" aria-hidden="true">
