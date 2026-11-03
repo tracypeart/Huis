@@ -79,8 +79,14 @@ A map of how a case fits together: people, events, claims and their legal elemen
 Huis suggests, and attorneys decide. Huis proposes dated events from documents and people from email, and finds passages that may prove an element. Nothing counts until someone confirms it. Like the Matter Brain, Case DNA is attorney work product that clients and other outside users never see.
 
 ### Who owns our data?
-Your firm does. You can export everything at any time.
+Your firm does. A Matter's owner or a firm administrator can export the whole Matter at any time from its page with **Download export**. The ZIP contains:
+- every original exactly as received
+- the text Huis read from each item
+- the chain of custody
+- attorney notes, their own Matter Brain questions, and Case DNA
+- a manifest, and a checksum for every file so you can show nothing was altered
 
+Huis keeps no copy of the export, and each item's chain of custody records that it was exported.
 ### Is our real client data used to build or test Huis?
 No. Development and testing use only made-up sample files.
 
