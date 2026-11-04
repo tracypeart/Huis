@@ -124,6 +124,8 @@ export interface BrainAnswer {
   id: string; matterId: string; question: string; answer: string; citations: Citation[]; provider: string; createdAt: Date;
   /** A source has since become unavailable to this person: the answer is withheld. */
   withheld: boolean;
+  /** This person asked it (otherwise it's a colleague's, in a conversation they shared). */
+  mine: boolean;
 }
 
 const questionInput = z.string().trim().min(3, "Ask a question of at least a few words.").max(2000);
@@ -191,7 +193,8 @@ async function findPassages(s: FirmSession, provider: AiProvider, matterId: stri
   }));
 }
 
-export async function askMatter(s: FirmSession, matterId: string, question: unknown): Promise<string> {
+/** Asks the Matter a question (optionally as the next turn of one of the asker's own AI Workspace conversations). */
+export async function askMatter(s: FirmSession, matterId: string, question: unknown, conversationId: string | null = null): Promise<string> {
   staffOnly(s, "use the Matter Brain");
   const q = questionInput.parse(question);
   await getMatter(s, matterId);
@@ -202,13 +205,16 @@ export async function askMatter(s: FirmSession, matterId: string, question: unkn
   const passages: Passage[] = rows.map((r, i) => ({ n: i + 1, text: r.content }));
   const result = await provider.answer(q, passages);
   // References only: excerpts are read back from the (protected) passages each time.
-  const refs = rows.map((r, i) => ({ n: i + 1, chunkId: String(r.id), evidenceId: r.evidence_id, noteId: r.note_id, start: r.char_start, end: r.char_end }));
+  // Sources are the passages the answer actually cites (an answer that found nothing lists none).
+  const cited = new Set(result.cited);
+  const refs = rows.map((r, i) => ({ n: i + 1, chunkId: String(r.id), evidenceId: r.evidence_id, noteId: r.note_id, start: r.char_start, end: r.char_end }))
+    .filter((r) => cited.has(r.n));
   const id = (await s.client.query<{ id: string }>(
-    `INSERT INTO huis.brain_answers (firm_id, matter_id, asked_by, question, answer, citations, source_evidence, source_notes, provider, model)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+    `INSERT INTO huis.brain_answers (firm_id, matter_id, asked_by, question, answer, citations, source_evidence, source_notes, provider, model, conversation_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
     [s.actor.firmId, matterId, s.actor.userId, q, result.text.slice(0, 100_000), JSON.stringify(refs),
       [...new Set(refs.map((r) => r.evidenceId).filter(Boolean))], [...new Set(refs.map((r) => r.noteId).filter(Boolean))],
-      provider.name, provider.model])).rows[0]!.id;
+      provider.name, provider.model, conversationId])).rows[0]!.id;
   await s.client.query("SELECT huis.log_ai_ask($1, $2, $3, $4, $5, $6)", [matterId, provider.name, provider.model,
     q.length + passages.reduce((a, p) => a + p.text.length, 0), result.text.length, Date.now() - started]);
   // The question itself is work product: never in the audit log administrators read.
@@ -224,7 +230,7 @@ export async function getAnswer(s: FirmSession, answerId: string): Promise<Brain
   if (!r) {
     const withheld = (await s.client.query<{ w: boolean }>("SELECT huis.brain_answer_withheld($1) AS w", [answerId])).rows[0]?.w;
     if (!withheld) throw new NotFoundError("Answer");
-    return { id: answerId, matterId: "", question: "", answer: "", citations: [], provider: "", createdAt: new Date(0), withheld: true };
+    return { id: answerId, matterId: "", question: "", answer: "", citations: [], provider: "", createdAt: new Date(0), withheld: true, mine: true };
   }
   const refs = (Array.isArray(r.citations) ? r.citations : []) as { n: number; chunkId: string; evidenceId: string | null; noteId: string | null; start: number; end: number }[];
   const chunkIds = refs.map((c) => c.chunkId).filter((x) => /^[0-9]{1,19}$/.test(String(x)));
@@ -239,14 +245,18 @@ export async function getAnswer(s: FirmSession, answerId: string): Promise<Brain
     n: c.n, evidenceId: c.evidenceId, noteId: c.noteId, start: c.start, end: c.end,
     excerpt: excerpts.get(String(c.chunkId)) ?? "", sourceTitle: titles.get((c.evidenceId ?? c.noteId)!) ?? "Source",
   }));
-  return { id: r.id, matterId: r.matter_id, question: r.question, provider: r.provider, createdAt: r.created_at, withheld: false, answer: r.answer, citations };
+  return {
+    id: r.id, matterId: r.matter_id, question: r.question, provider: r.provider, createdAt: r.created_at, withheld: false, answer: r.answer, citations,
+    mine: r.asked_by === s.actor.userId,
+  };
 }
 
 export async function listMyQuestions(s: FirmSession, matterId: string): Promise<{ id: string; question: string; createdAt: Date }[]> {
   staffOnly(s, "use the Matter Brain");
   await getMatter(s, matterId);
   const { rows } = await s.client.query(
-    "SELECT id, question, created_at FROM huis.brain_answers WHERE matter_id = $1 ORDER BY created_at DESC LIMIT 30", [matterId]);
+    // Only this person's own questions (colleagues' shared conversations are readable, but aren't "mine").
+    "SELECT id, question, created_at FROM huis.brain_answers WHERE matter_id = $1 AND asked_by = $2 ORDER BY created_at DESC LIMIT 30", [matterId, s.actor.userId]);
   return rows.map((r) => ({ id: r.id, question: r.question, createdAt: r.created_at }));
 }
 

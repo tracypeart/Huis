@@ -15,7 +15,7 @@ const SKIP = [/^\/api\/auth\/signout/, /^\/api\/auth\/microsoft\/start/];
     page.on("console", (m) => { if (m.type() === "error") problems.push({ url: current, kind: "console", text: m.text().slice(0, 300) }); });
     page.on("pageerror", (e) => problems.push({ url: current, kind: "pageerror", text: e.message.slice(0, 300) }));
     const seeds = ["/dashboard", "/matters", "/matters/new", "/inbox", "/search", "/search?q=FMLA", "/clients", "/contacts", "/users", "/audit",
-      `/matters/${s.matterId}`, `/matters/${s.matterId}/brain`, `/matters/${s.matterId}/brain?a=${s.answerId}`, `/matters/${s.matterId}/dna`, `/matters/${s.matterId}/timeline`, `/matters/${s.matterId}/timeline?category=employment&show=confirmed`, `/matters/${s.walledId}/timeline`, `/matters/${s.matterId}/contradictions`, `/matters/${s.walledId}/contradictions`,
+      `/matters/${s.matterId}`, `/matters/${s.matterId}/brain`, `/matters/${s.matterId}/brain?a=${s.answerId}`, `/matters/${s.matterId}/dna`, `/matters/${s.matterId}/timeline`, `/matters/${s.matterId}/timeline?category=employment&show=confirmed`, `/matters/${s.walledId}/timeline`, `/matters/${s.matterId}/contradictions`, `/matters/${s.walledId}/contradictions`, `/matters/${s.matterId}/workspace`, `/matters/${s.walledId}/workspace`, "/prompts",
       `/matters/${s.matterId}/dna/${s.claimId}`, `/matters/${s.walledId}`, `/inbox/mailboxes/${s.connectionId}`, "/", "/signin", "/onboarding", "/select-firm"];
     const queue = [...seeds];
     const seen = new Set();

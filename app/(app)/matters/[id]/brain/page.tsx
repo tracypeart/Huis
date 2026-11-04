@@ -45,7 +45,7 @@ export default async function MatterBrainPage({ params, searchParams }: {
 
   return (
     <>
-      <p className="notice"><Link href={`/matters/${m.id}`}>← {m.title}</Link> · <Link href={`/matters/${m.id}/dna`}>Case DNA™</Link></p>
+      <p className="notice"><Link href={`/matters/${m.id}`}>← {m.title}</Link> · <Link href={`/matters/${m.id}/dna`}>Case DNA™</Link> · <Link href={`/matters/${m.id}/workspace`}>AI Workspace</Link></p>
       <h1>Matter Brain</h1>
       <p className="sub">
         Everything readable in this Matter — documents, filed email, transcripts and attorney notes — in one place you can ask.
@@ -98,7 +98,7 @@ export default async function MatterBrainPage({ params, searchParams }: {
               ) : null}
             </>
           )}
-          {data.answer.withheld ? null : <form action={deleteAnswerAction}>
+          {data.answer.withheld || !data.answer.mine ? null : <form action={deleteAnswerAction}>
             <input type="hidden" name="matterId" value={m.id} /><input type="hidden" name="answerId" value={data.answer.id} />
             <button type="submit" className="secondary">Remove from my questions</button>
           </form>}

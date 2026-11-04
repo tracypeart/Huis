@@ -11,6 +11,7 @@ import { runMigrations } from "../../src/db/migrate";
 import { HuisDb, type RequestContext } from "../../src/db/tenant";
 import { MailWorker } from "../../src/mail/worker";
 import { addNote, askMatter } from "../../src/services/brain";
+import { askInConversation, createConversation, createPrompt, updateConversation } from "../../src/services/workspace";
 import { createClient } from "../../src/services/clients";
 import { createContact } from "../../src/services/contacts";
 import { addClaimFromTemplate, addFactFromPassage, addNode, claimView, decideNode, findEvidenceFor, linkNodes, listNodes } from "../../src/services/dna";
@@ -138,6 +139,13 @@ async function main() {
     "Deposition of Cindy Manager, taken June 3, 2026.\n\nQ. When did you learn about the surgery?\nA. I didn't know about her surgery until May. Nobody told me about any FMLA leave request.\n"));
   await processor.drain();
   while (await brain.indexOnce()) { /* index */ }
+  // AI Workspace: a shared conversation with an answer, and a firm prompt.
+  await db.withFirm(avery, async (s) => {
+    const c = await createConversation(s, x.matter.id, { title: "Notice of leave", category: "strategy" });
+    await askInConversation(s, c, "When did HR learn about the FMLA leave request?");
+    await updateConversation(s, c, { title: "Notice of leave", category: "strategy", shared: true });
+  });
+  await db.withFirm(f.owner, (s) => createPrompt(s, { scope: "firm", title: "Firm: comparators", body: "Who else was in a similar position, and how were they treated?", category: "strategy" }));
   await pool.end();
 
   const secret = randomBytes(32).toString("base64");

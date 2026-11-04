@@ -18,6 +18,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         {INTERNAL_ROLES.has(actor.role) ? <Link href="/inbox">Inbox</Link> : null}
         <Link href="/matters">Matters</Link>
         <Link href="/search">Search</Link>
+        {INTERNAL_ROLES.has(actor.role) ? <Link href="/prompts">AI Prompts</Link> : null}
         {can(actor.role, "clients.view") ? <Link href="/clients">Clients</Link> : null}
         {can(actor.role, "contacts.view") ? <Link href="/contacts">People &amp; Contacts</Link> : null}
         {can(actor.role, "users.manage") ? <Link href="/users">Users &amp; Access</Link> : null}

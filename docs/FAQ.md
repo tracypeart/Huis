@@ -95,6 +95,17 @@ Each flag gives its reasons and a confidence based on how many separate sources 
 
 If you confirm one, the statement and the contradicting evidence are recorded in Case DNA with their sources. If you reject one, it isn't suggested again unless you reconsider. Like the rest of the case analysis, it is work product clients never see.
 
+### Can we save AI conversations, and share them?
+Yes. In a Matter's **AI Workspace** you can start a conversation, such as "Notice of leave" under Strategy, and keep asking questions. Each answer comes from the Matter's own documents, email and notes, with its sources.
+
+Conversations are private to you unless you share one with the firm staff on that Matter. They can read it but can't change it. Even then, each answer is shown only to people who can open every source it used. Clients never see conversations.
+
+### What is the Prompt Library?
+Saved questions to start from. Your own prompts are private. **Firm prompts** are approved templates that your firm's administrators manage and everyone at the firm can use. Huis's built-in prompts are general starting points, not legal advice.
+
+### Does Huis send our documents to an AI company?
+No. Today Huis uses only its **built-in AI**, which runs inside Huis and sends nothing to any outside service. It answers by quoting the most relevant passages with their sources, rather than writing conclusions. Outside AI providers, which could write answers, will be added only after their terms guarantee no training on your data and no data retention. Each firm will choose whether to use one.
+
 ### Who owns our data?
 Your firm does. A Matter's owner or a firm administrator can export the whole Matter at any time from its page with **Download export**. The ZIP contains:
 - every original exactly as received
