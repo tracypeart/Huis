@@ -25,6 +25,7 @@ import {
 import {
   fileMessage, fileToSuggestion, requestSync, setAutoFile, setDelegate, setFilingMode, setFolderIncluded, setMatterColor, updateMailbox,
 } from "../src/services/inbox";
+import { addCourtEvent, decideCourtEvent, deleteCourtEvent, setCourtEventDone, updateCourtEvent } from "../src/services/court";
 import { ROLES } from "../src/security/permissions";
 import { UserFacingError } from "../src/errors";
 import { act, db, getPending, setSessionCookie, withSession } from "./server";
@@ -515,4 +516,39 @@ export async function citeAuthorityAction(fd: FormData): Promise<void> {
 export async function unciteAction(fd: FormData): Promise<void> {
   const matterId = text(fd, "matterId") ?? "";
   return act(claimsPath(matterId), "Citation removed.", () => withSession(async (s) => { await uncite(s, text(fd, "linkId") ?? ""); }));
+}
+
+// ---------------------------------------------------------------------------
+// Court calendar (Phase 8)
+// ---------------------------------------------------------------------------
+const courtPath = (matterId: string) => (/^[0-9a-f-]{36}$/i.test(matterId) ? `/matters/${matterId}/court` : "/matters");
+const courtFields = (fd: FormData) => ({
+  kind: text(fd, "kind"), title: fd.get("title"), date: text(fd, "date"), time: text(fd, "time") || null,
+  location: text(fd, "location") || null, judge: text(fd, "judge") || null, notes: fd.get("notes") ?? "",
+});
+export async function courtAddAction(fd: FormData): Promise<void> {
+  const matterId = text(fd, "matterId") ?? "";
+  return act(courtPath(matterId), "Court date added.", () => withSession(async (s) => { await addCourtEvent(s, matterId, courtFields(fd)); }));
+}
+export async function courtUpdateAction(fd: FormData): Promise<void> {
+  const matterId = text(fd, "matterId") ?? "";
+  return act(courtPath(matterId), "Court date saved.", () => withSession(async (s) => { await updateCourtEvent(s, text(fd, "eventId") ?? "", courtFields(fd)); }));
+}
+export async function courtDecideAction(fd: FormData): Promise<void> {
+  const matterId = text(fd, "matterId") ?? "";
+  const d = text(fd, "decision");
+  return act(courtPath(matterId), d === "confirmed" ? "Court date confirmed." : "Rejected; Huis won't propose it again.", () => withSession(async (s) => {
+    await decideCourtEvent(s, text(fd, "eventId") ?? "", d);
+  }));
+}
+export async function courtDoneAction(fd: FormData): Promise<void> {
+  const matterId = text(fd, "matterId") ?? "";
+  const done = text(fd, "done") === "1";
+  return act(courtPath(matterId), done ? "Marked done." : "Reopened.", () => withSession(async (s) => {
+    await setCourtEventDone(s, text(fd, "eventId") ?? "", done);
+  }));
+}
+export async function courtDeleteAction(fd: FormData): Promise<void> {
+  const matterId = text(fd, "matterId") ?? "";
+  return act(courtPath(matterId), "Court date deleted.", () => withSession(async (s) => { await deleteCourtEvent(s, text(fd, "eventId") ?? ""); }));
 }

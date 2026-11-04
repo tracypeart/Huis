@@ -2,6 +2,7 @@ import Link from "next/link";
 import { withSession } from "../../../lib/server";
 import { date } from "../../../lib/ui";
 import { listMatters } from "../../../src/services/matters";
+import { EVENT_KIND_LABELS, upcomingCourtDates } from "../../../src/services/court";
 import { can, INTERNAL_ROLES } from "../../../src/security/permissions";
 
 export const dynamic = "force-dynamic";
@@ -14,7 +15,7 @@ export default async function Dashboard() {
               (SELECT count(*)::int FROM huis.users WHERE status = 'active') AS users,
               f.plan, f.trial_ends_at FROM huis.firms f`,
     );
-    return { matters, c: counts.rows[0], actor: s.actor };
+    return { matters, c: counts.rows[0], actor: s.actor, court: await upcomingCourtDates(s, 30) };
   });
   const open = data.matters.filter((m) => m.status === "open");
   const staff = INTERNAL_ROLES.has(data.actor.role);
@@ -27,6 +28,25 @@ export default async function Dashboard() {
       <p className="sub">{staff ? "Here is where your firm's matters stand." : "Here are the matters your law firm has shared with you."}</p>
       {staff && data.c?.plan === "trial" && trialDays !== null ? (
         <div className="flash success">Free trial: {trialDays} day{trialDays === 1 ? "" : "s"} remaining.</div>
+      ) : null}
+      {staff ? (
+        <div className="card" style={{ marginBottom: 20 }}>
+          <h2>Court dates in the next 30 days</h2>
+          {data.court.length === 0 ? <p className="notice">No confirmed court dates in the next 30 days.</p> : (
+            <table><tbody>
+              {data.court.map((e) => (
+                <tr key={e.id}>
+                  <td style={{ width: 130, whiteSpace: "nowrap" }}><strong>{e.date}</strong>{e.time ? <div className="notice">{e.time}</div> : null}</td>
+                  <td>
+                    <span className="badge">{EVENT_KIND_LABELS[e.kind]}</span> {e.title}
+                    <div className="notice"><Link href={`/matters/${e.matterId}/court`}>{e.matterTitle}</Link></div>
+                  </td>
+                  <td style={{ width: 120 }}>{e.alert ? <span className={e.daysAway <= 3 ? "badge privileged" : "badge walled"}>{e.alert}</span> : <span className="notice">In {e.daysAway} days</span>}</td>
+                </tr>
+              ))}
+            </tbody></table>
+          )}
+        </div>
       ) : null}
       <div className="grid" style={{ marginBottom: 20 }}>
         <div className="card"><div className="stat">{open.length}</div><div className="stat-label">Open matters</div></div>
