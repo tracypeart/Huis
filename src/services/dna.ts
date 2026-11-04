@@ -7,6 +7,7 @@ import { recordAudit } from "./audit";
 import { terms } from "../ai/local";
 import { searchPassages, type FoundPassage } from "./brain";
 import { getMatter } from "./matters";
+import { CATEGORIES, type Category } from "../timeline/categories";
 
 /**
  * Case DNA™: each Matter's relationship map.
@@ -46,16 +47,18 @@ const writer = (s: FirmSession) => {
 export interface DnaNode {
   id: string; matterId: string; kind: NodeKind; label: string; details: string; eventDate: string | null; email: string | null;
   role: string | null; amount: number | null; status: Status; origin: "attorney" | "huis"; createdAt: Date;
+  /** Timeline categories an attorney chose; null until they choose (Huis's rules apply until then). */
+  categories: Category[] | null;
 }
 export interface DnaLink { id: string; fromId: string; toId: string; relation: Relation; status: Status; origin: "attorney" | "huis" }
 export interface DnaCitation { id: string; evidenceId: string | null; noteId: string | null; quote: string; sourceTitle: string; isEmail: boolean }
 
-const NODE_COLS = "id, matter_id, kind, label, details, event_date::text AS event_date, email, role, amount, status, origin, created_at";
+const NODE_COLS = "id, matter_id, kind, label, details, event_date::text AS event_date, email, role, amount, status, origin, created_at, categories";
 const toNode = (r: Record<string, unknown>): DnaNode => ({
   id: r.id as string, matterId: r.matter_id as string, kind: r.kind as NodeKind, label: r.label as string, details: r.details as string,
   eventDate: (r.event_date as string | null) ?? null, email: (r.email as string | null) ?? null, role: (r.role as string | null) ?? null,
   amount: r.amount == null ? null : Number(r.amount), status: r.status as Status, origin: r.origin as "attorney" | "huis",
-  createdAt: r.created_at as Date,
+  createdAt: r.created_at as Date, categories: (r.categories as Category[] | null | undefined) ?? null,
 });
 
 async function node(s: FirmSession, id: string): Promise<DnaNode> {
@@ -86,7 +89,7 @@ export interface NodeDetail {
   citations: DnaCitation[];
 }
 
-async function citationsFor(s: FirmSession, nodeIds: string[]): Promise<Map<string, DnaCitation[]>> {
+export async function citationsFor(s: FirmSession, nodeIds: string[], limit = 2000): Promise<Map<string, DnaCitation[]>> {
   const out = new Map<string, DnaCitation[]>();
   if (!nodeIds.length) return out;
   const { rows } = await s.client.query(
@@ -96,7 +99,7 @@ async function citationsFor(s: FirmSession, nodeIds: string[]): Promise<Map<stri
        LEFT JOIN huis.evidence_items i ON i.id = c.evidence_id
        LEFT JOIN huis.evidence_email m ON m.evidence_id = c.evidence_id
        LEFT JOIN huis.matter_notes x ON x.id = c.note_id
-      WHERE c.node_id = ANY($1::uuid[]) ORDER BY c.id LIMIT 2000`, [nodeIds]);
+      WHERE c.node_id = ANY($1::uuid[]) ORDER BY c.id LIMIT ${Math.max(1, Math.min(Math.trunc(limit), 50_000))}`, [nodeIds]);
   for (const r of rows) {
     const list = out.get(r.node_id) ?? [];
     list.push({ id: r.id, evidenceId: r.evidence_id, noteId: r.note_id, quote: r.quote, sourceTitle: r.title, isEmail: Boolean(r.is_email) });
@@ -186,13 +189,15 @@ const nodeInput = z.object({
   email: z.email().max(320).nullish().transform((v) => v?.toLowerCase() ?? null),
   role: z.string().trim().max(100).nullish(),
   amount: z.coerce.number().nonnegative().max(999_999_999_999).nullish(),
+  categories: z.array(z.enum(CATEGORIES)).max(CATEGORIES.length).nullish().transform((v) => (v ? [...new Set(v)] : null)),
 });
 
-async function insertNode(s: FirmSession, matterId: string, v: z.infer<typeof nodeInput>): Promise<string> {
+async function insertNode(s: FirmSession, matterId: string, v: z.input<typeof nodeInput>): Promise<string> {
   return (await s.client.query<{ id: string }>(
-    `INSERT INTO huis.dna_nodes (firm_id, matter_id, kind, label, details, event_date, email, role, amount, status, origin, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'confirmed', 'attorney', $10) RETURNING id`,
-    [s.actor.firmId, matterId, v.kind, v.label, v.details ?? "", v.eventDate ?? null, v.email ?? null, v.role || null, v.amount ?? null, s.actor.userId],
+    `INSERT INTO huis.dna_nodes (firm_id, matter_id, kind, label, details, event_date, email, role, amount, status, origin, created_by, categories)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'confirmed', 'attorney', $10, $11) RETURNING id`,
+    [s.actor.firmId, matterId, v.kind, v.label, v.details ?? "", v.eventDate ?? null, v.email ?? null, v.role || null, v.amount ?? null, s.actor.userId,
+     v.categories ?? null],
   )).rows[0]!.id;
 }
 
@@ -221,7 +226,7 @@ export async function updateNode(s: FirmSession, nodeId: string, input: unknown)
   writer(s);
   const n = await node(s, nodeId);
   if (n.origin === "huis" && n.status === "suggested") throw new UserFacingError("Confirm Huis's suggestion before changing it.");
-  const v = nodeInput.omit({ kind: true }).parse(input);
+  const v = nodeInput.omit({ kind: true, categories: true }).parse(input);
   await s.client.query(
     "UPDATE huis.dna_nodes SET label = $2, details = $3, event_date = $4, email = $5, role = $6, amount = $7 WHERE id = $1",
     [nodeId, v.label, v.details ?? "", v.eventDate ?? null, v.email ?? null, v.role || null, v.amount ?? null]);
@@ -234,6 +239,20 @@ export async function deleteNode(s: FirmSession, nodeId: string): Promise<void> 
   if (n.origin === "huis") throw new UserFacingError("Huis's suggestions can't be deleted; reject them instead, so they aren't suggested again.");
   await s.client.query("DELETE FROM huis.dna_nodes WHERE id = $1", [nodeId]);
   await audit(s, "deleted", n.matterId, nodeId, { kind: n.kind });
+}
+
+/**
+ * An item's timeline categories, chosen by an attorney (null goes back to Huis's suggestions).
+ * A suggestion has to be confirmed first, like any other change to it.
+ */
+export async function setCategories(s: FirmSession, nodeId: string, input: unknown): Promise<void> {
+  writer(s);
+  const cats = z.array(z.enum(CATEGORIES)).max(CATEGORIES.length).nullable().parse(input);
+  const n = await node(s, nodeId);
+  if (n.origin === "huis" && n.status === "suggested") throw new UserFacingError("Confirm Huis's suggestion before changing it.");
+  const value = cats ? CATEGORIES.filter((c) => cats.includes(c)) : null;
+  await s.client.query("UPDATE huis.dna_nodes SET categories = $2 WHERE id = $1", [nodeId, value]);
+  await audit(s, "categories_changed", n.matterId, nodeId, { kind: n.kind });
 }
 
 /** Confirm or reject a suggestion (or reverse an earlier decision). */

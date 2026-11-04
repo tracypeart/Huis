@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
-  dnaAddElementAction, dnaAddFactAction, dnaDecideAction, dnaDeleteNodeAction, dnaLinkAction, dnaUnlinkAction, dnaUpdateNodeAction,
+  dnaAddElementAction, dnaAddFactAction, dnaDecideAction, dnaDeleteNodeAction, dnaLinkAction, dnaSetCategoriesAction, dnaUnlinkAction, dnaUpdateNodeAction,
 } from "../../../../../../lib/actions";
 import { getFlash, withSession } from "../../../../../../lib/server";
 import { FlashBanner } from "../../../../../../lib/ui";
@@ -13,6 +13,8 @@ import {
   claimView, findEvidenceFor, getNode, listNodes, RELATION_LABELS, RELATIONS, type ClaimView, type DnaCitation, type NodeDetail,
 } from "../../../../../../src/services/dna";
 import { INTERNAL_ROLES } from "../../../../../../src/security/permissions";
+import { suggestedCategoriesFor } from "../../../../../../src/services/timeline";
+import { CATEGORIES, CATEGORY_LABELS, type Category } from "../../../../../../src/timeline/categories";
 
 export const dynamic = "force-dynamic";
 
@@ -53,7 +55,10 @@ export default async function DnaNodePage({ params, searchParams }: {
       }
     }
     const others = (await listNodes(s, id)).filter((n) => n.id !== nodeId && n.status === "confirmed");
-    return { detail, view, found, others, canWrite: s.actor.role !== "read_only" };
+    // Timeline categories, for items with a date.
+    const dated = detail.node.eventDate != null && ["event", "fact", "damage"].includes(detail.node.kind);
+    const huisCategories: Category[] = dated ? await suggestedCategoriesFor(s, nodeId) : [];
+    return { detail, view, found, others, dated, huisCategories, canWrite: s.actor.role !== "read_only" };
   });
   if (!data) notFound();
   const { node: n } = data.detail;
@@ -87,6 +92,32 @@ export default async function DnaNodePage({ params, searchParams }: {
 
       {n.details ? <div className="card"><div className="doc-text" style={{ fontFamily: "inherit" }}>{n.details}</div></div> : null}
       {data.detail.citations.length ? <div className="card"><h2>Where this comes from</h2><Sources list={data.detail.citations} /></div> : null}
+
+      {data.dated && n.status !== "rejected" ? (
+        <div className="card">
+          <h2>On the timeline</h2>
+          <p className="notice">
+            {n.categories
+              ? `Categories you chose: ${n.categories.length ? n.categories.map((c) => CATEGORY_LABELS[c]).join(", ") : "none"}.`
+              : `Categories suggested by Huis: ${data.huisCategories.length ? data.huisCategories.map((c) => CATEGORY_LABELS[c]).join(", ") : "none"}.`}
+            {" "}<Link href={`/matters/${id}/timeline?from=${n.eventDate}&to=${n.eventDate}`}>See this day on the timeline</Link>
+          </p>
+          {data.canWrite && n.status === "confirmed" ? (
+            <form action={dnaSetCategoriesAction}>
+              {hidden()}<input type="hidden" name="nodeId" value={n.id} />
+              {CATEGORIES.map((c) => (
+                <label key={c} style={{ display: "inline-flex", gap: 4, marginRight: 12, fontWeight: 400 }}>
+                  <input type="checkbox" name="categories" value={c} defaultChecked={(n.categories ?? data.huisCategories).includes(c)} /> {CATEGORY_LABELS[c]}
+                </label>
+              ))}
+              <div className="row" style={{ marginTop: 8 }}>
+                <button type="submit">Save categories</button>
+                {n.categories ? <button type="submit" name="useHuis" value="1" className="secondary" formNoValidate>Use Huis&apos;s suggestions</button> : null}
+              </div>
+            </form>
+          ) : data.canWrite && n.status === "suggested" ? <p className="notice">Confirm this suggestion to choose its categories.</p> : null}
+        </div>
+      ) : null}
 
       {data.view ? (
         <>

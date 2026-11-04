@@ -79,12 +79,21 @@ A map of how a case fits together: people, events, claims and their legal elemen
 
 Huis suggests, and attorneys decide. Huis proposes dated events from documents and people from email, and finds passages that may prove an element. Nothing counts until someone confirms it. Like the Matter Brain, Case DNA is attorney work product that clients and other outside users never see.
 
+### What is the Timeline?
+One chronology for each Matter: every dated event, fact and damage in Case DNA, plus every filed email on the day it was sent (in your firm's time zone). Each entry links to where it came from, so clicking it opens the original document or email.
+
+You can view the whole Matter (**Master**) or one category: court, plaintiff, defendant, medical, financial, employment, communications, discovery, witness or damages. You can also narrow it by dates, a person, words, confirmed items only, or items with no source yet, which is a quick way to find gaps.
+
+Huis suggests categories using fixed word lists, not AI. For example, "surgery" suggests medical and "terminated" suggests employment, and an item linked to your client goes on the plaintiff's side. The same wording always gets the same categories. You can change any confirmed item's categories, and go back to Huis's suggestions at any time. Huis's dated suggestions appear marked **Suggested by Huis** until you confirm or reject them.
+
+**Download timeline** gives you a spreadsheet of what you're looking at, with its sources, after you confirm you'll store it securely. Read-only staff can view the timeline but not download it. Like Case DNA, it is attorney work product that clients and other outside users never see.
+
 ### Who owns our data?
 Your firm does. A Matter's owner or a firm administrator can export the whole Matter at any time from its page with **Download export**. The ZIP contains:
 - every original exactly as received
 - the text Huis read from each item
 - the chain of custody
-- attorney notes, their own Matter Brain questions, and Case DNA
+- attorney notes, their own Matter Brain questions, and Case DNA (with each item's timeline categories)
 - a manifest, and a checksum for every file so you can show nothing was altered
 
 Huis keeps no copy of the export, and each item's chain of custody records that it was exported.

@@ -13,7 +13,7 @@ import { MailWorker } from "../../src/mail/worker";
 import { addNote, askMatter } from "../../src/services/brain";
 import { createClient } from "../../src/services/clients";
 import { createContact } from "../../src/services/contacts";
-import { addClaimFromTemplate, addFactFromPassage, claimView, decideNode, findEvidenceFor, listNodes } from "../../src/services/dna";
+import { addClaimFromTemplate, addFactFromPassage, addNode, claimView, decideNode, findEvidenceFor, linkNodes, listNodes } from "../../src/services/dna";
 import { assembleOriginal, getUploadSession, markChunkReceived, newEvidenceId, recordEvidence, startUpload, storeChunk } from "../../src/services/evidence";
 import { connectMailbox, fileMessage, listMessages, setMatterColor } from "../../src/services/inbox";
 import { addMatterMember, createMatter, linkContactToMatter, listMatterFolders, setCourtCaseNumber } from "../../src/services/matters";
@@ -125,6 +125,14 @@ async function main() {
   await db.withFirm(avery, (s) => addFactFromPassage(s, el.id, { chunkId: passage.chunkId, relation: "supports" }));
   const sug = (await db.withFirm(avery, (s) => listNodes(s, x.matter.id))).find((n) => n.status === "suggested" && n.kind === "person");
   if (sug) await db.withFirm(avery, (s) => decideNode(s, sug.id, "confirmed"));
+  // Timeline: a confirmed suggested event, and an attorney's own event with categories, linked to the client.
+  const event = (await db.withFirm(avery, (s) => listNodes(s, x.matter.id))).find((n) => n.status === "suggested" && n.kind === "event");
+  if (event) await db.withFirm(avery, (s) => decideNode(s, event.id, "confirmed"));
+  await db.withFirm(avery, async (s) => {
+    const meeting = await addNode(s, x.matter.id, { kind: "event", label: "Disciplinary meeting with HR", eventDate: "2026-04-23", categories: ["employment", "defendant"] });
+    const client = (await listNodes(s, x.matter.id)).find((n) => n.kind === "person" && n.status === "confirmed");
+    if (client) await linkNodes(s, meeting, client.id, "involves");
+  });
   await pool.end();
 
   const secret = randomBytes(32).toString("base64");

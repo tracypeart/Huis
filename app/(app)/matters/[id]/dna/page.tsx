@@ -36,7 +36,7 @@ export default async function CaseDnaPage({ params, searchParams }: { params: Pr
 
   return (
     <>
-      <p className="notice"><Link href={`/matters/${m.id}`}>← {m.title}</Link> · <Link href={`/matters/${m.id}/brain`}>Matter Brain</Link></p>
+      <p className="notice"><Link href={`/matters/${m.id}`}>← {m.title}</Link> · <Link href={`/matters/${m.id}/brain`}>Matter Brain</Link> · <Link href={`/matters/${m.id}/timeline`}>Timeline</Link></p>
       <h1>Case DNA™</h1>
       <p className="sub">
         How this case fits together: people, events, claims and their elements, facts and damages, each linked to the evidence behind it.
