@@ -145,7 +145,7 @@ export async function prepareMatterExport(s: FirmSession, matterId: string, ackn
   // Questions and answers are private: only the exporter's own.
   const answers = await q("SELECT question, answer, citations, provider, model, created_at FROM huis.brain_answers WHERE matter_id = $1 ORDER BY created_at", [matterId]);
   const nodes = await q(
-    `SELECT id, kind, label, details, event_date::text AS event_date, email, role, amount, status, origin, created_at, decided_at
+    `SELECT id, kind, label, details, event_date::text AS event_date, email, role, amount, status, origin, categories, created_at, decided_at
        FROM huis.dna_nodes WHERE matter_id = $1 ORDER BY kind, created_at`, [matterId]);
   const links = await q("SELECT from_id, to_id, relation, status, origin, created_at FROM huis.dna_links WHERE matter_id = $1 ORDER BY created_at", [matterId]);
   const dnaCitations = await q("SELECT node_id, evidence_id, note_id, char_start, char_end, quote FROM huis.dna_citations WHERE matter_id = $1 ORDER BY id", [matterId]);

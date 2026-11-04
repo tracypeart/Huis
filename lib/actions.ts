@@ -11,7 +11,7 @@ import { addMatterMember, createMatter, linkContactToMatter, setCourtCaseNumber 
 import { changeUserRole, disableUser, endUserSessions, inviteUser, issueInvitation } from "../src/services/users";
 import { moveEvidence } from "../src/services/evidence";
 import {
-  addClaimFromTemplate, addElement, addFactFromPassage, addNode, decideLink, decideNode, deleteNode, importMatterPeople, linkNodes, unlink, updateNode,
+  addClaimFromTemplate, addElement, addFactFromPassage, addNode, decideLink, decideNode, deleteNode, importMatterPeople, linkNodes, setCategories, unlink, updateNode,
 } from "../src/services/dna";
 import { addNote, askMatter, deleteAnswer, deleteNote, setAiProviderSetting, updateNote } from "../src/services/brain";
 import { requestCopy } from "../src/services/workingCopies";
@@ -321,14 +321,17 @@ export async function aiProviderAction(fd: FormData): Promise<void> {
 const dnaPath = (fd: FormData) => {
   const matterId = text(fd, "matterId") ?? "";
   const back = text(fd, "back");
-  // Only return to a page inside this Matter's Case DNA.
-  return back && /^\/matters\/[0-9a-f-]{36}\/dna(\/[0-9a-f-]{36})?(\?[a-z=0-9-]*)?$/i.test(back) && back.startsWith(`/matters/${matterId}/`)
-    ? back : `/matters/${matterId}/dna`;
+  // Only return to a page inside this Matter's Case DNA or timeline (with its filters).
+  const ok = back && (/^\/matters\/[0-9a-f-]{36}\/dna(\/[0-9a-f-]{36})?(\?[a-z=0-9-]*)?$/i.test(back)
+    || /^\/matters\/[0-9a-f-]{36}\/timeline(\?[A-Za-z0-9=&%+._-]{0,1000})?$/.test(back));
+  return ok && back.startsWith(`/matters/${matterId}/`) ? back : `/matters/${matterId}/dna`;
 };
 const nodeFields = (fd: FormData) => ({
   kind: fd.get("kind") ?? undefined, label: fd.get("label"), details: fd.get("details") ?? "",
   eventDate: text(fd, "eventDate") || null, email: text(fd, "email") || null, role: text(fd, "role") || null,
   amount: text(fd, "amount") || null,
+  // Only forms that offer categories set them (an empty choice there means "none").
+  categories: fd.get("categoriesShown") === "1" ? fd.getAll("categories").map(String) : null,
 });
 
 export async function dnaAddNodeAction(fd: FormData): Promise<void> {
@@ -341,6 +344,11 @@ export async function dnaUpdateNodeAction(fd: FormData): Promise<void> {
 export async function dnaDeleteNodeAction(fd: FormData): Promise<void> {
   const matterId = text(fd, "matterId") ?? "";
   return act(`/matters/${matterId}/dna`, "Deleted.", () => withSession(async (s) => { await deleteNode(s, text(fd, "nodeId") ?? ""); }));
+}
+export async function dnaSetCategoriesAction(fd: FormData): Promise<void> {
+  return act(dnaPath(fd), "Categories saved.", () => withSession(async (s) => {
+    await setCategories(s, text(fd, "nodeId") ?? "", fd.get("useHuis") === "1" ? null : fd.getAll("categories").map(String));
+  }));
 }
 export async function dnaDecideAction(fd: FormData): Promise<void> {
   const d = text(fd, "decision");
