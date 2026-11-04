@@ -129,7 +129,7 @@ describe("Matter analysis", () => {
     expect((await db.withFirm(x.paraCtx, (s) => sinceLastAnalysis(s, x.matter.id))).evidence).toBe(1);
     // Recorded: who and when (by the database), numbers only; audit without content.
     const row = (await t.admin.query("SELECT run_by, counts FROM huis.matter_analyses WHERE matter_id = $1", [x.matter.id])).rows[0];
-    expect(row).toEqual({ run_by: x.para.id, counts: { evidence: 1, retried: 1 } });
+    expect(row).toEqual({ run_by: x.para.id, counts: { evidence: 1, notes: 0, retried: 1 } });
     const audit = await t.admin.query("SELECT metadata::text AS m FROM huis.audit_events WHERE firm_id = $1 AND action = 'matter.reanalyzed'", [x.firmId]);
     expect(audit.rows.map((r) => JSON.parse(r.m))).toEqual([{ retried: "1" }]);
   });
@@ -141,24 +141,24 @@ describe("Matter analysis", () => {
     expect((await db.withFirm(x.readerCtx, (s) => analyzeMatter(s, x.matter.id))).evidence.total).toBe(0);
     await expect(db.withFirm(x.readerCtx, (s) => reanalyzeMatter(s, x.matter.id))).rejects.toThrow(/permission/i);
     await expect(db.withFirm(x.readerCtx, (s) => s.client.query("SELECT huis.brain_retry_failed($1)", [x.matter.id]))).rejects.toThrow(/not permitted|permission/);
-    await expect(db.withFirm(x.readerCtx, (s) => s.client.query(
-      "INSERT INTO huis.matter_analyses (firm_id, matter_id, run_by) VALUES ($1, $2, $3)", [x.firmId, x.matter.id, x.reader.id]))).rejects.toThrow();
+    await expect(db.withFirm(x.readerCtx, (s) => s.client.query("SELECT huis.reanalyze_matter($1)", [x.matter.id]))).rejects.toThrow(/not permitted|permission/);
     await expect(db.withFirm(x.portalCtx, (s) => analyzeMatter(s, x.matter.id))).rejects.toThrow(/permission/i);
     expect((await db.withFirm(x.portalCtx, (s) => s.client.query("SELECT 1 FROM huis.matter_analyses"))).rowCount).toBe(0);
     await expect(db.withFirm(x.paraCtx, (s) => analyzeMatter(s, x.walled.id))).rejects.toThrow(/not found/i);
     await expect(db.withFirm(x.paraCtx, (s) => s.client.query("SELECT huis.brain_retry_failed($1)", [x.walled.id]))).rejects.toThrow(/not permitted|permission/);
     const other = await newFirm(db, "Other Owner");
     await expect(db.withFirm(other.owner, (s) => analyzeMatter(s, x.matter.id))).rejects.toThrow(/not found/i);
-    // Who ran it can't be faked; only numbers are recorded; records can't be changed or removed.
-    await db.withFirm(x.paraCtx, (s) => s.client.query(
-      "INSERT INTO huis.matter_analyses (firm_id, matter_id, run_by, run_at, counts) VALUES ($1, $2, $3, '2001-01-01', '{\"evidence\": 3}')",
-      [x.firmId, x.matter.id, x.ownerUserId]));
-    const row = (await t.admin.query("SELECT run_by, run_at FROM huis.matter_analyses WHERE matter_id = $1", [x.matter.id])).rows[0];
-    expect(row.run_by).toBe(x.para.id);
-    expect(new Date(row.run_at).getUTCFullYear()).toBeGreaterThan(2001);
+    // Records are written only by Reanalyze itself: the app can't write one, and the database checks its counts.
     await expect(db.withFirm(x.paraCtx, (s) => s.client.query(
-      "INSERT INTO huis.matter_analyses (firm_id, matter_id, run_by, counts) VALUES ($1, $2, $3, '{\"note\": \"Pat admitted it\"}')",
-      [x.firmId, x.matter.id, x.para.id]))).rejects.toThrow(/numbers only/);
+      "INSERT INTO huis.matter_analyses (firm_id, matter_id, run_by, run_at, counts) VALUES ($1, $2, $3, '2001-01-01', '{\"evidence\": 3}')",
+      [x.firmId, x.matter.id, x.ownerUserId]))).rejects.toThrow(/permission/);
+    await db.withFirm(x.paraCtx, (s) => reanalyzeMatter(s, x.matter.id));
+    const row = (await t.admin.query("SELECT run_by, run_at, counts FROM huis.matter_analyses WHERE matter_id = $1", [x.matter.id])).rows[0];
+    expect(row.run_by).toBe(x.para.id);
+    expect(row.counts).toEqual({ evidence: 0, notes: 0, retried: 0 });
+    await expect(t.admin.query(
+      "INSERT INTO huis.matter_analyses (firm_id, matter_id, run_by, counts) VALUES ($1, $2, $3, '{\"Pat admitted it\": 1}')",
+      [x.firmId, x.matter.id, x.para.id])).rejects.toThrow(/numbers only/);
     await expect(db.withFirm(x.owner, (s) => s.client.query("UPDATE huis.matter_analyses SET counts = '{}'"))).rejects.toThrow(/permission/);
     await expect(db.withFirm(x.owner, (s) => s.client.query("DELETE FROM huis.matter_analyses"))).rejects.toThrow(/permission/);
   });
