@@ -10,6 +10,7 @@ import { listEvidence } from "../../../../src/services/evidence";
 import Link from "next/link";
 import EvidenceUploader from "./uploader";
 import { canExportMatter } from "../../../../src/services/matterExport";
+import { sinceLastAnalysis } from "../../../../src/services/analysis";
 import { EvidenceStatus, formatBytes } from "../../../../lib/ui";
 import { can, INTERNAL_ROLES, type Role } from "../../../../src/security/permissions";
 
@@ -50,6 +51,7 @@ export default async function MatterOverview({ params, searchParams }: {
       : undefined;
     return {
       matter, folders, internal, canManage, canEdit, canExport: await canExportMatter(s, id),
+      sinceLast: internal ? await sinceLastAnalysis(s, id) : null,
       members: members.rows, contacts: linked?.rows ?? [],
       leadName: lead?.full_name ?? "—", clientName: client?.display_name,
       people: canManage ? (await listUsers(s)).filter((u) => u.status === "active") : [],
@@ -76,6 +78,13 @@ export default async function MatterOverview({ params, searchParams }: {
           <Link className="button" href={`/matters/${m.id}/timeline`}>Timeline</Link>
           <Link className="button" href={`/matters/${m.id}/contradictions`}>Contradictions</Link>
           <Link className="button" href={`/matters/${m.id}/workspace`}>AI Workspace</Link>
+          <Link className="button" href={`/matters/${m.id}/analysis`}>Analysis</Link>
+        </p>
+      ) : null}
+      {data.sinceLast && data.sinceLast.lastRun && data.sinceLast.evidence ? (
+        <p className="notice">
+          🔄 {data.sinceLast.evidence} new {data.sinceLast.evidence === 1 ? "evidence item has" : "evidence items have"} been added since the
+          last complete analysis. <Link href={`/matters/${m.id}/analysis`}>Review and reanalyze</Link>
         </p>
       ) : null}
       <FlashBanner flash={flash} />

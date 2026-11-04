@@ -111,6 +111,11 @@ Specialists behind the one question box in the AI Workspace. Huis sends each que
 
 Each answer says which agent answered and why. Agents' answers are worked out fresh, from what you can open, every time you look, so they stay current with the evidence.
 
+### What does "Reanalyze Matter" do?
+Huis analyzes every item as it arrives: it scans it, reads it, adds it to the Matter Brain, and suggests dates and people. The **Analysis** page shows what's in the Matter and what needs attention, such as suggestions to review, contradictions to decide, or claim elements with no supporting fact yet. Every number links to the items behind it.
+
+It is not a "case strength" score. **Reanalyze Matter** tries again on anything Huis couldn't read. It also resets the "new items since the last analysis" count shown on the Matter page.
+
 ### What is the Prompt Library?
 Saved questions to start from. Your own prompts are private. **Firm prompts** are approved templates that your firm's administrators manage and everyone at the firm can use. Huis's built-in prompts are general starting points, not legal advice.
 

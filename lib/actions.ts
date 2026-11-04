@@ -17,6 +17,7 @@ import { addNote, askMatter, deleteAnswer, deleteNote, setAiProviderSetting, upd
 import { requestCopy } from "../src/services/workingCopies";
 import { confirmContradiction, reconsiderContradiction, rejectContradiction } from "../src/services/contradictions";
 import { askAgent } from "../src/services/agents";
+import { reanalyzeMatter } from "../src/services/analysis";
 import {
   createConversation, createPrompt, deleteConversation, deletePrompt, updateConversation, updatePrompt,
 } from "../src/services/workspace";
@@ -464,4 +465,16 @@ export async function updatePromptAction(fd: FormData): Promise<void> {
 }
 export async function deletePromptAction(fd: FormData): Promise<void> {
   return act("/prompts", "Prompt deleted.", () => withSession(async (s) => { await deletePrompt(s, text(fd, "promptId") ?? ""); }));
+}
+
+// ---------------------------------------------------------------------------
+// Matter analysis
+// ---------------------------------------------------------------------------
+export async function reanalyzeAction(fd: FormData): Promise<void> {
+  const matterId = text(fd, "matterId") ?? "";
+  const back = UUID_RE.test(matterId) ? `/matters/${matterId}/analysis` : "/matters";
+  return act(back, "Reanalyzed.", async () => {
+    const r = await withSession((s) => reanalyzeMatter(s, matterId));
+    return { message: r.retried ? `Reanalyzed. Huis is trying again to read ${r.retried} ${r.retried === 1 ? "item" : "items"} it couldn't read before.` : "Reanalyzed. A new analysis period starts now." };
+  });
 }

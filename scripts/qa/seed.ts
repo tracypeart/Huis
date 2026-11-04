@@ -13,6 +13,7 @@ import { MailWorker } from "../../src/mail/worker";
 import { addNote, askMatter } from "../../src/services/brain";
 import { askInConversation, createConversation, createPrompt, updateConversation } from "../../src/services/workspace";
 import { askAgent } from "../../src/services/agents";
+import { reanalyzeMatter } from "../../src/services/analysis";
 import { createClient } from "../../src/services/clients";
 import { createContact } from "../../src/services/contacts";
 import { addClaimFromTemplate, addFactFromPassage, addNode, claimView, decideNode, findEvidenceFor, linkNodes, listNodes } from "../../src/services/dna";
@@ -150,6 +151,11 @@ async function main() {
     await updateConversation(s, c, { title: "Notice of leave", category: "strategy", shared: true });
   });
   await db.withFirm(f.owner, (s) => createPrompt(s, { scope: "firm", title: "Firm: comparators", body: "Who else was in a similar position, and how were they treated?", category: "strategy" }));
+  // Matter analysis: reanalyzed once, then one more item arrives ("new since the last complete analysis").
+  await db.withFirm(avery, (s) => reanalyzeMatter(s, x.matter.id));
+  await up(avery, x.matter.id, "hr-followup.txt", Buffer.from("HR follow-up on April 20, 2026: the leave paperwork was received."));
+  await processor.drain();
+  while (await brain.indexOnce()) { /* index */ }
   await pool.end();
 
   const secret = randomBytes(32).toString("base64");
