@@ -18,6 +18,7 @@ import { requestCopy } from "../src/services/workingCopies";
 import { confirmContradiction, reconsiderContradiction, rejectContradiction } from "../src/services/contradictions";
 import { askAgent } from "../src/services/agents";
 import { reanalyzeMatter } from "../src/services/analysis";
+import { addAuthority, citeAuthority, deleteAuthority, uncite, updateAuthority, verifyAuthority } from "../src/services/authorities";
 import {
   createConversation, createPrompt, deleteConversation, deletePrompt, updateConversation, updatePrompt,
 } from "../src/services/workspace";
@@ -477,4 +478,36 @@ export async function reanalyzeAction(fd: FormData): Promise<void> {
     const r = await withSession((s) => reanalyzeMatter(s, matterId));
     return { message: r.retried ? `Reanalyzed. Huis is trying again to read ${r.retried} ${r.retried === 1 ? "item" : "items"} it couldn't read before.` : "Reanalyzed. A new analysis period starts now." };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Legal authorities and the claims matrix
+// ---------------------------------------------------------------------------
+const authorityFields = (fd: FormData) => ({
+  kind: fd.get("kind"), citation: fd.get("citation"), title: fd.get("title") ?? "", court: fd.get("court") ?? "",
+  year: text(fd, "year") ?? null, jurisdiction: fd.get("jurisdiction") ?? "", url: fd.get("url"), note: fd.get("note") ?? "",
+});
+export async function addAuthorityAction(fd: FormData): Promise<void> {
+  return act("/authorities", "Added. It's unverified until an attorney checks it against its record.", () => withSession(async (s) => { await addAuthority(s, authorityFields(fd)); }));
+}
+export async function updateAuthorityAction(fd: FormData): Promise<void> {
+  return act("/authorities", "Saved.", () => withSession(async (s) => { await updateAuthority(s, text(fd, "authorityId") ?? "", authorityFields(fd)); }));
+}
+export async function verifyAuthorityAction(fd: FormData): Promise<void> {
+  const yes = fd.get("verified") === "1";
+  return act("/authorities", yes ? "Marked verified." : "Verification withdrawn.", () => withSession(async (s) => { await verifyAuthority(s, text(fd, "authorityId") ?? "", yes); }));
+}
+export async function deleteAuthorityAction(fd: FormData): Promise<void> {
+  return act("/authorities", "Removed from the library.", () => withSession(async (s) => { await deleteAuthority(s, text(fd, "authorityId") ?? ""); }));
+}
+const claimsPath = (matterId: string) => (UUID_RE.test(matterId) ? `/matters/${matterId}/claims` : "/matters");
+export async function citeAuthorityAction(fd: FormData): Promise<void> {
+  const matterId = text(fd, "matterId") ?? "";
+  return act(claimsPath(matterId), "Authority cited.", () => withSession(async (s) => {
+    await citeAuthority(s, text(fd, "nodeId") ?? "", { authorityId: text(fd, "authorityId"), stance: text(fd, "stance"), proposition: fd.get("proposition"), pinpoint: fd.get("pinpoint") ?? "" });
+  }));
+}
+export async function unciteAction(fd: FormData): Promise<void> {
+  const matterId = text(fd, "matterId") ?? "";
+  return act(claimsPath(matterId), "Citation removed.", () => withSession(async (s) => { await uncite(s, text(fd, "linkId") ?? ""); }));
 }

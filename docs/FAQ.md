@@ -111,6 +111,11 @@ Specialists behind the one question box in the AI Workspace. Huis sends each que
 
 Each answer says which agent answered and why. Agents' answers are worked out fresh, from what you can open, every time you look, so they stay current with the evidence.
 
+### Does Huis find case law for us?
+Not by itself, and never from memory. Your firm keeps a **Legal Authorities** library of cases, statutes, regulations and rules, each linked to its real record. An authority stays marked *unverified* until an attorney checks it.
+
+In each Matter's **Claims matrix**, you cite authorities for a claim's elements, with the proposition each stands for. Huis shows the gaps: elements with no supporting fact, no authority, or only unverified authority. Searching outside sources such as CourtListener comes once licensing agreements are in place.
+
 ### What does "Reanalyze Matter" do?
 Huis analyzes every item as it arrives: it scans it, reads it, adds it to the Matter Brain, and suggests dates and people. The **Analysis** page shows what's in the Matter and what needs attention, such as suggestions to review, contradictions to decide, or claim elements with no supporting fact yet. Every number links to the items behind it.
 

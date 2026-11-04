@@ -14,6 +14,7 @@ import { addNote, askMatter } from "../../src/services/brain";
 import { askInConversation, createConversation, createPrompt, updateConversation } from "../../src/services/workspace";
 import { askAgent } from "../../src/services/agents";
 import { reanalyzeMatter } from "../../src/services/analysis";
+import { addAuthority, citeAuthority, verifyAuthority } from "../../src/services/authorities";
 import { createClient } from "../../src/services/clients";
 import { createContact } from "../../src/services/contacts";
 import { addClaimFromTemplate, addFactFromPassage, addNode, claimView, decideNode, findEvidenceFor, linkNodes, listNodes } from "../../src/services/dna";
@@ -151,6 +152,13 @@ async function main() {
     await updateConversation(s, c, { title: "Notice of leave", category: "strategy", shared: true });
   });
   await db.withFirm(f.owner, (s) => createPrompt(s, { scope: "firm", title: "Firm: comparators", body: "Who else was in a similar position, and how were they treated?", category: "strategy" }));
+  // Legal authorities: one verified statute cited for the claim's first element, one unverified case.
+  await db.withFirm(avery, async (s) => {
+    const statute = await addAuthority(s, { kind: "statute", citation: "29 U.S.C. § 2615(a)(2)", url: "https://www.law.cornell.edu/uscode/text/29/2615" });
+    await addAuthority(s, { kind: "case", citation: "Metzler v. Fed. Home Loan Bank of Topeka, 464 F.3d 1164 (10th Cir. 2006)", url: "https://www.courtlistener.com/?q=Metzler" });
+    await verifyAuthority(s, statute, true);
+    await citeAuthority(s, el.id, { authorityId: statute, stance: "supports", proposition: "Taking FMLA leave is protected activity.", pinpoint: "(a)(2)" });
+  });
   // Matter analysis: reanalyzed once, then one more item arrives ("new since the last complete analysis").
   await db.withFirm(avery, (s) => reanalyzeMatter(s, x.matter.id));
   await up(avery, x.matter.id, "hr-followup.txt", Buffer.from("HR follow-up on April 20, 2026: the leave paperwork was received."));
