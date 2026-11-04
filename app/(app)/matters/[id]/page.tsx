@@ -74,6 +74,7 @@ export default async function MatterOverview({ params, searchParams }: {
           <Link className="button" href={`/matters/${m.id}/brain`}>Matter Brain — ask this Matter</Link>
           <Link className="button" href={`/matters/${m.id}/dna`}>Case DNA™</Link>
           <Link className="button" href={`/matters/${m.id}/timeline`}>Timeline</Link>
+          <Link className="button" href={`/matters/${m.id}/contradictions`}>Contradictions</Link>
         </p>
       ) : null}
       <FlashBanner flash={flash} />

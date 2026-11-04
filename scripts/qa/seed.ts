@@ -133,6 +133,11 @@ async function main() {
     const client = (await listNodes(s, x.matter.id)).find((n) => n.kind === "person" && n.status === "confirmed");
     if (client) await linkNodes(s, meeting, client.id, "involves");
   });
+  // Contradictions: a deposition statement against the earlier filed email and documents.
+  await up(avery, x.matter.id, "deposition-cindy-manager.txt", Buffer.from(
+    "Deposition of Cindy Manager, taken June 3, 2026.\n\nQ. When did you learn about the surgery?\nA. I didn't know about her surgery until May. Nobody told me about any FMLA leave request.\n"));
+  await processor.drain();
+  while (await brain.indexOnce()) { /* index */ }
   await pool.end();
 
   const secret = randomBytes(32).toString("base64");

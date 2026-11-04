@@ -184,6 +184,32 @@ The reviewer wrote 23 attack tests and confirmed 8 problems. **All fixed**, with
 - If an original email is later found infected, its byte-identical duplicate (itself clean) appears on the timeline. The evidence list already shows it, so nothing new is revealed.
 - On extremely large Matters, the 50,000-row limits on citations and links could list an item as having no source. This is noted for Phase 5 part 2.
 
+## Twelfth review — Phase 5 part 2 (contradiction engine)
+
+**Scope:** the contradiction engine: the statement rules, comparison with the timeline, confidence, confirming (the Case DNA items and citations it writes), rejecting and reconsidering, the decisions table and its database rules, and the page.
+**Result:** no access-control break. Clients, read-only staff, people outside a wall and other firms were kept out, in the service and in direct SQL. Keys don't travel between Matters, and nobody can record a decision as someone else. The reviewer confirmed 9 problems, mostly about Huis citing or weighing evidence wrongly, which matters as much as access for a tool attorneys rely on. **All fixed.** Regression tests are in `test/security-review-12.test.ts` (15 tests) and `test/contradictions.test.ts`. Each fails without its fix.
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| R12-1 | High (availability) | One long document of short denials ("I don't recall…"), or a long real deposition, made the page and every decision take 24–40 seconds for everyone on the Matter | At most 500 statements per reading. Each item's words are worked out once and looked up by topic, instead of re-reading every email for every statement. A decision works out only its own statement |
+| R12-2 | Medium | Indented, line-numbered transcripts were cited a few characters off, because the Matter Brain's passages (Phase 4) kept their untrimmed start | Passage positions are now exactly where their text starts and ends. Confirming checks that the database's quote is the statement's exact words, or saves nothing |
+| R12-3 | Medium | Emoji or other characters outside the basic range before a statement shifted its citation, because JavaScript and the database count positions differently. Phase 4's "add as a fact" had the same flaw | Positions are converted to characters before citing (`src/services/cite.ts`), for both |
+| R12-4 | Medium | An email not yet in the Matter Brain became an **uncited** fact, which then stayed in Case DNA after the email was found infected | Every email fact is cited: to its passage about the subject, or else to its subject line. An item that can't be cited is left out, and nothing is saved if no item can be cited |
+| R12-5 | Medium | Confirming acted on whatever the flag had become since the attorney looked, confirming Huis's suggestions they never saw | The page sends a fingerprint of what was shown. A changed flag is refused with "please review it again", and nothing is saved |
+| R12-6 | Low | A hand-made "confirmed" decision (direct SQL) could hide a flag forever | The database accepts a confirmation only for a cited statement with evidence linked "contradicts" to it. A confirmation whose statement was later deleted can be decided again |
+| R12-7 | Low-Medium | The claimed date came from the first date-like phrase ("the email sent on March 3 … until May 4" read as March 3) | "until / before / prior to" always wins; "in / on" counts only after "first learned / heard …" |
+| R12-8 | Low-Medium | Items with no source each counted as a separate source (three unsourced notes gave High confidence) | Only cited evidence counts toward confidence, and the explanation says how many items have no source yet |
+| R12-9 | Low | An item citing both the statement's own document and another source counted the statement's document as corroboration | The statement's own document (and its versions) never counts |
+
+Also fixed while reviewing: overlapping passages could produce a second, cut-short copy of a statement, so within a document a statement overlapping a longer one is now the same statement.
+
+**Accepted, not changed:**
+- A rejection is tied to the statement, so stronger evidence arriving later doesn't bring a rejected flag back; **Reconsider** does.
+- Keys include the statement's position, so re-reading a document (for example after the R12-2 fix) can bring back a flag that was rejected before.
+- "until May" takes the latest year written in the same document. The explanation shows the year it used, so a wrong guess is visible.
+
+**Found in passing (Phase 4, tracked):** if a queued Matter Brain source stops being clean before it is indexed, one indexing pass can stop early and leave later sources waiting until the next pass. Nothing is lost or exposed; indexing is only delayed.
+
 ## Still open (tracked, not code defects)
 1. **MFA enforcement** — Microsoft sign-in doesn't yet require proof of MFA. Plan: require the firm's Microsoft MFA (Conditional Access) or a Huis passkey. Part of the end-of-build Azure/hosting step.
 2. **Administrator-level tampering** — someone with full database superuser access could switch off the protective rules and rewrite history consistently. The hash chains make ordinary tampering detectable, but defeating a superuser needs the chain's latest fingerprint stored outside the database (e.g. a daily signed export). Planned with production hosting.

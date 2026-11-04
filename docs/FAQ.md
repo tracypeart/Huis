@@ -88,6 +88,13 @@ Huis suggests categories using fixed word lists, not AI. For example, "surgery" 
 
 **Download timeline** gives you a spreadsheet of what you're looking at, with its sources, after you confirm you'll store it securely. Read-only staff can view the timeline but not download it. Like Case DNA, it is attorney work product that clients and other outside users never see.
 
+### Can Huis find contradictions?
+It flags **potential** contradictions for you to decide. Huis looks for statements where someone says they didn't know, weren't told or first learned of something later. For example: *"I didn't know about her surgery until May."* It then shows the Matter's earlier evidence on the same subject from other sources, such as an April email requesting leave for the surgery, or an April 12 memo.
+
+Each flag gives its reasons and a confidence based on how many separate sources conflict: three or more is high, two is medium, one is low. Drafts and versions of the same document count once. It uses fixed rules, not AI, and can miss other phrasings, so treat it as a lead, not a finding.
+
+If you confirm one, the statement and the contradicting evidence are recorded in Case DNA with their sources. If you reject one, it isn't suggested again unless you reconsider. Like the rest of the case analysis, it is work product clients never see.
+
 ### Who owns our data?
 Your firm does. A Matter's owner or a firm administrator can export the whole Matter at any time from its page with **Download export**. The ZIP contains:
 - every original exactly as received

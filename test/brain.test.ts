@@ -96,7 +96,7 @@ describe("splitting and meaning fingerprints", () => {
     expect(chunks.length).toBeGreaterThan(1);
     for (const c of chunks) {
       expect(c.content.length).toBeLessThanOrEqual(4000);
-      expect(text.slice(c.start, c.end).trim()).toBe(c.content);
+      expect(text.slice(c.start, c.end)).toBe(c.content);
     }
     expect(chunks.at(-1)!.end).toBe(text.length);
     expect(chunkText("")).toEqual([]);
