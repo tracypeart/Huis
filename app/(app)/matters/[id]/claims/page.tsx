@@ -81,6 +81,7 @@ export default async function ClaimsMatrixPage({ params, searchParams }: { param
         Templates and gaps are a starting point, not legal advice.<br /><span className="badge privileged">{WORK_PRODUCT_LABEL}</span>
       </p>
       <FlashBanner flash={flash} />
+      {data.claims.truncated ? <p className="notice">This Matter has a great many claims and defenses: the first 200 are shown.</p> : null}
       {data.claims.length === 0 ? (
         <div className="card"><p className="notice">No claims yet. <Link href={`/matters/${m.id}/dna`}>Add one in Case DNA</Link> to see its elements here.</p></div>
       ) : data.claims.map((c) => (

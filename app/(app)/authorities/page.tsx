@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import { addAuthorityAction, deleteAuthorityAction, updateAuthorityAction, verifyAuthorityAction } from "../../../lib/actions";
 import { getFlash, withSession } from "../../../lib/server";
 import { FlashBanner } from "../../../lib/ui";
-import { AUTHORITY_KINDS, KIND_LABELS, listAuthorities, type Authority } from "../../../src/services/authorities";
+import { AUTHORITY_KINDS, KIND_LABELS, listAuthorities, VERIFIER_ROLES, type Authority } from "../../../src/services/authorities";
 import { INTERNAL_ROLES } from "../../../src/security/permissions";
 
 export const dynamic = "force-dynamic";
@@ -23,7 +23,7 @@ function Fields({ a }: { a?: Authority }) {
         <label style={{ flex: 1 }}>Jurisdiction<input name="jurisdiction" maxLength={100} defaultValue={a?.jurisdiction} placeholder="e.g. Utah" /></label>
       </div>
       <label>Link to the authority itself (https)<input name="url" type="url" maxLength={2000} required defaultValue={a?.url} placeholder="https://www.law.cornell.edu/…" /></label>
-      <label>Note<textarea name="note" rows={2} maxLength={4000} defaultValue={a?.note} /></label>
+      <label>Note (seen by everyone at the firm: no client or Matter details)<textarea name="note" rows={2} maxLength={4000} defaultValue={a?.note} /></label>
     </>
   );
 }
@@ -34,7 +34,7 @@ export default async function AuthoritiesPage({ searchParams }: { searchParams: 
   const q = (sp.q ?? "").slice(0, 200);
   const data = await withSession(async (s) => {
     if (!INTERNAL_ROLES.has(s.actor.role)) return null;
-    return { list: await listAuthorities(s, q), canWrite: s.actor.role !== "read_only" };
+    return { list: await listAuthorities(s, q), canWrite: s.actor.role !== "read_only", canVerify: VERIFIER_ROLES.has(s.actor.role) };
   });
   if (!data) notFound();
 
@@ -66,10 +66,16 @@ export default async function AuthoritiesPage({ searchParams }: { searchParams: 
             {a.note ? <p className="notice">{a.note}</p> : null}
             {data.canWrite ? (
               <>
-                <form action={verifyAuthorityAction} style={{ marginBottom: 8 }}>
-                  <input type="hidden" name="authorityId" value={a.id} /><input type="hidden" name="verified" value={a.verified ? "0" : "1"} />
-                  <button type="submit" className={a.verified ? "secondary" : ""}>{a.verified ? "Withdraw verification" : "I checked it against its record: mark verified"}</button>
-                </form>
+                {data.canVerify ? (
+                  <form action={verifyAuthorityAction} style={{ marginBottom: 8 }}>
+                    <input type="hidden" name="authorityId" value={a.id} /><input type="hidden" name="verified" value={a.verified ? "0" : "1"} />
+                    <input type="hidden" name="checkedKind" value={a.kind} /><input type="hidden" name="checkedCitation" value={a.citation} />
+                    <input type="hidden" name="checkedUrl" value={a.url} /><input type="hidden" name="checkedTitle" value={a.title} />
+                    <input type="hidden" name="checkedCourt" value={a.court} /><input type="hidden" name="checkedYear" value={a.year ?? ""} />
+                    <input type="hidden" name="checkedJurisdiction" value={a.jurisdiction} />
+                    <button type="submit" className={a.verified ? "secondary" : ""}>{a.verified ? "Withdraw verification" : "I checked it against its record: mark verified"}</button>
+                  </form>
+                ) : !a.verified ? <p className="notice">An attorney verifies authorities.</p> : null}
                 <form action={updateAuthorityAction}>
                   <input type="hidden" name="authorityId" value={a.id} /><Fields a={a} />
                   <div style={{ marginTop: 8 }}><button type="submit" className="secondary">Save changes</button></div>

@@ -31,12 +31,20 @@ CREATE TABLE huis.legal_authorities (
   FOREIGN KEY (firm_id, created_by) REFERENCES huis.users(firm_id, id),
   FOREIGN KEY (firm_id, verified_by) REFERENCES huis.users(firm_id, id)
 );
-CREATE UNIQUE INDEX legal_authorities_citation ON huis.legal_authorities (firm_id, kind, lower(btrim(citation)));
+-- The same citation can't be added twice, however its spacing or characters are written (security review 16, F6).
+ALTER TABLE huis.legal_authorities ADD COLUMN citation_key text
+  GENERATED ALWAYS AS (lower(btrim(regexp_replace(normalize(citation, NFKC), '[[:space:]]+', ' ', 'g')))) STORED;
+CREATE UNIQUE INDEX legal_authorities_citation ON huis.legal_authorities (firm_id, kind, citation_key);
+
+-- Whether an authority is cited in any Matter, including ones the caller can't see (one yes/no, nothing else).
+-- Defined after authority_links below; used by the guard so a walled Matter's citation can't be rewritten.
+
 
 -- Who added it and who verified it come from the database. Verifying records the person and time;
 -- changing what the authority *is* (citation or link) clears the verification.
 CREATE FUNCTION huis.legal_authority_guard() RETURNS trigger
 LANGUAGE plpgsql SET search_path = huis, pg_temp AS $$
+DECLARE v_identity_changed boolean;
 BEGIN
   IF TG_OP = 'INSERT' THEN
     NEW.created_by := huis.current_user_id();
@@ -48,10 +56,22 @@ BEGIN
   IF NEW.firm_id IS DISTINCT FROM OLD.firm_id OR NEW.created_by IS DISTINCT FROM OLD.created_by OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
     RAISE EXCEPTION 'an authority keeps who added it';
   END IF;
-  IF NEW.citation IS DISTINCT FROM OLD.citation OR NEW.url IS DISTINCT FROM OLD.url OR NEW.kind IS DISTINCT FROM OLD.kind THEN
+  -- What the authority *is*: everything but the note (security review 16, F2).
+  v_identity_changed := NEW.kind IS DISTINCT FROM OLD.kind OR NEW.citation IS DISTINCT FROM OLD.citation OR NEW.url IS DISTINCT FROM OLD.url
+    OR NEW.title IS DISTINCT FROM OLD.title OR NEW.court IS DISTINCT FROM OLD.court OR NEW.year IS DISTINCT FROM OLD.year
+    OR NEW.jurisdiction IS DISTINCT FROM OLD.jurisdiction;
+  IF v_identity_changed THEN
+    -- A cited authority can't become a different one under the Matters that cite it, seen or not (F3).
+    IF huis.authority_is_cited(OLD.id) THEN
+      RAISE EXCEPTION 'This authority is cited in a Matter: add the corrected one as a new authority instead.';
+    END IF;
     NEW.verified_by := NULL;
     NEW.verified_at := NULL;
   ELSIF NEW.verified_at IS NOT NULL AND OLD.verified_at IS NULL THEN
+    -- Only attorneys verify (security review 16, F1).
+    IF huis.app_role()::text NOT IN ('attorney', 'firm_owner', 'managing_partner') THEN
+      RAISE EXCEPTION 'Only an attorney can verify an authority.' USING ERRCODE = '42501';
+    END IF;
     NEW.verified_by := huis.current_user_id();
     NEW.verified_at := clock_timestamp();
   ELSIF NEW.verified_by IS DISTINCT FROM OLD.verified_by OR NEW.verified_at IS DISTINCT FROM OLD.verified_at THEN
@@ -100,6 +120,15 @@ CREATE TABLE huis.authority_links (
 );
 CREATE INDEX authority_links_matter ON huis.authority_links (firm_id, matter_id);
 CREATE INDEX authority_links_authority ON huis.authority_links (authority_id);
+
+CREATE FUNCTION huis.authority_is_cited(p_authority_id uuid) RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = huis, pg_temp AS $$
+  SELECT EXISTS (SELECT 1 FROM huis.authority_links l WHERE l.authority_id = p_authority_id AND l.firm_id = huis.current_firm_id())
+$$;
+ALTER FUNCTION huis.authority_is_cited(uuid) OWNER TO huis_security;
+REVOKE ALL ON FUNCTION huis.authority_is_cited(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION huis.authority_is_cited(uuid) TO huis_app;
+GRANT SELECT ON huis.authority_links TO huis_security;
 
 -- Only a confirmed claim, defense or element of the same Matter; who and when from the database.
 CREATE FUNCTION huis.authority_link_check() RETURNS trigger

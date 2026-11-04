@@ -107,13 +107,16 @@ describe("legal authority library", () => {
     [a] = await db.withFirm(x.paraCtx, (s) => listAuthorities(s));
     expect(a).toMatchObject({ verified: null, official: false });
     // Nobody can record a verification as someone else, or backdate it, or change who added it.
-    await db.withFirm(x.paraCtx, (s) => s.client.query(
-      "UPDATE huis.legal_authorities SET verified_by = $2, verified_at = '2001-01-01' WHERE id = $1", [id, x.ownerUserId]));
+    // Only attorneys verify (in the database too); an attorney's verification is recorded as theirs, now.
+    await expect(db.withFirm(x.paraCtx, (s) => s.client.query(
+      "UPDATE huis.legal_authorities SET verified_by = $2, verified_at = '2001-01-01' WHERE id = $1", [id, x.para.id]))).rejects.toThrow(/permission/i);
+    await db.withFirm(x.owner, (s) => s.client.query(
+      "UPDATE huis.legal_authorities SET verified_by = $2, verified_at = '2001-01-01' WHERE id = $1", [id, x.para.id]));
     const row = (await t.admin.query("SELECT verified_by, verified_at, created_by FROM huis.legal_authorities WHERE id = $1", [id])).rows[0];
-    expect(row.verified_by).toBe(x.para.id);
+    expect(row.verified_by).toBe(x.ownerUserId);
     expect(new Date(row.verified_at).getUTCFullYear()).toBeGreaterThan(2001);
     await expect(db.withFirm(x.paraCtx, (s) => s.client.query("UPDATE huis.legal_authorities SET created_by = $2 WHERE id = $1", [id, x.ownerUserId]))).rejects.toThrow(/keeps who added/);
-    await expect(db.withFirm(x.paraCtx, (s) => s.client.query("UPDATE huis.legal_authorities SET verified_by = $2 WHERE id = $1", [id, x.ownerUserId]))).rejects.toThrow(/who verified/);
+    await expect(db.withFirm(x.owner, (s) => s.client.query("UPDATE huis.legal_authorities SET verified_by = $2 WHERE id = $1", [id, x.para.id]))).rejects.toThrow(/who verified/);
     // Read-only staff can read but not change; clients and other firms see nothing.
     expect((await db.withFirm(x.readerCtx, (s) => listAuthorities(s))).length).toBe(1);
     await expect(db.withFirm(x.readerCtx, (s) => addAuthority(s, STATUTE))).rejects.toThrow(/permission/i);
@@ -126,6 +129,20 @@ describe("legal authority library", () => {
     const audit = await t.admin.query("SELECT metadata::text AS m FROM huis.audit_events WHERE firm_id = $1 AND action LIKE 'authority.%'", [x.firmId]);
     expect(audit.rows.length).toBeGreaterThanOrEqual(3);
     expect(audit.rows.every((r) => !/Metzler|2615|courtlistener/i.test(r.m))).toBe(true);
+  });
+});
+
+describe("legal authority library: checks on input and verification", () => {
+  it("refuses an impossible year rather than dropping it, and a verification of a version that has since changed", async () => {
+    const x = await setup();
+    await expect(db.withFirm(x.paraCtx, (s) => addAuthority(s, { ...STATUTE, year: "20026" }))).rejects.toThrow(/1600 to 2100/);
+    const id = await db.withFirm(x.paraCtx, (s) => addAuthority(s, { ...CASE, year: "" }));
+    const [seen] = await db.withFirm(x.owner, (s) => listAuthorities(s));
+    await db.withFirm(x.paraCtx, (s) => updateAuthority(s, id, { ...CASE, title: "Smith v. Jones" }));
+    await expect(db.withFirm(x.owner, (s) => verifyAuthority(s, id, true, {
+      kind: seen!.kind, citation: seen!.citation, url: seen!.url, title: seen!.title, court: seen!.court, year: seen!.year, jurisdiction: seen!.jurisdiction,
+    }))).rejects.toThrow(/changed since you checked/);
+    expect((await db.withFirm(x.owner, (s) => listAuthorities(s)))[0]!.verified).toBeNull();
   });
 });
 

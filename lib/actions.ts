@@ -495,7 +495,12 @@ export async function updateAuthorityAction(fd: FormData): Promise<void> {
 }
 export async function verifyAuthorityAction(fd: FormData): Promise<void> {
   const yes = fd.get("verified") === "1";
-  return act("/authorities", yes ? "Marked verified." : "Verification withdrawn.", () => withSession(async (s) => { await verifyAuthority(s, text(fd, "authorityId") ?? "", yes); }));
+  // The version the attorney was looking at: the verification lands only if the authority still says this.
+  const checked = { kind: fd.get("checkedKind"), citation: fd.get("checkedCitation"), url: fd.get("checkedUrl"), title: fd.get("checkedTitle") ?? "",
+    court: fd.get("checkedCourt") ?? "", year: text(fd, "checkedYear") ?? null, jurisdiction: fd.get("checkedJurisdiction") ?? "" };
+  return act("/authorities", yes ? "Marked verified." : "Verification withdrawn.", () => withSession(async (s) => {
+    await verifyAuthority(s, text(fd, "authorityId") ?? "", yes, yes ? checked : undefined);
+  }));
 }
 export async function deleteAuthorityAction(fd: FormData): Promise<void> {
   return act("/authorities", "Removed from the library.", () => withSession(async (s) => { await deleteAuthority(s, text(fd, "authorityId") ?? ""); }));

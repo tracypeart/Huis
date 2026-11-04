@@ -275,6 +275,29 @@ Also fixed while reviewing: overlapping passages could produce a second, cut-sho
 - The evidence total includes items found inside others (attachments), while "new since" counts what was added.
 - An element counts as supported by a confirmed fact even when that fact has no source; the Claims matrix flags that gap separately.
 
+## Sixteenth review — Phase 7 part 1 (claims matrix and legal authority library)
+
+**Scope:** the legal authority library and its verification, citing authorities in Matters, the claims matrix, the pages, and the database rules for both tables.
+**Result:** no confidentiality leak. Firm isolation, walls, clients and read-only staff held, in the service and in direct SQL. Links were safe (only https, and no spoofing of the official-source badge through look-alike or trick hosts). The reviewer confirmed 6 problems with verification and the integrity of citations. **All fixed.** Regression tests are in `test/security-review-16.test.ts` (11 tests) and `test/authorities.test.ts`. Each fails without its fix.
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| R16-1 | Medium-High | Staff who aren't attorneys (billing, legal assistants, paralegals) could mark an authority "Verified" | Only attorneys, firm owners and managing partners verify, in the service and the database; others don't see the button |
+| R16-2 | Medium | Changing a verified authority's name, court, year or jurisdiction kept its verification | Any change to what the authority is (everything but its note) clears it |
+| R16-3 | Medium | Someone walled out of a Matter could rewrite an authority that Matter cites (told it was "cited nowhere"), so the walled Matter's proposition would sit under a different case | An authority cited in any Matter, seen or not, can't be changed into a different one; the corrected one is added as a new authority |
+| R16-4 | Medium-Low | A verification landed on whatever the authority said when the button was clicked, even if it had changed since the attorney looked | The page sends what the attorney checked; if the authority changed meanwhile, nothing is verified and they're asked to check again |
+| R16-5 | Low | The audit log recorded verifications that didn't happen (already verified, or nothing to withdraw) | Recorded only when something changes |
+| R16-6 | Low | The same citation could be added twice by varying its spacing or characters | Citations are normalized (character forms, any whitespace) in the service, and compared that way by the database |
+
+**Also changed:**
+- An impossible year is refused rather than silently dropped.
+- The note field says the whole firm sees it.
+- The matrix says when a Matter has more than 200 claims to show.
+
+**Accepted, not changed:**
+- **Contrary authority:** authority cited as cutting against an element is shown, but isn't counted as a gap. An authority cited as "explains" counts as authority cited.
+- **The library is firm-wide by design.** Its note field now warns, and an attempted removal can reveal (one yes/no) that a Matter you can't see cites an authority.
+
 ## Still open (tracked, not code defects)
 1. **MFA enforcement** — Microsoft sign-in doesn't yet require proof of MFA. Plan: require the firm's Microsoft MFA (Conditional Access) or a Huis passkey. Part of the end-of-build Azure/hosting step.
 2. **Administrator-level tampering** — someone with full database superuser access could switch off the protective rules and rewrite history consistently. The hash chains make ordinary tampering detectable, but defeating a superuser needs the chain's latest fingerprint stored outside the database (e.g. a daily signed export). Planned with production hosting.
