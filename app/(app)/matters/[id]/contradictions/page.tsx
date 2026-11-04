@@ -22,7 +22,7 @@ function Decide({ matterId, flag, decisions }: { matterId: string; flag: Potenti
     <div className="row">
       {decisions.map((d) => (
         <form key={d} action={contradictionDecideAction}>
-          <input type="hidden" name="matterId" value={matterId} /><input type="hidden" name="key" value={flag.key} />
+          <input type="hidden" name="matterId" value={matterId} /><input type="hidden" name="key" value={flag.key} /><input type="hidden" name="version" value={flag.version} />
           <input type="hidden" name="decision" value={d} />
           <button type="submit" className={d === "confirm" ? "" : "secondary"}>{labels[d]}</button>
         </form>

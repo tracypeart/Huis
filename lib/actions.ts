@@ -410,7 +410,7 @@ export async function contradictionDecideAction(fd: FormData): Promise<void> {
     reconsider: "It's back on the list to decide.",
   };
   return act(back, messages[decision ?? ""] ?? "Done.", () => withSession(async (s) => {
-    if (decision === "confirm") await confirmContradiction(s, matterId, key);
+    if (decision === "confirm") await confirmContradiction(s, matterId, key, text(fd, "version"));
     else if (decision === "reject") await rejectContradiction(s, matterId, key);
     else if (decision === "reconsider") await reconsiderContradiction(s, matterId, key);
     else throw new UserFacingError("Choose confirm or reject.");

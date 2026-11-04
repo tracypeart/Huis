@@ -1,12 +1,12 @@
 # Phase 5 — Timeline + Evidence Intelligence
 
-**Status:** Part 1 (Master Timeline) built, tested and through independent security review 11 (2 problems confirmed, all fixed). It merges once GitHub's checks pass. Part 2 (contradiction engine) built and tested; awaiting independent security review 12.
+**Status:** Part 1 (Master Timeline) built, tested and through independent security review 11 (2 problems confirmed, all fixed). It merges once GitHub's checks pass. Part 2 (contradiction engine) built, tested and through independent security review 12 (9 problems confirmed, all fixed).
 
 ## Plan
 | Part | What | Status |
 |---|---|---|
 | 5.1 | **Master Timeline**: one chronology per Matter, made from Case DNA's dated events, facts and damages plus every filed email, each linked to its sources. Views by category (court, plaintiff, defendant, medical, financial, employment, communications, discovery, witness, damages) and filters (dates, person, words, confirmed only, source). Huis suggests categories by fixed rules; attorneys choose their own. Chronology download | Review 11 done, fixes in |
-| 5.2 | **Contradiction engine**: Huis flags *potential* contradictions (for example a witness statement "I didn't know about the surgery until May" against earlier dated evidence that mentions it), showing the supporting material and why it was flagged. Attorneys decide whether something is a contradiction; confirmed ones become `contradicts` links in Case DNA | Built, review 12 pending |
+| 5.2 | **Contradiction engine**: Huis flags *potential* contradictions (for example a witness statement "I didn't know about the surgery until May" against earlier dated evidence that mentions it), showing the supporting material and why it was flagged. Attorneys decide whether something is a contradiction; confirmed ones become `contradicts` links in Case DNA | Review 12 done, fixes in |
 
 As in Phase 4, PostgreSQL stays the single source of truth. The timeline isn't a separate copy of anything. It is put together from Case DNA and filed email each time it's read, under the same database rules.
 
@@ -48,17 +48,30 @@ The duplicate-email test was checked to fail without its fix.
 |---|---|
 | Statements | Huis looks through the Matter's passages (documents, transcripts, filed email, notes) for statements denying knowledge or notice, using **fixed rules, not AI**. Examples: "I didn't know…", "she was not aware…", "we never received…", "no one told me…", "I first learned of it on…". Each statement keeps its topic words ("surgery"; "FMLA leave request") and any date it claims ("until May", "before May 1, 2026", "on 5/6/2026"). A month without a year takes the latest year written in the same document; with no year anywhere, Huis doesn't guess and treats the statement as undated. "I don't know." on its own has no topic and isn't flagged |
 | Comparing | Each statement is compared with the Matter's timeline: Case DNA's dated events and facts, and filed email (its subject and text). An item counts when it is dated **before** the claimed date (any date if none is given), mentions the statement's topic (two topic words when the statement has two or more), and comes from **another source**. The statement's own document never counts, and neither do its other versions |
-| Confidence | Fixed rule on how many **separate sources** conflict: three or more is high, two is medium, one is low. Versions and near-duplicates of one document (as Huis already links them) count once, so a draft doesn't corroborate its final. Every flag says why, e.g. *"2 earlier items from 2 different sources mention "surgery", dated before the statement's "until May (2026)"."* |
+| Confidence | Fixed rule on how many **separate sources** conflict: three or more is high, two is medium, one is low. Versions and near-duplicates of one document (as Huis already links them) count once, so a draft doesn't corroborate its final. Items with no source yet, and the statement's own document, don't count. Every flag says why, e.g. *"2 earlier items from 2 different sources mention "surgery", dated before the statement's "until May (2026)"."* |
 | Attorneys decide | Huis only ever calls it a **potential** contradiction. **Confirm**: the statement becomes a confirmed Case DNA fact, cited to where it was said (the quote is taken from the source itself), and each conflicting item is linked to it as *contradicts*. Huis's suggested events among them are confirmed, and a conflicting email becomes a fact cited to its passage that mentions the subject. **Not a contradiction**: it isn't suggested again until someone chooses **Reconsider**. A confirmed decision can't be withdrawn from the app; the Case DNA items it created are edited or removed there as usual |
+| Exact citations | A confirmed statement is cited to its **exact words**: Huis checks the quote the database takes from the source, and saves nothing if it differs (for example, the document changed). Positions are counted the way the database counts characters, so emoji and other symbols can't shift a citation. A conflicting email is cited to its passage about the subject, or else its subject line; an item that can't be cited is left out |
+| Acting on what was reviewed | The page sends a fingerprint of the flag as shown. If new evidence was added or some was removed since, **Confirm** is refused with "please review it again", and nothing is saved |
 | Fresh and safe | Worked out at the moment it's read, as the person reading it, from passages and timeline items they can open. Nothing about a potential contradiction is stored until someone decides. The page never trusts the browser: a decision names a flag by a key, and Huis works out the flag again before acting on it. Evidence later found infected leaves at once, both as a conflicting item and as the statement |
 | Who can use it | Firm staff on the Matter. Read-only staff can look but not decide. Clients and other outside users never see it. Ethical walls apply; another firm gets "not found". In the database, decisions record who made them and when (not changeable by the app), can't point at another Matter's items, and only rejections can be withdrawn |
 | Logs | The audit log records `contradiction.confirmed` (how many items, and the confidence), `contradiction.rejected` and `contradiction.reconsidered`, never the wording |
-| Size | Examines up to 5,000 candidate passages per Matter (and says so when there are more), shows up to 10 conflicting items per flag and 100 flags at a time, strongest first |
+| Size | Examines up to 5,000 candidate passages and 500 statements per Matter (and says so when there are more), shows up to 10 conflicting items per flag and 100 flags at a time, strongest first. A decision works out only its own statement |
 
-**Tests:** `test/contradictions.test.ts`, 8 tests:
+**Security review 12** (independent; see `SECURITY-REVIEW-2026-11.md`) found no access-control break. It confirmed 9 problems, all fixed:
+- the page could be made very slow;
+- citations were off in indented or emoji-containing text;
+- a conflicting email could become an uncited fact;
+- confirming acted on a flag that had changed;
+- a hand-made decision could hide a flag;
+- dates and confidence could be misleading.
+
+Regression tests are in `test/security-review-12.test.ts`. The date rule now prefers "until/before" over "on/in". After the fixes: all 250 tests, the type check, the build and the dependency scan pass, the pre-release check is clean, and a stale confirmation is refused in the browser.
+
+**Tests:** `test/contradictions.test.ts`, 9 tests:
 - the statement rules: denials, topics, claimed dates, no guessed years, non-denials ignored, speed on hostile text;
 - flags with the right items, confidence and reasons (later evidence and the statement's own document excluded);
 - versions of one document counting once (checked to fail without the fix);
+- a confirmation refused once the flag has changed;
 - confirming: a cited statement fact, *contradicts* links, suggestions confirmed, the email cited, audit without wording;
 - rejecting, reconsidering, and made-up or other Matters' keys refused;
 - access: clients, read-only staff, walls, other firms, and direct database writes (decisions as someone else, across Matters, withdrawing confirmed ones);

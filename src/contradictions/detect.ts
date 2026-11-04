@@ -40,10 +40,13 @@ const MONTHS: Record<string, number> = {
 };
 const MONTH = "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?";
 // "until May", "before May 6, 2026", "not until 5/6/2026", "in May 2026" (after "first learned"), "on May 6".
-const BOUND = new RegExp(
-  String.raw`\b(until|till|til|before|prior\s+to|in|on|around|about)\s+(?:early\s+|mid[-\s]|late\s+)?` +
-  String.raw`(?:(${MONTH})\.?(?:\s+(\d{1,2})(?:st|nd|rd|th)?)?(?:,?\s+(\d{4}))?|(\d{1,2})/(\d{1,2})/(\d{4})|(\d{4})-(\d{2})-(\d{2}))\b`,
-  "i");
+const DATE_AFTER = String.raw`\s+(?:early\s+|mid[-\s]|late\s+)?` +
+  String.raw`(?:(${MONTH})\.?(?:\s+(\d{1,2})(?:st|nd|rd|th)?)?(?:,?\s+(\d{4}))?|(\d{1,2})/(\d{1,2})/(\d{4})|(\d{4})-(\d{2})-(\d{2}))\b`;
+// The date a denial is about: "until/before/prior to …" always wins (security review 12, F6);
+// "in/on/around …" counts only after "first learned/heard/found out…", as the date of first knowledge.
+const BOUND_STRONG = new RegExp(String.raw`\b(until|till|til|before|prior\s+to)` + DATE_AFTER, "i");
+const BOUND_FIRST = new RegExp(
+  String.raw`\bfirst\s+(?:learned|learnt|heard|found\s+out|became\s+aware|knew|was\s+told|was\s+informed)\b[^.!?]{0,200}?\b(in|on|around|about)` + DATE_AFTER, "i");
 const YEAR = /\b(19\d{2}|20\d{2}|2100)\b/g;
 
 /** What a denial is made of; never a topic. */
@@ -74,7 +77,10 @@ export function latestYear(text: string): number | null {
 
 /** The "not until" date in a statement. A month alone means its first day; a missing year comes from the document. */
 export function claimedBefore(sentence: string, yearHint: number | null): { date: string; text: string } | null {
-  const m = BOUND.exec(sentence.slice(0, 600));
+  const text = sentence.slice(0, 600);
+  const strong = BOUND_STRONG.exec(text);
+  const first = strong ? null : BOUND_FIRST.exec(text);
+  const m = strong ?? first;
   if (!m) return null;
   let date: string | null = null;
   if (m[2]) {
@@ -84,7 +90,7 @@ export function claimedBefore(sentence: string, yearHint: number | null): { date
   } else if (m[7]) date = iso(Number(m[7]), Number(m[5]), Number(m[6]));
   else if (m[8]) date = iso(Number(m[8]), Number(m[9]), Number(m[10]));
   if (!date) return null;
-  const said = m[0].replace(/\s+/g, " ").trim();
+  const said = (first ? m[0].slice(m[0].toLowerCase().lastIndexOf(` ${m[1]!.toLowerCase()} `) + 1) : m[0]).replace(/\s+/g, " ").trim();
   return { date, text: m[4] || m[7] || m[8] || !m[2] ? said : `${said} (${date.slice(0, 4)})` };
 }
 

@@ -168,7 +168,7 @@ describe("contradiction engine", () => {
   it("confirming records the statement in Case DNA, cited, with the evidence linked as contradicting it", async () => {
     const x = await matterWithEvidence();
     const f = surgeryFlag(await db.withFirm(x.paraCtx, (s) => getContradictions(s, x.matter.id)));
-    const statementId = await db.withFirm(x.paraCtx, (s) => confirmContradiction(s, x.matter.id, f.key));
+    const statementId = await db.withFirm(x.paraCtx, (s) => confirmContradiction(s, x.matter.id, f.key, f.version));
     const node = await db.withFirm(x.paraCtx, (s) => getNode(s, statementId));
     expect(node.node).toMatchObject({ kind: "fact", status: "confirmed", label: "Statement: “I didn't know about her surgery until May.”" });
     // The quote is taken from the deposition itself.
@@ -186,10 +186,25 @@ describe("contradiction engine", () => {
     const after = await db.withFirm(x.paraCtx, (s) => getContradictions(s, x.matter.id));
     expect(after.potential.some((p) => p.key === f.key)).toBe(false);
     expect(after.confirmed).toEqual([expect.objectContaining({ key: f.key, statementNodeId: statementId })]);
-    await expect(db.withFirm(x.paraCtx, (s) => confirmContradiction(s, x.matter.id, f.key))).rejects.toThrow(/not found/i);
+    await expect(db.withFirm(x.paraCtx, (s) => confirmContradiction(s, x.matter.id, f.key, f.version))).rejects.toThrow(/not found/i);
     // The audit log records the decision, never the wording.
     const audit = await t.admin.query("SELECT metadata::text AS m FROM huis.audit_events WHERE firm_id = $1 AND action LIKE 'contradiction.%'", [x.firmId]);
     expect(audit.rows.map((a) => JSON.parse(a.m))).toEqual([{ items: "2", confidence: "medium" }]);
+  });
+
+  it("a confirmation acts only on what was reviewed: new evidence since then means looking again", async () => {
+    const x = await matterWithEvidence();
+    const seen = surgeryFlag(await db.withFirm(x.paraCtx, (s) => getContradictions(s, x.matter.id)));
+    await upload(x.owner, x.matter.id, "clinic-note.txt", "Clinic note. On March 30, 2026 the surgery was booked by the clinic.");
+    await process();
+    await expect(db.withFirm(x.paraCtx, (s) => confirmContradiction(s, x.matter.id, seen.key, seen.version))).rejects.toThrow(/changed/);
+    await expect(db.withFirm(x.paraCtx, (s) => confirmContradiction(s, x.matter.id, seen.key))).rejects.toThrow(/changed/);
+    // Nothing was saved, and Huis's new suggestion is untouched.
+    expect((await db.withFirm(x.paraCtx, (s) => listNodes(s, x.matter.id))).find((n) => /March 30/.test(n.label))!.status).toBe("suggested");
+    const now = surgeryFlag(await db.withFirm(x.paraCtx, (s) => getContradictions(s, x.matter.id)));
+    expect(now.version).not.toBe(seen.version);
+    expect(now.conflicting.length).toBe(seen.conflicting.length + 1);
+    await db.withFirm(x.paraCtx, (s) => confirmContradiction(s, x.matter.id, now.key, now.version));
   });
 
   it("rejections stick until reconsidered; made-up or other Matters' keys are refused", async () => {
@@ -199,7 +214,7 @@ describe("contradiction engine", () => {
     let r = await db.withFirm(x.paraCtx, (s) => getContradictions(s, x.matter.id));
     expect(r.potential.some((p) => p.key === f.key)).toBe(false);
     expect(r.rejected.map((p) => p.key)).toEqual([f.key]);
-    await expect(db.withFirm(x.paraCtx, (s) => confirmContradiction(s, x.matter.id, f.key))).rejects.toThrow(/not found/i);
+    await expect(db.withFirm(x.paraCtx, (s) => confirmContradiction(s, x.matter.id, f.key, f.version))).rejects.toThrow(/not found/i);
     await db.withFirm(x.paraCtx, (s) => reconsiderContradiction(s, x.matter.id, f.key));
     r = await db.withFirm(x.paraCtx, (s) => getContradictions(s, x.matter.id));
     expect(r.potential.some((p) => p.key === f.key)).toBe(true);
@@ -208,7 +223,7 @@ describe("contradiction engine", () => {
     await expect(db.withFirm(x.paraCtx, (s) => rejectContradiction(s, x.matter.id, "not-a-key"))).rejects.toThrow(/not found/i);
     // A real key, used on another Matter, means nothing there.
     const other = await db.withFirm(x.owner, (s) => s.client.query("SELECT id FROM huis.matters WHERE title = 'Walled' AND firm_id = $1", [x.firmId]));
-    await expect(db.withFirm(x.owner, (s) => confirmContradiction(s, other.rows[0].id, f.key))).rejects.toThrow(/not found/i);
+    await expect(db.withFirm(x.owner, (s) => confirmContradiction(s, other.rows[0].id, f.key, f.version))).rejects.toThrow(/not found/i);
   });
 
   it("is firm staff only (read-only staff can look but not decide), respects walls, and the database checks every decision", async () => {
@@ -216,7 +231,7 @@ describe("contradiction engine", () => {
     const f = surgeryFlag(await db.withFirm(x.owner, (s) => getContradictions(s, x.matter.id)));
     await expect(db.withFirm(x.portalCtx, (s) => getContradictions(s, x.matter.id))).rejects.toThrow(/permission/i);
     expect((await db.withFirm(x.readerCtx, (s) => getContradictions(s, x.matter.id))).potential.length).toBeGreaterThan(0);
-    await expect(db.withFirm(x.readerCtx, (s) => confirmContradiction(s, x.matter.id, f.key))).rejects.toThrow(/permission/i);
+    await expect(db.withFirm(x.readerCtx, (s) => confirmContradiction(s, x.matter.id, f.key, f.version))).rejects.toThrow(/permission/i);
     await expect(db.withFirm(x.readerCtx, (s) => rejectContradiction(s, x.matter.id, f.key))).rejects.toThrow(/permission/i);
     await expect(db.withFirm(x.paraCtx, (s) => getContradictions(s, x.walled.id))).rejects.toThrow(/not found/i);
     const other = await newFirm(db, "Other Owner");
@@ -235,7 +250,7 @@ describe("contradiction engine", () => {
       `INSERT INTO huis.contradiction_decisions (firm_id, matter_id, flag_key, decision, statement_node_id, decided_by) VALUES ($1, $2, $3, 'confirmed', $4, $5)`,
       [x.firmId, x.matter.id, "c".repeat(64), walledFact, x.ownerUserId]))).rejects.toThrow(/same Matter/);
     // Confirmed decisions can't be withdrawn or rewritten from the app.
-    await db.withFirm(x.owner, (s) => confirmContradiction(s, x.matter.id, f.key));
+    await db.withFirm(x.owner, (s) => confirmContradiction(s, x.matter.id, f.key, f.version));
     expect((await db.withFirm(x.owner, (s) => s.client.query("DELETE FROM huis.contradiction_decisions WHERE decision = 'confirmed'"))).rowCount).toBe(0);
     await expect(db.withFirm(x.owner, (s) => s.client.query("UPDATE huis.contradiction_decisions SET decision = 'rejected'"))).rejects.toThrow(/permission/);
   });

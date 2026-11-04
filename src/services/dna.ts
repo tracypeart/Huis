@@ -7,6 +7,7 @@ import { recordAudit } from "./audit";
 import { terms } from "../ai/local";
 import { searchPassages, type FoundPassage } from "./brain";
 import { getMatter } from "./matters";
+import { citeExactly } from "./cite";
 import { CATEGORIES, type Category } from "../timeline/categories";
 
 /**
@@ -416,10 +417,8 @@ export async function addFactFromPassage(s: FirmSession, elementId: string, inpu
   const text = String(c.content).replace(/\s+/g, " ").trim();
   const label = v.label ?? bestSentence(String(c.content), `${el.label} ${el.details}`);
   const factId = await insertNode(s, el.matterId, { kind: "fact", label, details: "", eventDate: null, email: null, role: null, amount: null });
-  await s.client.query(
-    `INSERT INTO huis.dna_citations (firm_id, matter_id, node_id, evidence_id, note_id, char_start, char_end, quote)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    [s.actor.firmId, el.matterId, factId, c.evidence_id, c.note_id, c.char_start, c.char_end, text.slice(0, 1500)]);
+  // Cited at the passage's exact position (in characters, as the database counts them).
+  await citeExactly(s, { matterId: el.matterId, nodeId: factId, evidenceId: c.evidence_id, noteId: c.note_id, start: c.char_start, end: c.char_end });
   await insertLink(s, el.matterId, factId, el.id, v.relation);
   await audit(s, "fact_added", el.matterId, factId, { relation: v.relation });
   return factId;

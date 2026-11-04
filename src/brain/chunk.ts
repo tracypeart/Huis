@@ -26,8 +26,13 @@ export function chunkText(text: string): Chunk[] {
       const cut = para !== -1 && para < TARGET ? para : sentence !== -1 ? sentence + 1 : -1;
       end = cut !== -1 ? start + Math.floor(TARGET / 2) + cut + 1 : Math.min(text.length, start + TARGET);
     }
-    const content = text.slice(start, end).replace(/\u0000/g, "").trim();
-    if (content) out.push({ n: out.length, content: content.slice(0, 4000), start, end });
+    // The passage's position is where its trimmed text actually starts and ends, so citations
+    // inside a passage land on the right words (security review 12, F1).
+    const raw = text.slice(start, end);
+    const lead = raw.length - raw.trimStart().length;
+    const trail = raw.length - raw.trimEnd().length;
+    const content = raw.trim().replace(/\u0000/g, "");
+    if (content) out.push({ n: out.length, content: content.slice(0, 4000), start: start + lead, end: Math.max(start + lead, end - trail) });
     if (end >= text.length) break;
     let next = Math.max(end - OVERLAP, start + 1);
     // Start the overlap at a word boundary.

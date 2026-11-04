@@ -39,6 +39,13 @@ BEGIN
           AND n.kind = 'fact' AND n.status = 'confirmed') THEN
     RAISE EXCEPTION 'a contradiction must point at a confirmed fact in the same Matter';
   END IF;
+  -- A confirmation is the end of confirming: its statement must already be cited, with evidence linked
+  -- "contradicts" to it (security review 12, F5), so a bare "confirmed" row can't hide a flag.
+  IF NEW.decision = 'confirmed' AND (NEW.statement_node_id IS NULL
+       OR NOT EXISTS (SELECT 1 FROM huis.dna_citations c WHERE c.node_id = NEW.statement_node_id)
+       OR NOT EXISTS (SELECT 1 FROM huis.dna_links l WHERE l.to_id = NEW.statement_node_id AND l.relation = 'contradicts' AND l.status = 'confirmed')) THEN
+    RAISE EXCEPTION 'a confirmed contradiction needs its cited statement and the evidence linked to it';
+  END IF;
   RETURN NEW;
 END $$;
 CREATE TRIGGER contradiction_decisions_check BEFORE INSERT ON huis.contradiction_decisions
@@ -46,7 +53,8 @@ CREATE TRIGGER contradiction_decisions_check BEFORE INSERT ON huis.contradiction
 
 ALTER TABLE huis.contradiction_decisions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE huis.contradiction_decisions FORCE ROW LEVEL SECURITY;
--- No UPDATE: a decision is made once; a rejection can be withdrawn (deleted) to reconsider.
+-- No UPDATE: a decision is made once. A rejection can be withdrawn (deleted) to reconsider, and so can a
+-- confirmation whose statement has since been deleted from Case DNA.
 GRANT SELECT, INSERT, DELETE ON huis.contradiction_decisions TO huis_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON huis.contradiction_decisions TO huis_security;
 
@@ -55,4 +63,4 @@ CREATE POLICY contradiction_decisions_select ON huis.contradiction_decisions FOR
 CREATE POLICY contradiction_decisions_insert ON huis.contradiction_decisions FOR INSERT TO huis_app
   WITH CHECK (firm_id = huis.current_firm_id() AND huis.dna_writable(matter_id));
 CREATE POLICY contradiction_decisions_delete ON huis.contradiction_decisions FOR DELETE TO huis_app
-  USING (firm_id = huis.current_firm_id() AND huis.dna_writable(matter_id) AND decision = 'rejected');
+  USING (firm_id = huis.current_firm_id() AND huis.dna_writable(matter_id) AND (decision = 'rejected' OR statement_node_id IS NULL));
