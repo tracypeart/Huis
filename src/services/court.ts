@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { FREE_LOOK_DAYS, parseNef } from "../court/nef";
+import { FREE_LOOK_DAYS, isCourtSender, parseNef } from "../court/nef";
 import type { FirmSession } from "../db/tenant";
 import { NotFoundError, PermissionDeniedError, UserFacingError } from "../errors";
 import { INTERNAL_ROLES } from "../security/permissions";
@@ -116,23 +116,31 @@ const caseKey = (v: string | null | undefined) => (v ?? "").toUpperCase().replac
 export async function courtNotices(s: FirmSession, matterId: string): Promise<CourtNotice[]> {
   reader(s);
   const matter = await getMatter(s, matterId);
+  // Dates in the firm's own time zone, worked out by the database (security review 17, F7).
   const { rows } = await s.client.query(
-    `SELECT i.id, coalesce(m.subject, '') AS subject, m.sent_at, left(t.content, 200000) AS content,
-            (now() AT TIME ZONE f.time_zone)::date AS today
+    `SELECT i.id, coalesce(m.subject, '') AS subject, m.sent_at, m.from_addr, left(t.content, 200000) AS content,
+            (now() AT TIME ZONE f.time_zone)::date::text AS today, (m.sent_at AT TIME ZONE f.time_zone)::date::text AS sent_day
        FROM huis.evidence_items i
        JOIN huis.evidence_email m ON m.evidence_id = i.id
        JOIN huis.evidence_text t ON t.evidence_id = i.id
        JOIN huis.firms f ON f.id = huis.current_firm_id()
-      WHERE i.matter_id = $1 AND i.status = 'clean' AND i.duplicate_of IS NULL
+      WHERE i.matter_id = $1 AND i.status = 'clean' AND i.duplicate_of IS NULL AND huis.is_court_sender(m.from_addr)
         AND position('Notice of Electronic Filing' IN t.content) > 0
-      ORDER BY m.sent_at DESC NULLS LAST LIMIT 500`, [matterId]);
+      ORDER BY m.sent_at DESC NULLS LAST, i.id LIMIT 500`, [matterId]);
   const out: CourtNotice[] = [];
+  const seen = new Set<string>();
   for (const r of rows) {
+    // Only email from a federal court's CM/ECF system (F9).
+    if (!isCourtSender(r.from_addr as string | null)) continue;
     const n = parseNef(String(r.content));
     if (!n) continue;
-    const start = n.enteredOn ?? (r.sent_at ? new Date(r.sent_at).toISOString().slice(0, 10) : null);
-    const today = new Date(r.today).toISOString().slice(0, 10);
-    const left = start ? FREE_LOOK_DAYS - Math.round((Date.parse(today) - Date.parse(start)) / 86_400_000) : null;
+    // The same filing, sent to several attorneys of record, is one docket entry (F3).
+    const filing = `${caseKey(n.caseNumber)}|${n.documentNumber ?? ""}|${n.enteredOn ?? ""}|${n.docketText.slice(0, 500)}`;
+    if (seen.has(filing)) continue;
+    seen.add(filing);
+    const start = n.enteredOn ?? (r.sent_day as string | null);
+    const today = String(r.today);
+    const left = start ? FREE_LOOK_DAYS - Math.round((Date.parse(`${today}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86_400_000) : null;
     out.push({
       evidenceId: r.id, subject: String(r.subject).slice(0, 300), sentAt: r.sent_at, court: n.court, caseNumber: n.caseNumber,
       caseName: n.caseName, documentNumber: n.documentNumber, enteredOn: n.enteredOn, docketText: n.docketText,
@@ -190,8 +198,9 @@ export async function decideCourtEvent(s: FirmSession, id: string, decision: unk
   writer(s);
   const d = z.enum(["confirmed", "rejected"]).parse(decision);
   const e = await event(s, id);
-  await s.client.query("UPDATE huis.court_events SET status = $2 WHERE id = $1", [id, d]);
-  await audit(s, d, e.matterId, id, { kind: e.kind });
+  // A decision that changes nothing records nothing (security review 17, F8).
+  const r = await s.client.query("UPDATE huis.court_events SET status = $2 WHERE id = $1 AND status IS DISTINCT FROM $2", [id, d]);
+  if (r.rowCount) await audit(s, d, e.matterId, id, { kind: e.kind });
 }
 
 export async function setCourtEventDone(s: FirmSession, id: string, done: boolean): Promise<void> {
@@ -199,8 +208,10 @@ export async function setCourtEventDone(s: FirmSession, id: string, done: boolea
   const e = await event(s, id);
   if (e.status !== "confirmed") throw new UserFacingError("Only a confirmed court date can be marked done.");
   // The database records who and when.
-  await s.client.query(`UPDATE huis.court_events SET done_at = ${done ? "now()" : "NULL"}, done_by = ${done ? "huis.current_user_id()" : "NULL"} WHERE id = $1`, [id]);
-  await audit(s, done ? "done" : "reopened", e.matterId, id, { kind: e.kind });
+  const r = await s.client.query(
+    `UPDATE huis.court_events SET done_at = ${done ? "now()" : "NULL"}, done_by = ${done ? "huis.current_user_id()" : "NULL"}
+      WHERE id = $1 AND done_at IS ${done ? "" : "NOT "}NULL`, [id]);
+  if (r.rowCount) await audit(s, done ? "done" : "reopened", e.matterId, id, { kind: e.kind });
 }
 
 export async function deleteCourtEvent(s: FirmSession, id: string): Promise<void> {
@@ -218,22 +229,61 @@ export async function deleteCourtEvent(s: FirmSession, id: string): Promise<void
 export function icsText(v: string): string {
   return v.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "").replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
 }
-/** Long lines folded at 75 octets, as calendar programs expect. */
+/** Long lines folded at 75 octets, as calendar programs expect, never inside a character (security review 17, F5). */
 function fold(line: string): string {
   const out: string[] = [];
-  let rest = line;
-  while (Buffer.byteLength(rest) > 75) {
-    let cut = 75;
-    while (Buffer.byteLength(rest.slice(0, cut)) > 75) cut--;
-    out.push(rest.slice(0, cut));
-    rest = ` ${rest.slice(cut)}`;
+  let cur = "";
+  let bytes = 0;
+  for (const ch of line) {
+    const b = Buffer.byteLength(ch);
+    if (bytes + b > 75) {
+      out.push(cur);
+      cur = ` ${ch}`;
+      bytes = 1 + b;
+    } else {
+      cur += ch;
+      bytes += b;
+    }
   }
-  out.push(rest);
+  out.push(cur);
   return out.join("\r\n");
 }
 
-export async function courtCalendarIcs(s: FirmSession, matterId: string): Promise<{ filename: string; body: string }> {
+/** UTC offset of a time zone on a date, e.g. "-0700". */
+function offsetOn(tz: string, iso: string): string {
+  const name = new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "longOffset" }).formatToParts(new Date(iso))
+    .find((p) => p.type === "timeZoneName")?.value ?? "GMT";
+  const m = /GMT([+-])(\d{2}):(\d{2})/.exec(name);
+  return m ? `${m[1]}${m[2]}${m[3]}` : "+0000";
+}
+
+/**
+ * The VTIMEZONE a calendar file needs for each TZID it uses (RFC 5545; security review 17, F6).
+ * US zones change on the second Sunday of March and the first Sunday of November; European
+ * zones on the last Sundays of March and October. Other zones: null (times are written in UTC).
+ */
+export function vtimezone(tz: string, year: number): string[] | null {
+  const winter = offsetOn(tz, `${year}-01-15T12:00:00Z`);
+  const summer = offsetOn(tz, `${year}-07-15T12:00:00Z`);
+  if (winter === summer) {
+    return ["BEGIN:VTIMEZONE", `TZID:${tz}`, "BEGIN:STANDARD", "DTSTART:19700101T000000", `TZOFFSETFROM:${winter}`, `TZOFFSETTO:${winter}`, "END:STANDARD", "END:VTIMEZONE"];
+  }
+  const rules = tz.startsWith("America/") ? { on: ["DTSTART:19700308T020000", "RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU"], off: ["DTSTART:19701101T020000", "RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU"] }
+    : tz.startsWith("Europe/") ? { on: ["DTSTART:19700329T020000", "RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU"], off: ["DTSTART:19701025T030000", "RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU"] }
+    : null;
+  if (!rules) return null;
+  return [
+    "BEGIN:VTIMEZONE", `TZID:${tz}`,
+    "BEGIN:DAYLIGHT", ...rules.on, `TZOFFSETFROM:${winter}`, `TZOFFSETTO:${summer}`, "END:DAYLIGHT",
+    "BEGIN:STANDARD", ...rules.off, `TZOFFSETFROM:${summer}`, `TZOFFSETTO:${winter}`, "END:STANDARD",
+    "END:VTIMEZONE",
+  ];
+}
+
+export async function courtCalendarIcs(s: FirmSession, matterId: string, acknowledged: boolean): Promise<{ filename: string; body: string }> {
   reader(s);
+  // Like every export: only with the person's confirmation that they'll store it securely.
+  if (!acknowledged) throw new UserFacingError("Confirm that you will store the calendar file securely.");
   const m = await getMatter(s, matterId);
   const tz = (await s.client.query<{ tz: string }>("SELECT time_zone AS tz FROM huis.firms WHERE id = huis.current_firm_id()")).rows[0]!.tz;
   const events = (await listCourtEvents(s, matterId)).filter((e) => e.status === "confirmed");
@@ -242,12 +292,20 @@ export async function courtCalendarIcs(s: FirmSession, matterId: string): Promis
     "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Huis Law//Court Calendar//EN", "CALSCALE:GREGORIAN",
     `X-WR-CALNAME:${icsText(`${m.title} — court dates`)}`,
   ];
+  const zone = /^[A-Za-z_]+(\/[A-Za-z0-9_+-]+){0,2}$/.test(tz) ? vtimezone(tz, new Date().getUTCFullYear()) : null;
+  if (zone && events.some((e) => e.time)) lines.push(...zone);
+  const utc = (date: string, time: string) => {
+    // A zone without a known VTIMEZONE: the time is written in UTC, worked out from the zone's offset that day.
+    const off = offsetOn(tz, `${date}T12:00:00Z`);
+    const mins = (off[0] === "-" ? -1 : 1) * (Number(off.slice(1, 3)) * 60 + Number(off.slice(3, 5)));
+    return new Date(Date.parse(`${date}T${time}:00Z`) - mins * 60_000).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+  };
   for (const e of events) {
     const day = e.date.replace(/-/g, "");
     lines.push("BEGIN:VEVENT", `UID:${e.id}@huis.law`, `DTSTAMP:${stamp}`);
     if (e.time) {
       const t = `${e.time.replace(":", "")}00`;
-      lines.push(`DTSTART;TZID=${icsText(tz)}:${day}T${t}`, "DURATION:PT1H");
+      lines.push(zone ? `DTSTART;TZID=${tz}:${day}T${t}` : `DTSTART:${utc(e.date, e.time)}`, "DURATION:PT1H");
     } else {
       const next = new Date(Date.parse(`${e.date}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10).replace(/-/g, "");
       lines.push(`DTSTART;VALUE=DATE:${day}`, `DTEND;VALUE=DATE:${next}`);

@@ -70,6 +70,16 @@ export function clock(t: string | undefined): string | null {
   return `${pad(h)}:${pad(min)}`;
 }
 
+/**
+ * Whether an email's sender is a federal court's CM/ECF system (an address at
+ * a uscourts.gov host). Security review 17, F9: wording alone can be copied
+ * by anyone, so only email from the courts is read as a court notice.
+ */
+export function isCourtSender(from: string | null | undefined): boolean {
+  const addr = (from ?? "").match(/<([^<>\s]+@[^<>\s]+)>\s*$/)?.[1] ?? (from ?? "").trim();
+  return /^[^@\s]{1,64}@(?:[a-z0-9-]{1,63}\.){0,4}uscourts\.gov$/i.test(addr);
+}
+
 /** Whether a text reads as a CM/ECF Notice of Electronic Filing. */
 export function isNef(text: string): boolean {
   const head = text.slice(0, 20_000);
@@ -101,6 +111,19 @@ function kindOf(title: string): CourtEventKind {
 }
 
 const clean = (s: string | undefined) => (s ? s.replace(/\s+/g, " ").trim().replace(/[,:]$/, "") : "");
+/** "The Dispositive motions deadline" → "Dispositive motions deadline". */
+const title = (s: string | undefined) => clean(s).replace(/^(?:the|a|an|any|all)\s+/i, "");
+
+/** The sentence around a position (a period followed by a space ends one; "7.100" and "B. Pead" don't). */
+function sentenceAt(text: string, at: number): string {
+  const before = text.slice(Math.max(0, at - 400), at);
+  const b = Math.max(before.lastIndexOf(". "), before.lastIndexOf(".\n"), before.lastIndexOf("; "));
+  const after = text.slice(at, at + 400);
+  const e = after.search(/\.(?:\s|$)|;/);
+  return `${b >= 0 ? before.slice(b + 2) : before}${e >= 0 ? after.slice(0, e) : after}`;
+}
+/** Security review 17, F4: a date the same sentence vacates, strikes or cancels is not a date to keep. */
+const CANCELLED = /\b(vacat\w*|strick\w*|stricken|struck|cancel\w*|terminat\w*|withdrawn|moot)\b/i;
 
 /** Court dates set in a piece of docket text, positioned relative to `offset`. */
 export function findCourtDates(docket: string, offset = 0): FoundCourtEvent[] {
@@ -115,24 +138,24 @@ export function findCourtDates(docket: string, offset = 0): FoundCourtEvent[] {
   };
   for (const m of text.matchAll(SET_FOR)) {
     const date = usDate(m[2]!, m[3]!, m[4]!);
-    const title = clean(m[1]);
-    if (!date || !title || /^(signed|entered|filed|dated)$/i.test(title)) continue;
+    const name = title(m[1]);
+    if (!date || !name || /^(signed|entered|filed|dated)$/i.test(name) || CANCELLED.test(sentenceAt(text, m.index!))) continue;
     add({
-      kind: kindOf(title), title: title.slice(0, 120), date, time: clock(m[5]), location: clean(m[6]).slice(0, 120) || null,
+      kind: kindOf(name), title: name.slice(0, 120), date, time: clock(m[5]), location: clean(m[6]).slice(0, 120) || null,
       judge: clean(m[7]).slice(0, 120) || null, start: offset + m.index!, end: offset + m.index! + m[0].length,
     });
   }
   for (const m of text.matchAll(DUE_BY)) {
     const date = usDate(m[2]!, m[3]!, m[4]!);
-    if (!date) continue;
-    const what = clean(m[1]);
+    if (!date || CANCELLED.test(sentenceAt(text, m.index!))) continue;
+    const what = title(m[1]);
     add({ kind: "deadline", title: `${what || "Filing"} due`.slice(0, 120), date, time: null, location: null, judge: null,
       start: offset + m.index!, end: offset + m.index! + m[0].length });
   }
   for (const m of text.matchAll(DEADLINE)) {
     const date = usDate(m[2]!, m[3]!, m[4]!);
-    if (!date) continue;
-    add({ kind: "deadline", title: clean(m[1]).slice(0, 120), date, time: null, location: null, judge: null,
+    if (!date || CANCELLED.test(sentenceAt(text, m.index!))) continue;
+    add({ kind: "deadline", title: title(m[1]).slice(0, 120), date, time: null, location: null, judge: null,
       start: offset + m.index!, end: offset + m.index! + m[0].length });
   }
   return out.sort((a, b) => a.start - b.start);
@@ -147,8 +170,14 @@ export function parseNef(input: string): Nef | null {
     return m ? clean(m[1]) : null;
   };
   const court = (() => {
-    const m = /(U\.S\.|United States)\s+(District|Bankruptcy)\s+Court\s*(?:\r?\n|\s)+\s*((?:Northern|Southern|Eastern|Western|Middle|Central)?\s*District of [A-Z][A-Za-z ]{2,40})/.exec(text);
-    if (m) return `U.S. ${m[2]} Court, ${clean(m[3])}`;
+    // Security review 17, F1: look for "District of …" only in the short stretch after "… Court",
+    // with one bounded whitespace run, so no input can make the search slow.
+    const head = /(?:U\.S\.|United States)[ \t]{1,5}(District|Bankruptcy)[ \t]{1,5}Court/.exec(text.slice(0, 20_000));
+    if (head) {
+      const after = text.slice(head.index + head[0].length, head.index + head[0].length + 400).replace(/^\s{0,300}/, "");
+      const d = /^((?:Northern|Southern|Eastern|Western|Middle|Central)[ \t]+)?District of [A-Z][A-Za-z ]{2,40}/.exec(after);
+      if (d) return `U.S. ${head[1]} Court, ${clean(d[0])}`;
+    }
     const host = /https?:\/\/ecf\.([a-z]{2,6})\.uscourts\.gov/i.exec(text);
     return host ? `U.S. federal court (${host[1]!.toLowerCase()})` : null;
   })();

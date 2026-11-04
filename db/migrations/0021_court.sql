@@ -79,7 +79,10 @@ BEGIN
   END IF;
   IF NEW.done_at IS DISTINCT FROM OLD.done_at OR NEW.done_by IS DISTINCT FROM OLD.done_by THEN
     IF NEW.status <> 'confirmed' THEN RAISE EXCEPTION 'only a confirmed court date can be marked done'; END IF;
-    IF NEW.done_at IS NOT NULL THEN NEW.done_at := now(); NEW.done_by := huis.current_user_id();
+    IF OLD.done_at IS NOT NULL AND NEW.done_at IS NOT NULL THEN
+      -- Already done: who marked it and when stay as recorded (security review 17, F8).
+      NEW.done_at := OLD.done_at; NEW.done_by := OLD.done_by;
+    ELSIF NEW.done_at IS NOT NULL THEN NEW.done_at := now(); NEW.done_by := huis.current_user_id();
     ELSE NEW.done_by := NULL; END IF;
   END IF;
   RETURN NEW;
@@ -111,9 +114,23 @@ CREATE POLICY court_events_update ON huis.court_events FOR UPDATE TO huis_app
 CREATE POLICY court_events_delete ON huis.court_events FOR DELETE TO huis_app
   USING (firm_id = huis.current_firm_id() AND huis.dna_writable(matter_id) AND origin = 'attorney');
 
+-- Whether an email address belongs to a federal court's CM/ECF system.
+CREATE FUNCTION huis.is_court_sender(p_from text) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+  SELECT coalesce(substring(p_from FROM '<([^<>[:space:]]+@[^<>[:space:]]+)>[[:space:]]*$'), btrim(coalesce(p_from, '')))
+         ~* '^[^@[:space:]]{1,64}@([a-z0-9-]{1,63}\.){0,4}uscourts\.gov$'
+$$;
+GRANT EXECUTE ON FUNCTION huis.is_court_sender(text) TO huis_app;
+
 -- ---------------------------------------------------------------------------
 -- Huis's proposals, saved by the worker while it reads a filed email that is a
 -- federal court notice. The quote always comes from the notice itself.
+--
+-- Security review 17:
+--  F3: a proposal is keyed by the filing (case, document number, what and when),
+--      not by the email, so the same notice in a second attorney's mailbox
+--      doesn't propose a rejected date again or duplicate a confirmed one.
+--  F9: only email sent by a federal court's CM/ECF system (an address at a
+--      uscourts.gov host) is read as a court notice.
 -- ---------------------------------------------------------------------------
 CREATE FUNCTION huis.worker_save_court_suggestions(p_source_id uuid, p_lock_token uuid, p_events jsonb) RETURNS int
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = huis, pg_temp AS $$
@@ -131,7 +148,7 @@ BEGIN
   IF NOT FOUND THEN RAISE EXCEPTION 'source is not held by this worker'; END IF;
   IF r.evidence_id IS NULL THEN RETURN 0; END IF;
   -- Only email filed into the Matter (court notices arrive by email).
-  IF NOT EXISTS (SELECT 1 FROM huis.evidence_email m WHERE m.evidence_id = r.evidence_id) THEN RETURN 0; END IF;
+  IF NOT EXISTS (SELECT 1 FROM huis.evidence_email m WHERE m.evidence_id = r.evidence_id AND huis.is_court_sender(m.from_addr)) THEN RETURN 0; END IF;
   IF jsonb_typeof(p_events) <> 'array' OR jsonb_array_length(p_events) > 20 THEN RAISE EXCEPTION 'invalid court dates'; END IF;
   IF (SELECT count(*) FROM huis.court_events WHERE matter_id = r.matter_id AND origin = 'huis' AND status = 'suggested') >= 1000 THEN
     RETURN 0;
@@ -151,7 +168,10 @@ BEGIN
                                      source_evidence_id, char_start, char_end, quote)
         VALUES (r.firm_id, r.matter_id, v_kind, left(e->>'title', 200), (e->>'date')::date, nullif(e->>'time', '')::time,
                 left(nullif(e->>'location', ''), 200), left(nullif(e->>'judge', ''), 200), 'suggested', 'huis',
-                format('nef:%s:%s:%s', r.evidence_id, v_start, e->>'date'), r.evidence_id, v_start, v_end, v_quote)
+                left(format('nef:%s:%s:%s:%s:%s', coalesce(huis.case_key(e->>'caseNumber'), 'nocase'), coalesce(left(e->>'documentNumber', 10), ''),
+                            lower(regexp_replace(left(e->>'title', 200), '\s+', ' ', 'g')), e->>'date', coalesce(e->>'time', ''))
+                     || CASE WHEN huis.case_key(e->>'caseNumber') IS NULL THEN ':' || r.evidence_id::text ELSE '' END, 400),
+                r.evidence_id, v_start, v_end, v_quote)
         ON CONFLICT (matter_id, origin_key) DO NOTHING;
       IF FOUND THEN n := n + 1; END IF;
     EXCEPTION WHEN others THEN
@@ -169,4 +189,4 @@ GRANT EXECUTE ON FUNCTION huis.worker_save_court_suggestions(uuid, uuid, jsonb) 
 UPDATE huis.brain_sources b SET status = 'queued', attempts = 0, last_error = NULL, queued_at = now()
   FROM huis.evidence_text t
  WHERE t.evidence_id = b.evidence_id AND position('Notice of Electronic Filing' IN t.content) > 0
-   AND EXISTS (SELECT 1 FROM huis.evidence_email m WHERE m.evidence_id = b.evidence_id);
+   AND EXISTS (SELECT 1 FROM huis.evidence_email m WHERE m.evidence_id = b.evidence_id AND huis.is_court_sender(m.from_addr));

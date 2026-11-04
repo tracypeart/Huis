@@ -225,7 +225,7 @@ describe("court calendar", () => {
     expect((await db.withFirm(x.readerCtx, (s) => s.client.query("DELETE FROM huis.court_events"))).rowCount).toBe(0);
 
     await expect(db.withFirm(x.portalCtx, (s) => listCourtEvents(s, x.matter.id))).rejects.toThrow(/permission/i);
-    await expect(db.withFirm(x.portalCtx, (s) => courtCalendarIcs(s, x.matter.id))).rejects.toThrow(/permission/i);
+    await expect(db.withFirm(x.portalCtx, (s) => courtCalendarIcs(s, x.matter.id, true))).rejects.toThrow(/permission/i);
     expect(await db.withFirm(x.portalCtx, (s) => upcomingCourtDates(s))).toEqual([]);
     expect((await db.withFirm(x.portalCtx, (s) => s.client.query("SELECT * FROM huis.court_events"))).rowCount).toBe(0);
 
@@ -263,8 +263,10 @@ describe("court calendar", () => {
       kind: "hearing", title: "Hearing; secret-word, part\r\nBEGIN:VEVENT", date: plus(5), time: "09:30", location: "Room 7", judge: "Judge Barlow", notes: "Bring exhibits",
     }));
     await db.withFirm(x.owner, (s) => addCourtEvent(s, x.matter.id, { kind: "deadline", title: "Responses due", date: plus(10) }));
-    const { filename, body } = await db.withFirm(x.paraCtx, (s) => courtCalendarIcs(s, x.matter.id));
+    const { filename, body } = await db.withFirm(x.paraCtx, (s) => courtCalendarIcs(s, x.matter.id, true));
     expect(filename).toMatch(/-court-dates\.ics$/);
+    // Like every export, only with the confirmation that it will be stored securely.
+    await expect(db.withFirm(x.paraCtx, (s) => courtCalendarIcs(s, x.matter.id, false))).rejects.toThrow(/store the calendar file securely/);
     expect(body.match(/^BEGIN:VEVENT\r$/gm)).toHaveLength(2);
     expect(body).toContain("DTSTART;TZID=America/Denver:");
     expect(body).toContain(`DTSTART;VALUE=DATE:${plus(10).replace(/-/g, "")}`);

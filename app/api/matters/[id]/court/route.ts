@@ -21,8 +21,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const size = Number(req.headers.get("content-length") ?? NaN);
     if (!Number.isFinite(size) || size > 4 * 1024) throw new UserFacingError("That request is too large.", 413);
     const form = await req.formData().catch(() => null);
-    if (form?.get("acknowledge") !== "on") throw new UserFacingError("Confirm that you will store the calendar file securely.");
-    const { filename, body } = await courtCalendarIcs(s, id);
+    const { filename, body } = await courtCalendarIcs(s, id, form?.get("acknowledge") === "on");
     return new Response(body, {
       headers: {
         "content-type": "text/calendar; charset=utf-8",
