@@ -52,7 +52,7 @@ export default async function TimelinePage({ params, searchParams }: { params: P
   return (
     <>
       <p className="notice">
-        <Link href={`/matters/${m.id}`}>← {m.title}</Link> · <Link href={`/matters/${m.id}/dna`}>Case DNA™</Link> · <Link href={`/matters/${m.id}/brain`}>Matter Brain</Link>
+        <Link href={`/matters/${m.id}`}>← {m.title}</Link> · <Link href={`/matters/${m.id}/dna`}>Case DNA™</Link> · <Link href={`/matters/${m.id}/brain`}>Matter Brain</Link> · <Link href={`/matters/${m.id}/contradictions`}>Contradictions</Link>
       </p>
       <h1>Timeline</h1>
       <p className="sub">

@@ -15,10 +15,12 @@ import {
 } from "../src/services/dna";
 import { addNote, askMatter, deleteAnswer, deleteNote, setAiProviderSetting, updateNote } from "../src/services/brain";
 import { requestCopy } from "../src/services/workingCopies";
+import { confirmContradiction, reconsiderContradiction, rejectContradiction } from "../src/services/contradictions";
 import {
   fileMessage, fileToSuggestion, requestSync, setAutoFile, setDelegate, setFilingMode, setFolderIncluded, setMatterColor, updateMailbox,
 } from "../src/services/inbox";
 import { ROLES } from "../src/security/permissions";
+import { UserFacingError } from "../src/errors";
 import { act, db, getPending, setSessionCookie, withSession } from "./server";
 
 const text = (fd: FormData, key: string) => {
@@ -392,4 +394,25 @@ export async function dnaImportPeopleAction(fd: FormData): Promise<void> {
     const n = await withSession((s) => importMatterPeople(s, matterId));
     return { message: n ? `${n} added from the Matter's client and contacts.` : "Everyone is already on the map." };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Contradiction engine
+// ---------------------------------------------------------------------------
+export async function contradictionDecideAction(fd: FormData): Promise<void> {
+  const matterId = text(fd, "matterId") ?? "";
+  const back = /^[0-9a-f-]{36}$/i.test(matterId) ? `/matters/${matterId}/contradictions` : "/matters";
+  const decision = text(fd, "decision");
+  const key = text(fd, "key");
+  const messages: Record<string, string> = {
+    confirm: "Confirmed. The statement and the evidence that contradicts it are now in Case DNA.",
+    reject: "Rejected; Huis won't suggest it again.",
+    reconsider: "It's back on the list to decide.",
+  };
+  return act(back, messages[decision ?? ""] ?? "Done.", () => withSession(async (s) => {
+    if (decision === "confirm") await confirmContradiction(s, matterId, key);
+    else if (decision === "reject") await rejectContradiction(s, matterId, key);
+    else if (decision === "reconsider") await reconsiderContradiction(s, matterId, key);
+    else throw new UserFacingError("Choose confirm or reject.");
+  }));
 }
