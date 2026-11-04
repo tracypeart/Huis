@@ -90,7 +90,8 @@ export class LocalAiProvider implements AiProvider {
       return { text: "Huis didn't find passages in this Matter that match the question. Try other words, or check that the documents have finished being read.", cited: [] };
     }
     const top = scored.sort((a, b) => b.score - a.score || a.order - b.order).slice(0, 5);
-    const lines = top.map((x) => `• “${x.s}” [${x.n}]`);
+    // A closing curly quote inside a sentence is written as a plain one, so each quote stays one quote.
+    const lines = top.map((x) => `• “${x.s.replace(/”/g, '"')}” [${x.n}]`);
     return { text: `The most relevant passages in this Matter:\n\n${lines.join("\n")}`, cited: [...new Set(top.map((x) => x.n))] };
   }
 }

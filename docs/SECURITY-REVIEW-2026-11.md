@@ -210,6 +210,71 @@ Also fixed while reviewing: overlapping passages could produce a second, cut-sho
 
 **Found in passing (Phase 4, tracked):** if a queued Matter Brain source stops being clean before it is indexed, one indexing pass can stop early and leave later sources waiting until the next pass. Nothing is lost or exposed; indexing is only delayed.
 
+## Thirteenth review — Phase 6 part 1 (AI Workspace and Prompt Library)
+
+**Scope:** saved AI conversations and sharing (including the replaced rule for who may read Matter Brain answers), the conversation-count function, the Prompt Library, the pages, and every place that reads saved answers.
+**Result:** no read leak. Clients, other firms, people outside a wall (including walls added after sharing) and disabled users got nothing. "My questions" and the Matter export stayed limited to the person's own answers. Prompts kept their scope and owner, and other people's personal prompts couldn't be prefilled. The reviewer confirmed 2 integrity problems, both through direct database access as the app. **Both are fixed.** Regression tests are in `test/security-review-13.test.ts` (7 tests). Each fails without its fix.
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| R13-1 | Medium-Low | Someone walled out of a Matter could still delete the team's shared conversations, and their answers, there with a delete that had no conditions (the Phase 4 rule for answers had the same gap, which mattered once answers could be shared). The R9-1 pattern | Both delete rules now also require being able to see the Matter |
+| R13-2 | Medium | A conversation's owner could write a made-up "Matter Brain" answer straight into the database, with a fake quote cited to a real document and a backdated time, and colleagues would read it as Huis's | The database now rebuilds every saved answer's citations and sources from the passages it cites (only passages of that Matter the asker can open) and stamps the time itself. For the built-in AI, the answer must be in the built-in form and every quoted line must be words the cited passage contains. Any other provider is refused until Phase 6 part 4 adds one deliberately |
+
+**Also fixed:** a conversation with more than 500 answers would have counted the extra ones as withheld.
+
+**Carried into Phase 6 part 4 (outside providers):**
+- Saved answers list only the passages they quote. That is right for the built-in AI, which quotes only what it cites. A provider that writes answers may draw on passages it doesn't cite, so its answers must keep every passage they were given as sources, so they are withheld when any becomes unavailable.
+- Each provider also needs its own check in place of the built-in one.
+
+**Accepted, not changed:**
+- Firm prompts are visible to all firm staff, including people walled off from every Matter. The page warns against putting client details in them.
+- Audit entries are written by the app, so direct database writes don't produce them (true across Huis).
+- An owner removed from a Matter can no longer change or unshare their conversations there.
+
+## Fourteenth review — Phase 6 part 2 (specialized agents)
+
+**Scope:** the AI Router, each agent, agent turns and their database rules, the conversation page, and the timeline and contradiction services the agents reuse.
+**Result:** no read leak. Agent answers only ever contained what the reader could open: walled Matters, other firms, infected or walled items and planted settings all came up empty. Turns couldn't be planted, back-dated, changed or moved, and the audit log held only the agent's name. The reviewer confirmed 10 problems, five of them misleading answers for attorneys. **All fixed.** Regression tests are in `test/security-review-14.test.ts` (14 tests) and `test/agents.test.ts`. Each fails without its fix.
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| R14-1 | Medium | An email address in a question matched a *different* person whose address is part of it (sal@… went to "Al") | Addresses are read whole and matched exactly; if two people fit, nobody is picked |
+| R14-2 | Medium | Ordinary words in names captured questions ("The Widget Company" took every question with "the"), silently narrowing results to that organization | Names match on all their words, or on a distinctive word written with a capital letter; common words ("the", "company", "bank", "price"…) never name anyone alone |
+| R14-3 | Medium | "After the March 3, 2026 hearing" was read as that single day | "After / since / before / until" are read from the whole clause before the date |
+| R14-4 | Low-Medium | "In March 2026" or "in 2025" was ignored, so the whole Matter's timeline came back as the answer | Months and years become date ranges; a month without a year is said in the explanation instead of being silently ignored |
+| R14-5 | Medium | A non-subject word ("please", "lawsuit") narrowed the timeline to nothing, shown as "Nothing matches" | More such words are ignored. Every narrowing is now said ("Narrowed to 3 of 12 that mention …"), and if subject words would remove everything, all items are shown with a note |
+| R14-6 | Medium | On very large Matters the timeline read only the first 5,000 items, oldest first, so the dates asked about could be cut off without a word | The date range is applied in the database before the read limit (this also fixes the Timeline page), and the agent says when a Matter is too large to read in full |
+| R14-7 | Low-Medium | After 200 questions, newer ones disappeared | The newest questions are always listed, with a count of earlier ones |
+| R14-8 | Medium (availability) | Every view re-ran every agent turn, so a conversation full of questions made each colleague's page do hundreds of full timeline or contradiction runs | Only the newest 5 turns are worked out on each view; older ones show "Show answer" and run when opened. Identical questions are worked out once, and the email text read to narrow by subject is bounded |
+| R14-9 | Low | A turn's saved explanation kept a Case DNA person's name after that person's only source was found infected | The saved reason names nothing from Case DNA. Names are looked up for each reader, and one no longer available shows as "a person no longer available to you" |
+| R14-10 | Low | With AI turned off for the firm, agents still answered (the page hid the box, but the action didn't check) | Agents follow the firm's AI setting like the Matter Brain |
+
+**Accepted, not changed:**
+- Slash dates are read US-style (month/day), as Huis serves US firms first.
+- A question with two or more dates uses the first two as a range.
+- The privilege agent lists items by where they're filed, so an item still waiting for its virus scan isn't listed yet.
+
+## Fifteenth review — Phase 6 part 3 (Matter analysis and Reanalyze Matter)
+
+**Scope:** the Matter analysis, Reanalyze Matter, the retry function, the analysis records and their database rules, and the Matter page's "new since" line.
+**Result:** no read leak. Clients, other firms, walled-out staff (administrators included) and read-only staff were kept out, in the service and the database. The reviewer confirmed 8 problems: misleading counts or steps, unlimited retries, and free text in a "numbers only" record. **All fixed.** Regression tests are in `test/security-review-15.test.ts` (10 tests). Each fails without its fix.
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| R15-1 | Medium | A document the Matter Brain's worker died on after its last allowed attempt showed as "Being added" forever, with no next step, and Reanalyze couldn't retry it | Such a document counts as one Huis couldn't add, gets that next step, and Reanalyze retries it |
+| R15-2 | Low-Medium | The retry function retried, and counted, documents the caller can't see (no longer clean), so its count disagreed with the analysis and quarantined items were requeued | Only clean evidence of the Matter and its notes are retried |
+| R15-3 | Low-Medium (availability) | Reanalyze reset a failing document's attempts with no limit, so repeated clicks kept the worker retrying it forever | At most 3 manual retries per document, ever |
+| R15-4 | Medium | Items whose virus scan failed got no next step, so the page could say "nothing needs attention" about evidence never scanned or read | A next step for them (and for partly read items, claims with no elements, and AI turned off with items waiting) |
+| R15-5 | Low-Medium | Claims after the 50th were silently left out | Up to 200 are checked, and a step says when there are more |
+| R15-6 | Low | The "numbers only" record accepted any text as a key, so content could be written where all staff on the Matter read it, and a period could be started without retrying anything | The app can no longer write records at all. One database step (`reanalyze_matter`) retries, counts and records the moment, with only its three counts as whole numbers |
+| R15-7 | Low-Medium | An item that arrived while Reanalyze was running was never counted as new | "New since" is today's count less what that analysis itself counted |
+| R15-8 | Low-Medium | Counts on very large Matters were silently capped at 5,000 | Counted in the database; the contradiction check says when only part of a Matter could be checked |
+
+**Accepted, not changed:**
+- Every view of the analysis re-runs the contradiction check and each claim view. This is bounded, as in review 14, and not measured as a problem yet.
+- The evidence total includes items found inside others (attachments), while "new since" counts what was added.
+- An element counts as supported by a confirmed fact even when that fact has no source; the Claims matrix flags that gap separately.
+
 ## Still open (tracked, not code defects)
 1. **MFA enforcement** — Microsoft sign-in doesn't yet require proof of MFA. Plan: require the firm's Microsoft MFA (Conditional Access) or a Huis passkey. Part of the end-of-build Azure/hosting step.
 2. **Administrator-level tampering** — someone with full database superuser access could switch off the protective rules and rewrite history consistently. The hash chains make ordinary tampering detectable, but defeating a superuser needs the chain's latest fingerprint stored outside the database (e.g. a daily signed export). Planned with production hosting.

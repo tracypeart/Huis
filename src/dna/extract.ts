@@ -72,3 +72,20 @@ export function findEvents(input: string): FoundEvent[] {
   }
   return out;
 }
+
+/** Every full date written in a text (positions and ISO dates), in order; at most `max`. */
+export function findDates(input: string, max = 20): { date: string; index: number; length: number }[] {
+  const text = input.slice(0, 20_000);
+  const out: { date: string; index: number; length: number }[] = [];
+  const re = new RegExp(DATE.source, "gi");
+  let examined = 0;
+  for (let m = re.exec(text); m && out.length < max && examined++ < 500; m = re.exec(text)) {
+    let date: string | null = null;
+    if (m[1]) date = iso(Number(m[3]), MONTHS[m[1].toLowerCase()]!, Number(m[2]));
+    else if (m[5]) date = iso(Number(m[6]), MONTHS[m[5].toLowerCase()]!, Number(m[4]));
+    else if (m[9]) date = iso(Number(m[9]), Number(m[7]), Number(m[8]));
+    else if (m[10]) date = iso(Number(m[10]), Number(m[11]), Number(m[12]));
+    if (date) out.push({ date, index: m.index, length: m[0].length });
+  }
+  return out;
+}

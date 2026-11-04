@@ -62,7 +62,7 @@ export type TimelineFilters = z.infer<typeof timelineFilters>;
 
 export interface Timeline {
   entries: TimelineEntry[];
-  /** Entries before filtering. */
+  /** Entries in the date range (if one is set), before the other filters. */
   total: number;
   /** How many of the filtered entries fall in each category (before the category filter itself). */
   categoryCounts: Record<Category, number>;
@@ -95,13 +95,18 @@ export function address(v: string): string | null {
 }
 
 /** Everything on the Matter's timeline, unfiltered, in date order. */
-async function allEntries(s: FirmSession, matterId: string): Promise<{ entries: TimelineEntry[]; people: TimelinePerson[]; truncated: boolean }> {
+async function allEntries(s: FirmSession, matterId: string, range: { from?: string; to?: string } = {}): Promise<{ entries: TimelineEntry[]; people: TimelinePerson[]; truncated: boolean }> {
+  // A date range is applied in the database, so the read limit applies within the range, not before it
+  // (on a very large Matter the dates asked about are never cut off; security review 14, F6).
+  const from = range.from ?? null;
+  const to = range.to ?? null;
   // Row-level security: only items the person can see, built on clean evidence.
   const nodes = (await s.client.query(
     `SELECT id, kind, label, details, event_date::text AS event_date, amount, status, origin, categories
        FROM huis.dna_nodes
       WHERE matter_id = $1 AND event_date IS NOT NULL AND status <> 'rejected' AND kind IN ('event', 'fact', 'damage')
-      ORDER BY event_date, created_at, id LIMIT ${MAX_ITEMS + 1}`, [matterId])).rows;
+        AND ($2::date IS NULL OR event_date >= $2::date) AND ($3::date IS NULL OR event_date <= $3::date)
+      ORDER BY event_date, created_at, id LIMIT ${MAX_ITEMS + 1}`, [matterId, from, to])).rows;
   const people = (await s.client.query(
     `SELECT id, kind, label, email, role FROM huis.dna_nodes
       WHERE matter_id = $1 AND kind IN ('person', 'organization') AND status = 'confirmed' ORDER BY label LIMIT ${MAX_ITEMS}`, [matterId])).rows as
@@ -158,8 +163,8 @@ async function allEntries(s: FirmSession, matterId: string): Promise<{ entries: 
       WHERE i.matter_id = $1 AND i.status = 'clean' AND m.sent_at IS NOT NULL AND huis.dna_readable(i.matter_id)
         -- An exact duplicate appears once: as its original, when the person can see that.
         AND NOT EXISTS (SELECT 1 FROM huis.evidence_items o WHERE o.id = i.duplicate_of AND o.status = 'clean')
-        AND (m.sent_at AT TIME ZONE f.time_zone)::date BETWEEN DATE '1900-01-01' AND DATE '2100-12-31'
-      ORDER BY m.sent_at, i.id LIMIT ${MAX_EMAILS + 1}`, [matterId])).rows;
+        AND (m.sent_at AT TIME ZONE f.time_zone)::date BETWEEN coalesce($2::date, DATE '1900-01-01') AND coalesce($3::date, DATE '2100-12-31')
+      ORDER BY m.sent_at, i.id LIMIT ${MAX_EMAILS + 1}`, [matterId, from, to])).rows;
   const byEmail = new Map(people.filter((p) => p.email).map((p) => [p.email!, p]));
   for (const m of emails.slice(0, MAX_EMAILS)) {
     const to = [...(m.to_addrs as string[]), ...(m.cc_addrs as string[])].slice(0, 100);
@@ -223,7 +228,7 @@ export async function getTimeline(s: FirmSession, matterId: string, filters: unk
   reader(s);
   await getMatter(s, matterId);
   const f = timelineFilters.parse(filters ?? {});
-  const all = await allEntries(s, matterId);
+  const all = await allEntries(s, matterId, { from: f.from, to: f.to });
   const beforeCategory = all.entries.filter((e) => matches(e, f));
   const categoryCounts = Object.fromEntries(CATEGORIES.map((c) => [c, 0])) as Record<Category, number>;
   for (const e of beforeCategory) for (const c of e.categories) categoryCounts[c]++;

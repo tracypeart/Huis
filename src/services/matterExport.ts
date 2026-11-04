@@ -143,7 +143,8 @@ export async function prepareMatterExport(s: FirmSession, matterId: string, ackn
     `SELECT n.title, n.body, coalesce(u.full_name, 'Former user') AS author, n.created_at, n.updated_at
        FROM huis.matter_notes n LEFT JOIN huis.users u ON u.id = n.author_id WHERE n.matter_id = $1 ORDER BY n.created_at`, [matterId]);
   // Questions and answers are private: only the exporter's own.
-  const answers = await q("SELECT question, answer, citations, provider, model, created_at FROM huis.brain_answers WHERE matter_id = $1 ORDER BY created_at", [matterId]);
+  // (Colleagues' answers in conversations they shared are readable, but are theirs: only the exporter's own are exported.)
+  const answers = await q("SELECT question, answer, citations, provider, model, created_at FROM huis.brain_answers WHERE matter_id = $1 AND asked_by = $2 ORDER BY created_at", [matterId, s.actor.userId]);
   const nodes = await q(
     `SELECT id, kind, label, details, event_date::text AS event_date, email, role, amount, status, origin, categories, created_at, decided_at
        FROM huis.dna_nodes WHERE matter_id = $1 ORDER BY kind, created_at`, [matterId]);

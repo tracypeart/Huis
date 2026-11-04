@@ -16,6 +16,11 @@ import {
 import { addNote, askMatter, deleteAnswer, deleteNote, setAiProviderSetting, updateNote } from "../src/services/brain";
 import { requestCopy } from "../src/services/workingCopies";
 import { confirmContradiction, reconsiderContradiction, rejectContradiction } from "../src/services/contradictions";
+import { askAgent } from "../src/services/agents";
+import { reanalyzeMatter } from "../src/services/analysis";
+import {
+  createConversation, createPrompt, deleteConversation, deletePrompt, updateConversation, updatePrompt,
+} from "../src/services/workspace";
 import {
   fileMessage, fileToSuggestion, requestSync, setAutoFile, setDelegate, setFilingMode, setFolderIncluded, setMatterColor, updateMailbox,
 } from "../src/services/inbox";
@@ -415,4 +420,61 @@ export async function contradictionDecideAction(fd: FormData): Promise<void> {
     else if (decision === "reconsider") await reconsiderContradiction(s, matterId, key);
     else throw new UserFacingError("Choose confirm or reject.");
   }));
+}
+
+// ---------------------------------------------------------------------------
+// AI Workspace and Prompt Library
+// ---------------------------------------------------------------------------
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const workspacePath = (matterId: string, conversationId?: string) =>
+  !UUID_RE.test(matterId) ? "/matters" : conversationId && UUID_RE.test(conversationId)
+    ? `/matters/${matterId}/workspace/${conversationId}` : `/matters/${matterId}/workspace`;
+
+export async function createConversationAction(fd: FormData): Promise<void> {
+  const matterId = text(fd, "matterId") ?? "";
+  return act(workspacePath(matterId), "Conversation started.", async () => {
+    const id = await withSession((s) => createConversation(s, matterId, { title: fd.get("title"), category: fd.get("category") }));
+    return { redirectTo: workspacePath(matterId, id) };
+  });
+}
+export async function askInConversationAction(fd: FormData): Promise<void> {
+  const matterId = text(fd, "matterId") ?? "";
+  const id = text(fd, "conversationId") ?? "";
+  return act(workspacePath(matterId, id), "Answer ready.", () => withSession(async (s) => { await askAgent(s, id, fd.get("question"), text(fd, "agent") ?? "auto"); }));
+}
+export async function updateConversationAction(fd: FormData): Promise<void> {
+  const matterId = text(fd, "matterId") ?? "";
+  const id = text(fd, "conversationId") ?? "";
+  return act(workspacePath(matterId, id), "Saved.", () => withSession(async (s) => {
+    await updateConversation(s, id, { title: fd.get("title"), category: fd.get("category"), shared: fd.get("shared") === "on" });
+  }));
+}
+export async function deleteConversationAction(fd: FormData): Promise<void> {
+  const matterId = text(fd, "matterId") ?? "";
+  return act(workspacePath(matterId), "Conversation deleted.", () => withSession(async (s) => { await deleteConversation(s, text(fd, "conversationId") ?? ""); }));
+}
+export async function createPromptAction(fd: FormData): Promise<void> {
+  return act("/prompts", "Prompt saved.", () => withSession(async (s) => {
+    await createPrompt(s, { scope: text(fd, "scope"), title: fd.get("title"), body: fd.get("body"), category: fd.get("category") });
+  }));
+}
+export async function updatePromptAction(fd: FormData): Promise<void> {
+  return act("/prompts", "Prompt saved.", () => withSession(async (s) => {
+    await updatePrompt(s, text(fd, "promptId") ?? "", { title: fd.get("title"), body: fd.get("body"), category: fd.get("category") });
+  }));
+}
+export async function deletePromptAction(fd: FormData): Promise<void> {
+  return act("/prompts", "Prompt deleted.", () => withSession(async (s) => { await deletePrompt(s, text(fd, "promptId") ?? ""); }));
+}
+
+// ---------------------------------------------------------------------------
+// Matter analysis
+// ---------------------------------------------------------------------------
+export async function reanalyzeAction(fd: FormData): Promise<void> {
+  const matterId = text(fd, "matterId") ?? "";
+  const back = UUID_RE.test(matterId) ? `/matters/${matterId}/analysis` : "/matters";
+  return act(back, "Reanalyzed.", async () => {
+    const r = await withSession((s) => reanalyzeMatter(s, matterId));
+    return { message: r.retried ? `Reanalyzed. Huis is trying again to read ${r.retried} ${r.retried === 1 ? "item" : "items"} it couldn't read before.` : "Reanalyzed. A new analysis period starts now." };
+  });
 }
