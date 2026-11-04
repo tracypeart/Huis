@@ -31,7 +31,8 @@ export interface Conversation {
 }
 
 const CONV_COLS = `c.id, c.matter_id, c.title, c.category, c.shared, c.owner_id, coalesce(u.full_name, 'Former user') AS owner_name,
-  c.created_at, c.updated_at, (SELECT count(*)::int FROM huis.brain_answers a WHERE a.conversation_id = c.id) AS answers`;
+  c.created_at, c.updated_at, (SELECT count(*)::int FROM huis.brain_answers a WHERE a.conversation_id = c.id)
+    + (SELECT count(*)::int FROM huis.ai_agent_turns t WHERE t.conversation_id = c.id) AS answers`;
 const toConversation = (s: FirmSession, r: Record<string, unknown>): Conversation => ({
   id: r.id as string, matterId: r.matter_id as string, title: r.title as string, category: r.category as AiCategory, shared: r.shared as boolean,
   mine: r.owner_id === s.actor.userId, ownerName: r.owner_name as string, createdAt: r.created_at as Date, updatedAt: r.updated_at as Date,
@@ -66,14 +67,14 @@ export async function createConversation(s: FirmSession, matterId: string, input
   return id;
 }
 
-async function conversation(s: FirmSession, id: unknown): Promise<Conversation> {
+export async function conversation(s: FirmSession, id: unknown): Promise<Conversation> {
   if (!uuid.safeParse(id).success) throw new NotFoundError("Conversation");
   const r = (await s.client.query(
     `SELECT ${CONV_COLS} FROM huis.ai_conversations c LEFT JOIN huis.users u ON u.id = c.owner_id WHERE c.id = $1`, [id])).rows[0];
   if (!r) throw new NotFoundError("Conversation");
   return toConversation(s, r);
 }
-async function myConversation(s: FirmSession, id: unknown): Promise<Conversation> {
+export async function myConversation(s: FirmSession, id: unknown): Promise<Conversation> {
   const c = await conversation(s, id);
   // Someone else's (shared) conversation can be read but not changed: as if it weren't there to change.
   if (!c.mine) throw new NotFoundError("Conversation");

@@ -16,8 +16,9 @@ import {
 import { addNote, askMatter, deleteAnswer, deleteNote, setAiProviderSetting, updateNote } from "../src/services/brain";
 import { requestCopy } from "../src/services/workingCopies";
 import { confirmContradiction, reconsiderContradiction, rejectContradiction } from "../src/services/contradictions";
+import { askAgent } from "../src/services/agents";
 import {
-  askInConversation, createConversation, createPrompt, deleteConversation, deletePrompt, updateConversation, updatePrompt,
+  createConversation, createPrompt, deleteConversation, deletePrompt, updateConversation, updatePrompt,
 } from "../src/services/workspace";
 import {
   fileMessage, fileToSuggestion, requestSync, setAutoFile, setDelegate, setFilingMode, setFolderIncluded, setMatterColor, updateMailbox,
@@ -438,7 +439,7 @@ export async function createConversationAction(fd: FormData): Promise<void> {
 export async function askInConversationAction(fd: FormData): Promise<void> {
   const matterId = text(fd, "matterId") ?? "";
   const id = text(fd, "conversationId") ?? "";
-  return act(workspacePath(matterId, id), "Answer ready.", () => withSession(async (s) => { await askInConversation(s, id, fd.get("question")); }));
+  return act(workspacePath(matterId, id), "Answer ready.", () => withSession(async (s) => { await askAgent(s, id, fd.get("question"), text(fd, "agent") ?? "auto"); }));
 }
 export async function updateConversationAction(fd: FormData): Promise<void> {
   const matterId = text(fd, "matterId") ?? "";

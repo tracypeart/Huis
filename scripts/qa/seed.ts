@@ -12,6 +12,7 @@ import { HuisDb, type RequestContext } from "../../src/db/tenant";
 import { MailWorker } from "../../src/mail/worker";
 import { addNote, askMatter } from "../../src/services/brain";
 import { askInConversation, createConversation, createPrompt, updateConversation } from "../../src/services/workspace";
+import { askAgent } from "../../src/services/agents";
 import { createClient } from "../../src/services/clients";
 import { createContact } from "../../src/services/contacts";
 import { addClaimFromTemplate, addFactFromPassage, addNode, claimView, decideNode, findEvidenceFor, linkNodes, listNodes } from "../../src/services/dna";
@@ -143,6 +144,9 @@ async function main() {
   await db.withFirm(avery, async (s) => {
     const c = await createConversation(s, x.matter.id, { title: "Notice of leave", category: "strategy" });
     await askInConversation(s, c, "When did HR learn about the FMLA leave request?");
+    // Specialized agents (Phase 6 part 2), routed automatically.
+    for (const q of ["Build a timeline between April 1, 2026 and May 10, 2026.", "Find every email about the leave request.",
+      "Are there contradictions?", "Which documents are privileged?"]) await askAgent(s, c, q);
     await updateConversation(s, c, { title: "Notice of leave", category: "strategy", shared: true });
   });
   await db.withFirm(f.owner, (s) => createPrompt(s, { scope: "firm", title: "Firm: comparators", body: "Who else was in a similar position, and how were they treated?", category: "strategy" }));
