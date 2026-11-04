@@ -2,7 +2,7 @@
 
 The Legal Intelligence Operating System: an AI-powered platform that connects the communications, evidence, documents, people, deadlines, research and strategy behind every legal matter.
 
-**Status:** Phase 1 complete (hosting deferred to the end). Phase 2 (secure evidence intake, reading, search, viewer and copies) complete. Phase 3 (Huis Inbox for Outlook and Gmail, matter suggestions, filing modes) merged; Gmail opens to outside firms after Google verification. Phase 4 (Matter Brain, Case DNA™ and full export) merged. Phase 5 (Timeline + Evidence Intelligence) in progress: part 1, the Master Timeline, is through independent review 11; part 2, the contradiction engine, is through independent review 12. Phase 6 (AI Legal Intelligence) in progress: part 1, the AI Workspace and Prompt Library, is through independent review 13. Every part merged after an independent security review. See [`docs/PHASE-2.md`](docs/PHASE-2.md), [`docs/PHASE-3.md`](docs/PHASE-3.md), [`docs/PHASE-4.md`](docs/PHASE-4.md) , [`docs/PHASE-5.md`](docs/PHASE-5.md) and [`docs/PHASE-6.md`](docs/PHASE-6.md).
+**Status:** Phase 1 complete (hosting deferred to the end). Phase 2 (secure evidence intake, reading, search, viewer and copies) complete. Phase 3 (Huis Inbox for Outlook and Gmail, matter suggestions, filing modes) merged; Gmail opens to outside firms after Google verification. Phase 4 (Matter Brain, Case DNA™ and full export) merged. Phase 5 (Timeline + Evidence Intelligence) in progress: part 1, the Master Timeline, is through independent review 11; part 2, the contradiction engine, is through independent review 12. Phase 6 (AI Legal Intelligence) in progress: part 1, the AI Workspace and Prompt Library, is through independent review 13; part 2, the specialized agents, awaits review 14. Every part merged after an independent security review. See [`docs/PHASE-2.md`](docs/PHASE-2.md), [`docs/PHASE-3.md`](docs/PHASE-3.md), [`docs/PHASE-4.md`](docs/PHASE-4.md) , [`docs/PHASE-5.md`](docs/PHASE-5.md) and [`docs/PHASE-6.md`](docs/PHASE-6.md).
 
 ## Start here
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — the master architecture: decisions, non-negotiables, the 10 phases, and open questions. **This is the authority.**
@@ -11,7 +11,7 @@ The Legal Intelligence Operating System: an AI-powered platform that connects th
 - [`docs/PHASE-3.md`](docs/PHASE-3.md) — Huis Inbox: connecting Outlook, private sync, search and filing email into Matters.
 - [`docs/PHASE-4.md`](docs/PHASE-4.md) — Matter Brain, Case DNA™ and full export of a Matter.
 - [`docs/PHASE-5.md`](docs/PHASE-5.md) — Master Timeline (part 1) and the contradiction engine (part 2).
-- [`docs/PHASE-6.md`](docs/PHASE-6.md) — AI Legal Intelligence: AI Workspace and Prompt Library (part 1), and what's planned.
+- [`docs/PHASE-6.md`](docs/PHASE-6.md) — AI Legal Intelligence: AI Workspace and Prompt Library (part 1), specialized agents (part 2), and what's planned.
 - [`docs/FAQ.md`](docs/FAQ.md) — plain-language FAQ for attorneys and firms: safety, privilege and search.
 - [`docs/SECURITY-REVIEW-2026-11.md`](docs/SECURITY-REVIEW-2026-11.md) — independent security reviews (1–13) and fixes.
 - [`docs/source/`](docs/source/) — original specs (ChatGPT architecture with Tracy's answers; Phase 11 Case Outcome Intelligence).

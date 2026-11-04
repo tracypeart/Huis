@@ -100,6 +100,17 @@ Yes. In a Matter's **AI Workspace** you can start a conversation, such as "Notic
 
 Conversations are private to you unless you share one with the firm staff on that Matter. They can read it but can't change it. Even then, each answer is shown only to people who can open every source it used. Clients never see conversations.
 
+### What are Huis's AI agents?
+Specialists behind the one question box in the AI Workspace. Huis sends each question to the one that fits, or you choose:
+- the **timeline** agent, for dates and what happened when;
+- the **email** agent, for who wrote what;
+- the **evidence** agent, for passages that may prove a claim's element;
+- the **contradiction** agent;
+- the **privilege** agent, for what's filed as privileged or work product;
+- the **Matter Brain**, for everything else.
+
+Each answer says which agent answered and why. Agents' answers are worked out fresh, from what you can open, every time you look, so they stay current with the evidence.
+
 ### What is the Prompt Library?
 Saved questions to start from. Your own prompts are private. **Firm prompts** are approved templates that your firm's administrators manage and everyone at the firm can use. Huis's built-in prompts are general starting points, not legal advice.
 

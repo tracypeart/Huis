@@ -202,6 +202,15 @@ describe("specialized agents", () => {
     await expect(db.withFirm(x.owner, (s) => askAgent(s, x.conv, "Which documents are privileged?"))).rejects.toThrow(/not found/i);
   });
 
+  it("keeps questions in the order they were asked, even when asked together", async () => {
+    const x = await withMatter();
+    const qs = ["Why was she terminated?", "Which documents are privileged?", "Are there contradictions?", "What was the surgery?", "Find every email about the surgery."];
+    await db.withFirm(x.paraCtx, async (s) => { for (const q of qs) await askAgent(s, x.conv, q); });
+    const answers = (await db.withFirm(x.paraCtx, (s) => getConversation(s, x.conv))).answers.map((a) => ({ q: a.question, at: a.createdAt.getTime() }));
+    const turns = (await db.withFirm(x.paraCtx, (s) => agentTurns(s, x.conv))).map((t) => ({ q: t.question, at: t.createdAt.getTime() }));
+    expect([...answers, ...turns].sort((a, b) => a.at - b.at).map((x) => x.q)).toEqual(qs);
+  });
+
   it("shared conversations are answered for each reader as that reader; clients, walls and other firms get nothing", async () => {
     const x = await withMatter();
     await db.withFirm(x.paraCtx, (s) => askAgent(s, x.conv, "Which documents are privileged?"));

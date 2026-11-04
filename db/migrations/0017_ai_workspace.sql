@@ -193,7 +193,7 @@ DECLARE
   v_quote text[];
   v_found boolean;
 BEGIN
-  NEW.created_at := now();
+  NEW.created_at := clock_timestamp();  -- the moment it was written, so turns asked together keep their order
   IF jsonb_typeof(NEW.citations) <> 'array' OR jsonb_array_length(NEW.citations) > 50 THEN RAISE EXCEPTION 'invalid citations'; END IF;
   FOR c IN SELECT * FROM jsonb_array_elements(NEW.citations) LOOP
     -- Row-level security applies (this runs as the asker): only passages they can open, in this Matter.

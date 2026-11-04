@@ -28,7 +28,7 @@ CREATE INDEX ai_agent_turns_conversation ON huis.ai_agent_turns (conversation_id
 CREATE FUNCTION huis.ai_agent_turn_check() RETURNS trigger
 LANGUAGE plpgsql SET search_path = huis, pg_temp AS $$
 BEGIN
-  NEW.created_at := now();
+  NEW.created_at := clock_timestamp();  -- the moment it was written, so turns asked together keep their order
   IF NOT EXISTS (SELECT 1 FROM huis.ai_conversations c
                   WHERE c.id = NEW.conversation_id AND c.firm_id = NEW.firm_id AND c.matter_id = NEW.matter_id AND c.owner_id = NEW.asked_by) THEN
     RAISE EXCEPTION 'a turn can only join its asker''s own conversation in the same Matter';
