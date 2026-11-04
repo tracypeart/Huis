@@ -128,6 +128,10 @@ describe("the router (fixed rules)", () => {
     const chosen = route("Why was she terminated?", ctx, "timeline");
     expect(chosen.agent).toBe("timeline");
     expect(chosen.why).toMatch(/you chose this agent/);
+    // Months and years become ranges; a month without a year is said, not silently ignored.
+    expect(route("What happened in 2025?", ctx).params).toMatchObject({ from: "2025-01-01", to: "2025-12-31" });
+    expect(route("What happened in March?", ctx).why).toMatch(/a month without a year was not used/);
+    expect(route("Show the chronology for this lawsuit please", ctx).params.topics).toBeUndefined();
     // A name shared by two people picks no one (rather than guessing).
     expect(route("What did Pat say?", { ...ctx, people: [...ctx.people, { id: "p3", label: "Pat Jones", email: null }] }, "email").params.personId).toBeUndefined();
   });
@@ -144,8 +148,8 @@ describe("specialized agents", () => {
     expect((await ask("Show evidence that the employer took an adverse action against the employee.")).agent).toBe("evidence");
     expect((await ask("Why was she terminated?")).agent).toBe("matter");
 
-    const turns = await db.withFirm(x.paraCtx, (s) => agentTurns(s, x.conv));
-    const [timeline, email, contra, priv, evidence] = [0, 1, 2, 3, 4].map((i) => turns[i]!.result);
+    const turns = await db.withFirm(x.paraCtx, (s) => agentTurns(s, x.conv).then((r) => r.turns));
+    const [timeline, email, contra, priv, evidence] = [0, 1, 2, 3, 4].map((i) => turns[i]!.result!);
     if (!timeline || !email || !contra || !priv || !evidence) throw new Error("turns");
     if (timeline.kind !== "timeline" || email!.kind !== "email" || contra!.kind !== "contradictions" || priv!.kind !== "privilege" || evidence!.kind !== "evidence") throw new Error("kinds");
     expect(timeline.entries.length).toBeGreaterThan(0);
@@ -174,8 +178,9 @@ describe("specialized agents", () => {
     expect(Object.keys(row).sort()).toEqual(["agent", "asked_by", "conversation_id", "created_at", "firm_id", "id", "matter_id", "params", "question", "why"]);
     // Evidence later found infected leaves the answer at once.
     await infect(x.email.id);
-    const [turn] = await db.withFirm(x.paraCtx, (s) => agentTurns(s, x.conv));
-    expect(turn!.result.kind === "email" && turn!.result.entries).toEqual([]);
+    const [turn] = await db.withFirm(x.paraCtx, (s) => agentTurns(s, x.conv).then((r) => r.turns));
+    const r1 = turn!.result!;
+    expect(r1.kind === "email" && r1.entries).toEqual([]);
     // Settings that point outside the Matter, or extra fields, change nothing: a walled element or another Matter's person isn't found.
     const walledEl = await db.withFirm(x.owner, async (s) => {
       const c = await addClaimFromTemplate(s, x.walled.id, "fmla_retaliation");
@@ -187,7 +192,7 @@ describe("specialized agents", () => {
        VALUES ($1, $2, $3, $4, 'q', 'evidence', $5, 'w')`, [x.firmId, x.matter.id, mineConv, x.ownerUserId,
         JSON.stringify({ elementId: walledEl, answer: "Pat admitted everything" })]));
     const own = await db.withFirm(x.owner, (s) => listConversations(s, x.matter.id));
-    const planted = (await db.withFirm(x.owner, (s) => agentTurns(s, own.find((c) => c.title === "Mine")!.id)))[0]!;
+    const planted = (await db.withFirm(x.owner, (s) => agentTurns(s, own.find((c) => c.title === "Mine")!.id)).then((r) => r.turns))[0]!;
     expect(planted.result).toMatchObject({ kind: "evidence", element: null, passages: [] });
     expect(JSON.stringify(planted)).not.toContain("Pat admitted everything");
     // No turn in someone else's conversation, no Matter Brain "agent" turn, no changing a turn.
@@ -202,23 +207,36 @@ describe("specialized agents", () => {
     await expect(db.withFirm(x.owner, (s) => askAgent(s, x.conv, "Which documents are privileged?"))).rejects.toThrow(/not found/i);
   });
 
+  it("works out only the newest answers on each view (older ones when opened), and says when subject words narrowed them", async () => {
+    const x = await withMatter();
+    for (let i = 0; i < 7; i++) await db.withFirm(x.paraCtx, (s) => askAgent(s, x.conv, i % 2 ? "Which documents are privileged?" : "Build a timeline about the surgery."));
+    const list = await db.withFirm(x.paraCtx, (s) => agentTurns(s, x.conv));
+    expect(list.turns.length).toBe(7);
+    expect(list.turns.map((t) => t.result !== null)).toEqual([false, false, true, true, true, true, true]);
+    const opened = await db.withFirm(x.paraCtx, (s) => agentTurns(s, x.conv, { open: [list.turns[0]!.id] }));
+    expect(opened.turns[0]!.result).not.toBeNull();
+    const tl = list.turns.find((t) => t.agent === "timeline" && t.result)!.result!;
+    expect(tl.kind === "timeline" && tl.notes.join(" ")).toMatch(/Narrowed to the \d+ of \d+ that mention “surgery”/);
+  });
+
   it("keeps questions in the order they were asked, even when asked together", async () => {
     const x = await withMatter();
     const qs = ["Why was she terminated?", "Which documents are privileged?", "Are there contradictions?", "What was the surgery?", "Find every email about the surgery."];
     await db.withFirm(x.paraCtx, async (s) => { for (const q of qs) await askAgent(s, x.conv, q); });
     const answers = (await db.withFirm(x.paraCtx, (s) => getConversation(s, x.conv))).answers.map((a) => ({ q: a.question, at: a.createdAt.getTime() }));
-    const turns = (await db.withFirm(x.paraCtx, (s) => agentTurns(s, x.conv))).map((t) => ({ q: t.question, at: t.createdAt.getTime() }));
+    const turns = (await db.withFirm(x.paraCtx, (s) => agentTurns(s, x.conv).then((r) => r.turns))).map((t) => ({ q: t.question, at: t.createdAt.getTime() }));
     expect([...answers, ...turns].sort((a, b) => a.at - b.at).map((x) => x.q)).toEqual(qs);
   });
 
   it("shared conversations are answered for each reader as that reader; clients, walls and other firms get nothing", async () => {
     const x = await withMatter();
     await db.withFirm(x.paraCtx, (s) => askAgent(s, x.conv, "Which documents are privileged?"));
-    await expect(db.withFirm(x.owner, (s) => agentTurns(s, x.conv))).resolves.toEqual([]); // private: invisible
+    await expect(db.withFirm(x.owner, (s) => agentTurns(s, x.conv).then((r) => r.turns))).resolves.toEqual([]); // private: invisible
     await db.withFirm(x.paraCtx, (s) => updateConversation(s, x.conv, { title: "Agents", category: "strategy", shared: true }));
-    const forReader = await db.withFirm(x.readerCtx, (s) => agentTurns(s, x.conv));
-    expect(forReader[0]!.result.kind === "privilege" && forReader[0]!.result.items.length).toBe(1);
-    await expect(db.withFirm(x.portalCtx, (s) => agentTurns(s, x.conv))).rejects.toThrow(/permission/i);
+    const forReader = await db.withFirm(x.readerCtx, (s) => agentTurns(s, x.conv).then((r) => r.turns));
+    const r2 = forReader[0]!.result!;
+    expect(r2.kind === "privilege" && r2.items.length).toBe(1);
+    await expect(db.withFirm(x.portalCtx, (s) => agentTurns(s, x.conv).then((r) => r.turns))).rejects.toThrow(/permission/i);
     expect((await db.withFirm(x.portalCtx, (s) => s.client.query("SELECT 1 FROM huis.ai_agent_turns"))).rowCount).toBe(0);
     const other = await newFirm(db, "Other Owner");
     expect((await db.withFirm(other.owner, (s) => s.client.query("SELECT 1 FROM huis.ai_agent_turns"))).rowCount).toBe(0);

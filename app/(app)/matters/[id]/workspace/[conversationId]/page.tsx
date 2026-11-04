@@ -22,7 +22,7 @@ const when = (d: Date) => d.toISOString().slice(0, 16).replace("T", " ");
 const SCOPE = { huis: "Huis", firm: "Firm", personal: "Mine" } as const;
 
 export default async function ConversationPage({ params, searchParams }: {
-  params: Promise<{ id: string; conversationId: string }>; searchParams: Promise<{ f?: string; prompt?: string }>;
+  params: Promise<{ id: string; conversationId: string }>; searchParams: Promise<{ f?: string; prompt?: string; open?: string }>;
 }) {
   const { id, conversationId } = await params;
   if (!UUID.test(id) || !UUID.test(conversationId)) notFound();
@@ -35,7 +35,7 @@ export default async function ConversationPage({ params, searchParams }: {
     if (view.conversation.matterId !== id) return null;
     const prompt: Prompt | null = sp.prompt && PROMPT_ID.test(sp.prompt) ? await getPrompt(s, sp.prompt) : null;
     return {
-      view, prompt, turns: await agentTurns(s, conversationId),
+      view, prompt, agents: await agentTurns(s, conversationId, { open: sp.open && UUID.test(sp.open) ? [sp.open] : [] }),
       prompts: view.conversation.mine ? await listPrompts(s) : [], provider: await getAiProviderSetting(s),
     };
   });
@@ -43,7 +43,7 @@ export default async function ConversationPage({ params, searchParams }: {
   const { conversation: c, answers, hidden } = data.view;
   // Matter Brain answers and agent turns, in the order they were asked.
   const items: ({ at: Date; answer: BrainAnswer } | { at: Date; turn: AgentTurn })[] = [
-    ...answers.map((answer) => ({ at: answer.createdAt, answer })), ...data.turns.map((turn) => ({ at: turn.createdAt, turn })),
+    ...answers.map((answer) => ({ at: answer.createdAt, answer })), ...data.agents.turns.map((turn) => ({ at: turn.createdAt, turn })),
   ].sort((a, b) => a.at.getTime() - b.at.getTime());
   const here = `/matters/${id}/workspace/${c.id}`;
   const hiddenFields = <><input type="hidden" name="matterId" value={id} /><input type="hidden" name="conversationId" value={c.id} /></>;
@@ -59,6 +59,7 @@ export default async function ConversationPage({ params, searchParams }: {
       </p>
       <FlashBanner flash={flash} />
 
+      {data.agents.earlier ? <div className="card"><p className="notice">{data.agents.earlier} earlier agent {data.agents.earlier === 1 ? "question isn't" : "questions aren't"} listed; the newest {data.agents.turns.length} are.</p></div> : null}
       {items.length === 0 && hidden === 0 ? <div className="card"><p className="notice">No questions yet.</p></div> : null}
       {items.map((it) => ("answer" in it ? (
         <div className="card" key={it.answer.id}>
@@ -80,11 +81,14 @@ export default async function ConversationPage({ params, searchParams }: {
           ) : null}
         </div>
       ) : (
-        <div className="card" key={it.turn.id}>
+        <div className="card" key={it.turn.id} id={`t-${it.turn.id}`}>
           <h2 style={{ marginBottom: 4 }}>{it.turn.question}</h2>
           <p className="notice" style={{ marginTop: 0 }}>{when(it.turn.createdAt)} · <span className="badge">{AGENT_LABELS[it.turn.agent]}</span></p>
           <p className="notice">{it.turn.why} Worked out now, from what you can open.</p>
-          <AgentAnswer matterId={id} result={it.turn.result} />
+          {it.turn.result ? <AgentAnswer matterId={id} result={it.turn.result} /> : (
+            <p><Link href={`${here}?open=${it.turn.id}#t-${it.turn.id}`} className="button secondary">Show answer</Link>{" "}
+              <span className="notice">Older answers are worked out when you open them.</span></p>
+          )}
         </div>
       )))}
       {hidden ? (

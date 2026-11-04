@@ -39,7 +39,14 @@ export interface AgentParams {
   topics?: string[];
 }
 
-export interface Route { agent: AgentName; params: AgentParams; why: string }
+export interface Route {
+  agent: AgentName;
+  params: AgentParams;
+  /** Why this agent, in words that name nothing from Case DNA (saved with the turn). */
+  reason: string;
+  /** The full explanation, with names (built for whoever is reading; never saved). */
+  why: string;
+}
 
 const RULES: { agent: AgentName; re: RegExp; reason: string }[] = [
   { agent: "contradictions", re: /\b(contradict\w*|inconsisten\w*|conflicting|conflicts?)\b/i, reason: "the question asks about contradictions" },
@@ -56,35 +63,99 @@ const NOT_TOPICS = new Set(terms(
   "contradiction contradictions contradict contradicts inconsistent inconsistency conflicting conflict privilege privileged work product " +
   "matter case find list all any every each key important tell give documents document things thing everything about regarding concerning " +
   "build make create discuss discusses discussed discussing mention mentions mentioned mentioning event events occur occurred anything something " +
+  "please thanks thank me us our we you can could would should will lawsuit litigation chronology summary summarize overview describe explain " +
   "january february march april may june july august september october november december jan feb mar apr jun jul aug sep sept oct nov dec",
 ));
 
-function dateRange(question: string, explicit: { from?: string; to?: string }): { from?: string; to?: string; text?: string } {
-  const dates = findDates(question, 4);
-  if (!dates.length) return explicit;
-  const before = (d: { index: number }) => question.slice(Math.max(0, d.index - 12), d.index).toLowerCase();
-  if (dates.length >= 2) {
-    const [a, b] = [dates[0]!.date, dates[1]!.date].sort();
-    return { from: a, to: b, text: `${a} to ${b}` };
-  }
-  const d = dates[0]!;
-  if (/\b(after|since|from)\s*$/.test(before(d))) return { from: d.date, text: `from ${d.date}` };
-  if (/\b(before|until|till|by)\s*$/.test(before(d))) return { to: d.date, text: `until ${d.date}` };
-  return { from: d.date, to: d.date, text: d.date };
+const MONTH_NUM: Record<string, number> = {
+  jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3, apr: 4, april: 4, may: 5, jun: 6, june: 6, jul: 7, july: 7,
+  aug: 8, august: 8, sep: 9, sept: 9, september: 9, oct: 10, october: 10, nov: 11, november: 11, dec: 12, december: 12,
+};
+const MONTH_YEAR = /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?,?\s+(19\d{2}|20\d{2})\b/gi;
+const YEAR_ALONE = /\b(?:in|during|throughout|of)\s+(19\d{2}|20\d{2})\b/i;
+const lastDay = (y: number, m: number) => new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
+const pad = (n: number) => String(n).padStart(2, "0");
+
+/** The word ("after", "before"…) that governs a date: the last one earlier in the same clause (security review 14, F3). */
+function direction(question: string, index: number): "after" | "before" | null {
+  const clause = question.slice(0, index).split(/[.;?!]/).pop() ?? "";
+  const words = [...clause.toLowerCase().matchAll(/\b(after|since|following|from|before|until|till|prior to|by)\b/g)];
+  const w = words.at(-1)?.[1];
+  return !w ? null : ["before", "until", "till", "prior to", "by"].includes(w) ? "before" : "after";
 }
 
-/** The person a question names: their email, or a name word (3+ letters) that is theirs alone. */
+interface Range { from?: string; to?: string; text?: string; note?: string }
+
+/** Dates a question asks about: full dates, a month and year, or a year (security review 14, F3 and F4). */
+function dateRange(question: string): Range {
+  // Spans: [start, end] of each date written, in order.
+  const spans: { from: string; to: string; index: number; end: number }[] = [];
+  for (const d of findDates(question, 4)) spans.push({ from: d.date, to: d.date, index: d.index, end: d.index + d.length });
+  for (const m of question.matchAll(MONTH_YEAR)) {
+    const i = m.index ?? 0;
+    // A month already inside a full date ("April 18, 2026") isn't a month on its own.
+    if (spans.some((x) => i >= x.index && i < x.end)) continue;
+    const y = Number(m[2]);
+    const mo = MONTH_NUM[m[1]!.toLowerCase().replace(/\.$/, "")]!;
+    spans.push({ from: `${y}-${pad(mo)}-01`, to: lastDay(y, mo), index: i, end: i + m[0].length });
+  }
+  if (!spans.length) {
+    const y = YEAR_ALONE.exec(question);
+    if (y) spans.push({ from: `${y[1]}-01-01`, to: `${y[1]}-12-31`, index: y.index, end: y.index + y[0].length });
+  }
+  spans.sort((a, b) => a.index - b.index);
+  if (!spans.length) {
+    return /\b(jan(uary)?|feb(ruary)?|march|april|june|july|august|sept(ember)?|october|november|december)\b/i.test(question)
+      ? { note: "a month without a year was not used as a date range" } : {};
+  }
+  if (spans.length >= 2) {
+    const from = [spans[0]!.from, spans[1]!.from].sort()[0]!;
+    const to = [spans[0]!.to, spans[1]!.to].sort()[1]!;
+    return { from, to, text: `${from} to ${to}` };
+  }
+  const d = spans[0]!;
+  const dir = direction(question, d.index);
+  if (dir === "after") return { from: d.from, text: `from ${d.from}` };
+  if (dir === "before") return { to: d.to, text: `until ${d.to}` };
+  return { from: d.from, to: d.to, text: d.from === d.to ? d.from : `${d.from} to ${d.to}` };
+}
+
+/** Words that are never enough, alone, to name someone ("the", "company", "bank"…). */
+const NOT_NAME_WORDS = new Set((
+  "the and for with from about into over under that this these those there their they them then than was were are has have had " +
+  "company co corp corporation inc incorporated llc llp ltd limited group holdings partners partnership associates firm law office offices " +
+  "department dept division team board bank trust services service solutions systems international national american united global " +
+  "county city state court hospital clinic center centre school university college church foundation fund health medical " +
+  "will price may june bill mark grant rose hope faith joy dean case march april august"
+).split(" "));
+
+const wordsOf = (t: string) => t.split(/[^\p{L}\p{N}'-]+/u).filter(Boolean);
+const EMAIL_IN_TEXT = /[^\s<>(),;:"']+@[^\s<>(),;:"']+\.[a-z]{2,}/gi;
+
+/**
+ * The person a question names (security review 14, F1 and F2):
+ * an email address written in full (the exact address, never part of another), or else
+ * their name: every word of it, or a distinctive word of it written with a capital letter.
+ * When two people fit equally, nobody is picked (Huis doesn't guess).
+ */
 function personIn(question: string, people: RouteContext["people"]): RouteContext["people"][number] | undefined {
-  const q = question.toLowerCase();
-  const byEmail = people.find((p) => p.email && q.includes(p.email));
-  if (byEmail) return byEmail;
-  const words = new Set(q.split(/[^\p{L}\p{N}'-]+/u).filter((w) => w.length >= 3));
-  const hits = people.filter((p) => p.label.toLowerCase().split(/[^\p{L}\p{N}'-]+/u).some((w) => w.length >= 3 && words.has(w)));
-  if (!hits.length) return undefined;
-  // Prefer the person matching most name words (e.g. "Cindy Manager" over another "Cindy").
-  const score = (p: RouteContext["people"][number]) => p.label.toLowerCase().split(/[^\p{L}\p{N}'-]+/u).filter((w) => words.has(w)).length;
-  hits.sort((a, b) => score(b) - score(a));
-  return hits.length === 1 || score(hits[0]!) > score(hits[1]!) ? hits[0] : undefined;
+  const addresses = new Set([...question.matchAll(EMAIL_IN_TEXT)].map((m) => m[0].toLowerCase().replace(/[.]+$/, "")));
+  if (addresses.size) {
+    const byEmail = people.filter((p) => p.email && addresses.has(p.email));
+    return byEmail.length === 1 ? byEmail[0] : undefined;
+  }
+  const qWords = wordsOf(question.replace(EMAIL_IN_TEXT, " "));
+  const lower = new Set(qWords.map((w) => w.toLowerCase()));
+  const capitalized = new Set(qWords.filter((w) => /^\p{Lu}/u.test(w)).map((w) => w.toLowerCase()));
+  const scored = people.map((p) => {
+    const name = wordsOf(p.label.toLowerCase()).filter((w) => w.length >= 2);
+    const distinctive = name.filter((w) => w.length >= 3 && !NOT_NAME_WORDS.has(w));
+    const all = name.length > 0 && name.every((w) => lower.has(w));
+    const some = distinctive.filter((w) => capitalized.has(w)).length;
+    return { p, score: all ? 100 + name.length : some };
+  }).filter((x) => x.score > 0).sort((a, b) => b.score - a.score);
+  if (!scored.length) return undefined;
+  return scored.length === 1 || scored[0]!.score > scored[1]!.score ? scored[0]!.p : undefined;
 }
 
 /** The claim element a question is about: the one sharing the most words with it (at least two). */
@@ -105,8 +176,8 @@ export function route(question: string, ctx: RouteContext, choice: AgentName | "
   const person = personIn(q, ctx.people);
   // People's names identify a person, not a subject (all of them, not just the one picked).
   const nameWords = new Set(ctx.people.flatMap((p) => terms(p.label)));
-  const topics = [...new Set(terms(q).filter((t) => !NOT_TOPICS.has(t) && !nameWords.has(t) && !/^\d+$/.test(t)))].slice(0, 12);
-  const range = dateRange(q, {});
+  const topics = [...new Set(terms(q.replace(EMAIL_IN_TEXT, " ")).filter((t) => !NOT_TOPICS.has(t) && !nameWords.has(t) && !/^\d+$/.test(t)))].slice(0, 12);
+  const range = dateRange(q);
   const element = elementIn(q, ctx.elements);
 
   let agent: AgentName = "matter";
@@ -122,20 +193,31 @@ export function route(question: string, ctx: RouteContext, choice: AgentName | "
   }
 
   const params: AgentParams = {};
-  const notes: string[] = [];
   if (agent === "timeline" || agent === "email") {
     if (range.from) params.from = range.from;
     if (range.to) params.to = range.to;
-    if (range.text) notes.push(`dates ${range.text}`);
-    if (person) { params.personId = person.id; notes.push(`person ${person.label}`); }
+    if (person) params.personId = person.id;
   }
-  if (agent === "evidence") {
-    if (element) { params.elementId = element.id; notes.push(`element "${element.label}" (${element.claim})`); }
-    else notes.push("no claim element named in the question");
-  }
-  if (agent !== "contradictions" && agent !== "matter" && topics.length) {
-    params.topics = topics;
-    notes.push(`about ${topics.map((t) => `“${t}”`).join(", ")}`);
-  }
-  return { agent, params, why: `${AGENT_LABELS[agent]}: ${reason}${notes.length ? `; ${notes.join("; ")}` : ""}.` };
+  if (agent === "evidence" && element) params.elementId = element.id;
+  if (agent !== "contradictions" && agent !== "matter" && topics.length) params.topics = topics;
+  const full = describe(agent, reason, params, {
+    person: person ? person.label : undefined,
+    element: element && params.elementId ? `"${element.label}" (${element.claim})` : undefined,
+    dateNote: agent === "timeline" || agent === "email" ? range.note : undefined,
+  });
+  return { agent, params, reason, why: full };
+}
+
+/**
+ * The explanation shown with an answer, built for whoever reads it: names come from Case DNA
+ * as that reader sees it (security review 14, F9), so a name that is no longer available isn't shown.
+ */
+export function describe(agent: AgentName, reason: string, p: AgentParams, names: { person?: string; element?: string; dateNote?: string } = {}): string {
+  const notes: string[] = [];
+  if (p.from || p.to) notes.push(`dates ${p.from && p.to ? (p.from === p.to ? p.from : `${p.from} to ${p.to}`) : p.from ? `from ${p.from}` : `until ${p.to}`}`);
+  if (names.dateNote) notes.push(names.dateNote);
+  if (p.personId) notes.push(names.person ? `person ${names.person}` : "a person no longer available to you");
+  if (agent === "evidence") notes.push(p.elementId ? (names.element ? `element ${names.element}` : "a claim element no longer available to you") : "no claim element named in the question");
+  if (p.topics?.length) notes.push(`about ${p.topics.map((t) => `“${t}”`).join(", ")}`);
+  return `${AGENT_LABELS[agent]}: ${reason}${notes.length ? `; ${notes.join("; ")}` : ""}.`;
 }

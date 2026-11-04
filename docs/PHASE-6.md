@@ -1,12 +1,12 @@
 # Phase 6 — AI Legal Intelligence
 
-**Status:** Part 1 (AI Workspace and Prompt Library) built, tested and through independent security review 13 (2 problems confirmed, both fixed). Part 2 (specialized agents) built and tested; **awaiting independent security review 14**. Parts 3–4 planned.
+**Status:** Part 1 (AI Workspace and Prompt Library) built, tested and through independent security review 13 (2 problems confirmed, both fixed). Part 2 (specialized agents) built, tested and through independent security review 14 (10 problems confirmed, all fixed). Parts 3–4 planned.
 
 ## Plan
 | Part | What | Status |
 |---|---|---|
 | 6.1 | **AI Workspace**: saved conversations inside each Matter, by category (strategy, research, deposition, discovery, timeline, damages, motion, trial, client, miscellaneous), private unless shared with the Matter's firm staff. **Prompt Library**: personal, firm-approved and built-in prompts | Review 13 done, fixes in |
-| 6.2 | **Specialized agents behind one interface**: a router that sends each question to the right agent (timeline, email, evidence, contradictions, privilege, or the Matter Brain), each built on what Huis already has, with fixed rules and every answer cited. A deposition agent follows once transcripts are handled as their own kind of document | Built, review 14 pending |
+| 6.2 | **Specialized agents behind one interface**: a router that sends each question to the right agent (timeline, email, evidence, contradictions, privilege, or the Matter Brain), each built on what Huis already has, with fixed rules and every answer cited. A deposition agent follows once transcripts are handled as their own kind of document | Review 14 done, fixes in |
 | 6.3 | **Light analysis + Reanalyze Matter**: "N new items since the last complete analysis", and a Matter analysis by fixed, explainable rules (new evidence, potential contradictions, claim elements with no evidence, items with no source), not a made-up "case health" score | Planned |
 | 6.4 | **Outside AI providers** through the AI Gateway: written answers, and two-model checking for significant outputs (one model answers, another reviews, Huis shows where they disagree). **Needs the O-3 decision first**: no client material goes to an outside provider until its zero-retention, no-training terms are signed. The provider is chosen by testing candidates on redacted legal tasks. Carried from review 13: a written answer keeps every passage it was given as a source, and each provider gets its own answer check in the database | Waiting on O-3 |
 
@@ -56,23 +56,41 @@ The pre-release check (`scripts/qa`, now with the workspace, a seeded shared con
 | Area | What Huis does |
 |---|---|
 | One place to ask | Questions in an AI Workspace conversation go to the **Huis AI Router**, which picks the agent that fits. Or choose the agent yourself under "Answered by". Each answer says which agent answered and why. Example: *"Timeline agent: the question asks when, or about dates; dates 2026-04-01 to 2026-05-10; person Cindy Manager."* |
-| The router | **Fixed, explainable rules, not AI.** Words like "contradiction" go to the contradiction agent, "privileged" or "work product" to the privilege agent, and "email", "wrote" or "sent" to the email agent. "Evidence" or "prove" plus the words of a confirmed claim element goes to the evidence agent. "When", dates, "before" or "after" go to the timeline agent. Anything else goes to the Matter Brain. It also reads full dates (a range, "after", "before") and a person: by email address, or by a name word that is theirs alone, never guessing between two people. It reads subject words too, leaving out names and question words |
-| Timeline agent | The Matter's timeline for the dates and person asked about, narrowed to items that mention the subject, each with its sources |
+| The router | **Fixed, explainable rules, not AI.** Words like "contradiction" go to the contradiction agent, "privileged" or "work product" to the privilege agent, and "email", "wrote" or "sent" to the email agent. "Evidence" or "prove" plus the words of a confirmed claim element goes to the evidence agent. "When", dates, "before" or "after" go to the timeline agent. Anything else goes to the Matter Brain. It also reads:
+- **dates:** full dates, months ("March 2026") and years ("in 2025"), with "after", "since", "before" or "until" taken from the whole clause; a month without a year is mentioned rather than guessed;
+- **a person:** by their exact email address, or by their name (every word, or a distinctive word written with a capital). Common words never name anyone, and Huis never guesses between two people;
+- **subject words:** leaving out names, email addresses and question words |
+| Timeline agent | The Matter's timeline for the dates and person asked about, narrowed to items that mention the subject, each with its sources. It always says how subject words narrowed the list ("Narrowed to 3 of 12 that mention…"); if they'd remove everything, all items are shown with a note. On a very large Matter it says when the dates asked about can't be read in full |
 | Email agent | Filed email for the person and dates, narrowed to email whose subject or text mentions the subject |
 | Evidence agent | Passages that may prove or disprove the claim element asked about (the Case DNA "Find evidence" search) |
 | Contradiction agent | The potential contradictions to decide, with their reasons, and how many are confirmed or rejected, linking to the Contradictions page |
 | Privilege agent | Documents filed in the privileged area or in folders marked privileged or work product. They are listed by where they are filed; whether privilege applies is the attorney's call |
 | Matter Brain | Everything else: the most relevant passages, quoted and cited (as in part 1) |
 | Nothing to forge, always current | An agent's turn saves only the question, the agent and its settings (dates, person, element, subject words). Never its answer. The answer is worked out again, **as the person reading**, every time the conversation is opened. So it reflects new or removed evidence, can't be planted by writing to the database, and a shared conversation never shows a reader anything they can't open. Settings that point outside the Matter, or extra fields, find nothing |
-| Order | Questions keep the order they were asked, timestamped by the database at the moment they're saved |
+| Order and size | Questions keep the order they were asked, timestamped by the database at the moment they're saved. The newest 100 agent questions are listed, with a count of any earlier ones. To keep every page fast, only the newest 5 agent answers are worked out each time the conversation is opened. Older ones have **Show answer**, and identical questions are worked out once |
+| Names in explanations | The saved reason names nothing from Case DNA. People's and elements' names are added for each reader, so a name no longer available to them isn't shown |
+| AI setting | Agents follow the firm's AI setting: with AI off, nothing is asked |
 | Who can use it | As for the AI Workspace: firm staff only, only the owner asks in a conversation, colleagues read shared ones, and walls and other firms are kept out (also directly in the database) |
 | Logs | The audit log records which agent was asked, never the question |
 
-**Tests:** `test/agents.test.ts`, 5 tests:
+**Security review 14** (independent; see `SECURITY-REVIEW-2026-11.md`) found no read leak. It confirmed 10 problems, all fixed:
+- routing to the wrong person;
+- misread dates;
+- a stray word hiding results;
+- items silently cut off on very large Matters;
+- newer questions disappearing;
+- heavy pages from many questions;
+- a stale name in a saved reason;
+- agents ignoring the firm's AI setting.
+
+Regression tests are in `test/security-review-14.test.ts`. After the fixes: all 282 tests, the type check, the build and the dependency scan pass.
+
+**Tests:** `test/agents.test.ts`, 6 tests:
 - the router on the spec's own example questions, your own choice of agent, and no guessing between two people with the same name;
 - every agent answering from the Matter, with sources, and the Matter Brain for the rest; audit without the question;
 - only settings stored, and answers recomputed: infected email leaves at once, and planted settings or a walled element find nothing; no turns in someone else's conversation, no changing turns;
 - order kept for questions asked together (checked to fail without the fix);
+- only the newest answers worked out on each view (older ones when opened), and narrowing always explained;
 - shared conversations answered for each reader; clients, walls and other firms get nothing.
 
 **Checked in a real browser** (made-up data):

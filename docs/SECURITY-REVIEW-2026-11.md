@@ -231,6 +231,29 @@ Also fixed while reviewing: overlapping passages could produce a second, cut-sho
 - Audit entries are written by the app, so direct database writes don't produce them (true across Huis).
 - An owner removed from a Matter can no longer change or unshare their conversations there.
 
+## Fourteenth review — Phase 6 part 2 (specialized agents)
+
+**Scope:** the AI Router, each agent, agent turns and their database rules, the conversation page, and the timeline and contradiction services the agents reuse.
+**Result:** no read leak. Agent answers only ever contained what the reader could open: walled Matters, other firms, infected or walled items and planted settings all came up empty. Turns couldn't be planted, back-dated, changed or moved, and the audit log held only the agent's name. The reviewer confirmed 10 problems, five of them misleading answers for attorneys. **All fixed.** Regression tests are in `test/security-review-14.test.ts` (14 tests) and `test/agents.test.ts`. Each fails without its fix.
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| R14-1 | Medium | An email address in a question matched a *different* person whose address is part of it (sal@… went to "Al") | Addresses are read whole and matched exactly; if two people fit, nobody is picked |
+| R14-2 | Medium | Ordinary words in names captured questions ("The Widget Company" took every question with "the"), silently narrowing results to that organization | Names match on all their words, or on a distinctive word written with a capital letter; common words ("the", "company", "bank", "price"…) never name anyone alone |
+| R14-3 | Medium | "After the March 3, 2026 hearing" was read as that single day | "After / since / before / until" are read from the whole clause before the date |
+| R14-4 | Low-Medium | "In March 2026" or "in 2025" was ignored, so the whole Matter's timeline came back as the answer | Months and years become date ranges; a month without a year is said in the explanation instead of being silently ignored |
+| R14-5 | Medium | A non-subject word ("please", "lawsuit") narrowed the timeline to nothing, shown as "Nothing matches" | More such words are ignored. Every narrowing is now said ("Narrowed to 3 of 12 that mention …"), and if subject words would remove everything, all items are shown with a note |
+| R14-6 | Medium | On very large Matters the timeline read only the first 5,000 items, oldest first, so the dates asked about could be cut off without a word | The date range is applied in the database before the read limit (this also fixes the Timeline page), and the agent says when a Matter is too large to read in full |
+| R14-7 | Low-Medium | After 200 questions, newer ones disappeared | The newest questions are always listed, with a count of earlier ones |
+| R14-8 | Medium (availability) | Every view re-ran every agent turn, so a conversation full of questions made each colleague's page do hundreds of full timeline or contradiction runs | Only the newest 5 turns are worked out on each view; older ones show "Show answer" and run when opened. Identical questions are worked out once, and the email text read to narrow by subject is bounded |
+| R14-9 | Low | A turn's saved explanation kept a Case DNA person's name after that person's only source was found infected | The saved reason names nothing from Case DNA. Names are looked up for each reader, and one no longer available shows as "a person no longer available to you" |
+| R14-10 | Low | With AI turned off for the firm, agents still answered (the page hid the box, but the action didn't check) | Agents follow the firm's AI setting like the Matter Brain |
+
+**Accepted, not changed:**
+- Slash dates are read US-style (month/day), as Huis serves US firms first.
+- A question with two or more dates uses the first two as a range.
+- The privilege agent lists items by where they're filed, so an item still waiting for its virus scan isn't listed yet.
+
 ## Still open (tracked, not code defects)
 1. **MFA enforcement** — Microsoft sign-in doesn't yet require proof of MFA. Plan: require the firm's Microsoft MFA (Conditional Access) or a Huis passkey. Part of the end-of-build Azure/hosting step.
 2. **Administrator-level tampering** — someone with full database superuser access could switch off the protective rules and rewrite history consistently. The hash chains make ordinary tampering detectable, but defeating a superuser needs the chain's latest fingerprint stored outside the database (e.g. a daily signed export). Planned with production hosting.

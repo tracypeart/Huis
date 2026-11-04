@@ -3,9 +3,10 @@ import type { FirmSession } from "../db/tenant";
 import { NotFoundError, PermissionDeniedError, UserFacingError } from "../errors";
 import { INTERNAL_ROLES } from "../security/permissions";
 import { terms } from "../ai/local";
-import { AGENTS, route, type AgentName, type AgentParams, type Route } from "../ai/router";
+import { AGENTS, describe, route, type AgentName, type AgentParams, type Route } from "../ai/router";
 import { recordAudit } from "./audit";
-import { askMatter, type FoundPassage } from "./brain";
+import { askMatter, getAiProviderSetting, type FoundPassage } from "./brain";
+import { AiDisabledError } from "../ai/gateway";
 import { getContradictions } from "./contradictions";
 import { findEvidenceFor } from "./dna";
 import { getTimeline, type TimelineEntry } from "./timeline";
@@ -61,6 +62,8 @@ export async function askAgent(s: FirmSession, conversationId: string, question:
   const q = z.string().trim().min(1).max(2000).parse(question);
   const pick = z.enum([...AGENTS, "auto"]).catch("auto").parse(choice);
   const c = await myConversation(s, conversationId);
+  // AI features follow the firm's setting, agents included (security review 14, F10).
+  if ((await getAiProviderSetting(s)) === "off") throw new AiDisabledError();
   const r = route(q, await routeContext(s, c.matterId), pick);
   if (r.agent === "matter") {
     const id = await askMatter(s, c.matterId, q, c.id);
@@ -70,7 +73,8 @@ export async function askAgent(s: FirmSession, conversationId: string, question:
   const id = (await s.client.query<{ id: string }>(
     `INSERT INTO huis.ai_agent_turns (firm_id, matter_id, conversation_id, asked_by, question, agent, params, why)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-    [s.actor.firmId, c.matterId, c.id, s.actor.userId, q, r.agent, JSON.stringify(paramsSchema.parse(r.params)), r.why.slice(0, 2000)])).rows[0]!.id;
+    // Saved: the reason in words that name nothing from Case DNA; names are added for each reader (security review 14, F9).
+    [s.actor.firmId, c.matterId, c.id, s.actor.userId, q, r.agent, JSON.stringify(paramsSchema.parse(r.params)), r.reason.slice(0, 2000)])).rows[0]!.id;
   await s.client.query("UPDATE huis.ai_conversations SET updated_at = now() WHERE id = $1", [c.id]);
   // The question itself is work product: never in the audit log.
   await recordAudit(s, "ai.agent_asked", { targetType: "matter", targetId: c.matterId, matterId: c.matterId, metadata: { agent: r.agent } });
@@ -92,6 +96,9 @@ export type AgentResult =
 /** Entries shown per agent answer. */
 export const SHOWN = 50;
 
+/** Emails whose text is read to narrow by subject, and how much of each (bounded work per view; security review 14, F8). */
+const MAX_EMAIL_BODIES = 500;
+
 async function runTimeline(s: FirmSession, matterId: string, p: AgentParams, emailsOnly: boolean): Promise<AgentResult> {
   const notes: string[] = [];
   if (p.personId) {
@@ -100,24 +107,30 @@ async function runTimeline(s: FirmSession, matterId: string, p: AgentParams, ema
   }
   const personOk = p.personId && !notes.length ? p.personId : undefined;
   const tl = await getTimeline(s, matterId, { from: p.from, to: p.to, person: personOk });
+  if (tl.truncated) notes.push("This Matter is very large: only part of its timeline could be read for these dates. Narrow the dates to see everything.");
   let entries = emailsOnly ? tl.entries.filter((e) => e.kind === "email") : tl.entries;
-  if (p.topics?.length) {
-    // An entry counts when its own words (and, for an email, its text) mention one of the subject words.
-    const emailIds = entries.filter((e) => e.kind === "email").map((e) => e.evidenceId!);
+  if (p.topics?.length && entries.length) {
+    // An entry counts when its own words (and, for an email, the start of its text) mention one of the subject words.
+    const emailIds = entries.filter((e) => e.kind === "email").map((e) => e.evidenceId!).slice(0, MAX_EMAIL_BODIES);
     const bodies = new Map<string, string>();
     if (emailIds.length) {
       for (const r of (await s.client.query<{ evidence_id: string; content: string }>(
-        `SELECT evidence_id, string_agg(left(content, 4000), ' ' ORDER BY chunk_no) AS content FROM huis.brain_chunks
-          WHERE matter_id = $1 AND evidence_id = ANY($2::uuid[]) AND chunk_no < 8 GROUP BY evidence_id`, [matterId, emailIds])).rows) {
+        `SELECT evidence_id, string_agg(left(content, 2000), ' ' ORDER BY chunk_no) AS content FROM huis.brain_chunks
+          WHERE matter_id = $1 AND evidence_id = ANY($2::uuid[]) AND chunk_no < 3 GROUP BY evidence_id`, [matterId, emailIds])).rows) {
         bodies.set(r.evidence_id, r.content);
       }
     }
     const want = new Set(p.topics);
-    entries = entries.filter((e) => {
+    const narrowed = entries.filter((e) => {
       const text = [e.label, e.details, e.from ?? "", ...e.to, ...e.people.map((x) => x.label), ...e.sources.map((c) => c.quote),
         e.evidenceId ? bodies.get(e.evidenceId) ?? "" : ""].join("\n");
-      return terms(text.slice(0, 40_000)).some((t) => want.has(t));
+      return terms(text.slice(0, 10_000)).some((t) => want.has(t));
     });
+    const words = p.topics.map((t) => `“${t}”`).join(", ");
+    // Never "Nothing matches" when there is something: say what the subject words did (security review 14, F5).
+    if (narrowed.length) notes.push(`Narrowed to the ${narrowed.length} of ${entries.length} that mention ${words}.`);
+    else notes.push(`None of the ${entries.length} mention ${words}, so all of them are shown.`);
+    if (narrowed.length) entries = narrowed;
   }
   return { kind: emailsOnly ? "email" : "timeline", entries: entries.slice(0, SHOWN), total: entries.length, notes };
 }
@@ -181,21 +194,57 @@ export async function runAgent(s: FirmSession, matterId: string, agent: AgentNam
 }
 
 export interface AgentTurn {
-  id: string; question: string; agent: Exclude<AgentName, "matter">; why: string; createdAt: Date; mine: boolean; result: AgentResult;
+  id: string; question: string; agent: Exclude<AgentName, "matter">; why: string; createdAt: Date; mine: boolean;
+  /** Worked out now, as this reader; null for an older turn not opened (see agentTurns). */
+  result: AgentResult | null;
 }
 
-/** A conversation's agent turns, each answered now, as this person (the conversation's own visibility applies). */
-export async function agentTurns(s: FirmSession, conversationId: string): Promise<AgentTurn[]> {
+/** Turns listed per conversation (newest), and how many of the newest are answered on every view. */
+export const TURNS_LISTED = 100;
+export const ANSWERED_ON_VIEW = 5;
+
+export interface AgentTurnList { turns: AgentTurn[]; earlier: number }
+
+/**
+ * A conversation's agent turns, answered now, as this person (the conversation's own visibility applies).
+ * The newest are always listed (security review 14, F7). To keep every view's work bounded however many
+ * turns there are (F8), only the newest few, plus any the reader opens, are worked out, and identical
+ * questions (same agent and settings) are worked out once.
+ */
+export async function agentTurns(s: FirmSession, conversationId: string, opts: { open?: string[] } = {}): Promise<AgentTurnList> {
   staff(s);
   const rows = (await s.client.query<{ id: string; matter_id: string; question: string; agent: AgentName; params: unknown; why: string; created_at: Date; asked_by: string }>(
     `SELECT id, matter_id, question, agent, params, why, created_at, asked_by FROM huis.ai_agent_turns
-      WHERE conversation_id = $1 ORDER BY created_at, id LIMIT 200`, [conversationId])).rows;
+      WHERE conversation_id = $1 ORDER BY created_at DESC, id DESC LIMIT ${TURNS_LISTED}`, [conversationId])).rows.reverse();
+  const total = rows.length < TURNS_LISTED ? rows.length
+    : (await s.client.query<{ n: number }>("SELECT count(*)::int AS n FROM huis.ai_agent_turns WHERE conversation_id = $1", [conversationId])).rows[0]!.n;
+  const open = new Set((opts.open ?? []).slice(0, 5));
+  const answered = new Set(rows.slice(-ANSWERED_ON_VIEW).map((r) => r.id));
+  const memo = new Map<string, Promise<AgentResult>>();
+  // Names for the explanations, as this reader sees Case DNA.
+  const ids = [...new Set(rows.flatMap((r) => {
+    const p = paramsSchema.catch({}).parse(r.params);
+    return [p.personId, p.elementId].filter((x): x is string => !!x);
+  }))];
+  const names = new Map((ids.length ? (await s.client.query<{ id: string; label: string; claim: string | null }>(
+    `SELECT n.id, n.label, (SELECT c.label FROM huis.dna_links l JOIN huis.dna_nodes c ON c.id = l.to_id
+                              WHERE l.from_id = n.id AND l.relation = 'element_of' LIMIT 1) AS claim
+       FROM huis.dna_nodes n WHERE n.id = ANY($1::uuid[])`, [ids])).rows : []).map((r) => [r.id, r]));
   const out: AgentTurn[] = [];
   for (const r of rows) {
-    out.push({
-      id: r.id, question: r.question, agent: r.agent as AgentTurn["agent"], why: r.why, createdAt: r.created_at, mine: r.asked_by === s.actor.userId,
-      result: await runAgent(s, r.matter_id, r.agent, r.params),
+    const p = paramsSchema.catch({}).parse(r.params);
+    const el = p.elementId ? names.get(p.elementId) : undefined;
+    const why = describe(r.agent, r.why, p, {
+      person: p.personId ? names.get(p.personId)?.label : undefined,
+      element: el ? `"${el.label}"${el.claim ? ` (${el.claim})` : ""}` : undefined,
     });
+    let result: AgentResult | null = null;
+    if (answered.has(r.id) || open.has(r.id)) {
+      const key = `${r.matter_id}|${r.agent}|${JSON.stringify(p)}`;
+      if (!memo.has(key)) memo.set(key, runAgent(s, r.matter_id, r.agent, p));
+      result = await memo.get(key)!;
+    }
+    out.push({ id: r.id, question: r.question, agent: r.agent as AgentTurn["agent"], why, createdAt: r.created_at, mine: r.asked_by === s.actor.userId, result });
   }
-  return out;
+  return { turns: out, earlier: Math.max(0, total - rows.length) };
 }
