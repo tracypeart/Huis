@@ -1,11 +1,11 @@
 # Phase 5 — Timeline + Evidence Intelligence
 
-**Status:** Part 1 (Master Timeline) built and tested; **awaiting independent security review 11** before merge. Part 2 (contradiction engine) planned.
+**Status:** Part 1 (Master Timeline) built, tested and through independent security review 11 (2 problems confirmed, all fixed). It merges once GitHub's checks pass. Part 2 (contradiction engine) is next.
 
 ## Plan
 | Part | What | Status |
 |---|---|---|
-| 5.1 | **Master Timeline**: one chronology per Matter, made from Case DNA's dated events, facts and damages plus every filed email, each linked to its sources. Views by category (court, plaintiff, defendant, medical, financial, employment, communications, discovery, witness, damages) and filters (dates, person, words, confirmed only, source). Huis suggests categories by fixed rules; attorneys choose their own. Chronology download | Built, review pending |
+| 5.1 | **Master Timeline**: one chronology per Matter, made from Case DNA's dated events, facts and damages plus every filed email, each linked to its sources. Views by category (court, plaintiff, defendant, medical, financial, employment, communications, discovery, witness, damages) and filters (dates, person, words, confirmed only, source). Huis suggests categories by fixed rules; attorneys choose their own. Chronology download | Review 11 done, fixes in |
 | 5.2 | **Contradiction engine**: Huis flags *potential* contradictions (for example a witness statement "I didn't know about the surgery until May" against earlier dated evidence that mentions it), showing the supporting material and why it was flagged. Attorneys decide whether something is a contradiction; confirmed ones become `contradicts` links in Case DNA | Planned |
 
 As in Phase 4, PostgreSQL stays the single source of truth. The timeline isn't a separate copy of anything. It is put together from Case DNA and filed email each time it's read, under the same database rules.
@@ -40,4 +40,4 @@ The duplicate-email test was checked to fail without its fix.
 
 **Found while checking, not part of this part:** at phone width the shared site menu makes most pages, not only the timeline, wider than the screen. To fix separately in the app layout.
 
-**Before merge (README ground rule 4):** independent security review 11 (an attacker who didn't write the code, with working tests), fixes for anything confirmed, the review recorded in `SECURITY-REVIEW-2026-11.md`, and green GitHub checks.
+**Security review 11** (independent; see `SECURITY-REVIEW-2026-11.md`) found no access-control break. It confirmed two problems, both in reading email addresses: malformed addresses could make the timeline very slow, and an address hidden in a sender's display name could tie an email to the wrong person, including in Huis's Phase 4 people suggestions. Both are fixed, along with three smaller suspicions. Regression tests are in `test/security-review-11.test.ts` (8 tests). After the fixes: all 226 tests, the type check, the build and the dependency scan pass, and the pre-release check is clean again.

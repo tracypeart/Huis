@@ -167,6 +167,23 @@ The reviewer wrote 23 attack tests and confirmed 8 problems. **All fixed**, with
 | R10-7 | Low | Someone allowed to export could write "exported" chain-of-custody entries directly, with no audit record | The database step that records custody also writes the audit entry itself, so neither can exist without the other; each export number can be used once |
 | R10-8 | Suspected | If saving the export records failed at the last moment, the download could in principle still start | The download starts only after the records are saved |
 
+## Eleventh review — Phase 5 part 1 (Master Timeline)
+
+**Scope:** the Master Timeline: the new `dna_nodes.categories` column and its database rules, the timeline service, the category rules, the category editor, the return links, the chronology download route, and the change to the export.
+**Result:** no access-control break. The reviewer couldn't get the timeline, its emails, counts, people or download as a client, from outside an ethical wall, from another firm, or (for changes and the download) as read-only staff, through the service or direct SQL. Infected and duplicate email stayed off the timeline, categories couldn't be planted on Huis's suggestions, and every CSV column resisted formula tricks. The reviewer confirmed 2 problems and raised 5 suspicions; the 3 that were worth acting on are fixed. Regression tests are in `test/security-review-11.test.ts` (8 tests). Each fails without its fix.
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| R11-1 | Medium | Reading email addresses for the timeline could take time growing with the square of an address's length. A filed mailbox whose emails each had 100 long malformed addresses made a 40-email timeline take 2.5 seconds; at the timeline's limit of 5,000 emails, every page view and download would block the server for minutes | Only the address that ends the header counts, and a bare address must be the whole value. Matching is anchored and bounded (5,000 malformed addresses take milliseconds) |
+| R11-2 | Low-Medium | An email whose sender name contained someone else's address (`"Pat Smith <pat@…>" <mallory@…>`) was put on the timeline as Pat's: listed with Pat, found by the Pat filter, and filed under Plaintiff. Huis's people suggestions from email (Phase 4) had the same flaw | The same rule as R11-1, both on the timeline and in the worker's people suggestions (`0015_timeline.sql`). The person is the one the email was actually sent from or to |
+| R11-3 | Suspected | The download route read the request body before checking where the request came from and who sent it | The form is read only after those checks, and anything over 64 KB, or of unknown size, is refused unread |
+| R11-4 | Suspected | A very long cell (an item with many long quotes) could exceed a spreadsheet's 32,767-character cell limit and spill into the next cell, past the formula guard | Cells in the download are shortened to 32,000 characters and marked "(shortened)" |
+| R11-5 | Suspected (cosmetic) | Search words containing `*` broke the link back to the timeline after Confirm or Reject | The return link accepts them |
+
+**Accepted, not changed:**
+- If an original email is later found infected, its byte-identical duplicate (itself clean) appears on the timeline. The evidence list already shows it, so nothing new is revealed.
+- On extremely large Matters, the 50,000-row limits on citations and links could list an item as having no source. This is noted for Phase 5 part 2.
+
 ## Still open (tracked, not code defects)
 1. **MFA enforcement** — Microsoft sign-in doesn't yet require proof of MFA. Plan: require the firm's Microsoft MFA (Conditional Access) or a Huis passkey. Part of the end-of-build Azure/hosting step.
 2. **Administrator-level tampering** — someone with full database superuser access could switch off the protective rules and rewrite history consistently. The hash chains make ordinary tampering detectable, but defeating a superuser needs the chain's latest fingerprint stored outside the database (e.g. a daily signed export). Planned with production hosting.

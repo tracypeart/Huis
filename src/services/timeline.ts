@@ -75,15 +75,23 @@ export interface Timeline {
 /** The most dated Case DNA items, and filed emails, read for one timeline. */
 export const MAX_ITEMS = 5000;
 export const MAX_EMAILS = 5000;
+/** Characters in one spreadsheet cell of the download (below the 32,767 spreadsheets allow). */
+const MAX_CELL = 32_000;
 
 function reader(s: FirmSession) {
   if (!INTERNAL_ROLES.has(s.actor.role)) throw new PermissionDeniedError("use the timeline");
 }
 
 /** The email address inside a header value such as `Pat Smith <pat@example.com>`. */
-function address(v: string): string | null {
-  const m = /<([^<>@\s]+@[^<>\s]+)>/.exec(v) ?? /([^<>@\s,;"]+@[^<>\s,;"]+)/.exec(v);
-  return m ? m[1]!.toLowerCase() : null;
+// Only the address that ends the header counts (a display name can contain another address);
+// a bare address must be the whole value. Bounded and anchored, so long or malformed input stays fast.
+const ANGLE_AT_END = /<([^<>@\s]{1,64}@[^<>@\s]{1,255})>$/;
+const BARE = /^[^<>@\s,;"]{1,64}@[^<>@\s,;"]{1,255}$/;
+export function address(v: string): string | null {
+  const s = v.slice(-330).trim();
+  const m = ANGLE_AT_END.exec(s);
+  if (m) return m[1]!.toLowerCase();
+  return BARE.test(s) ? s.toLowerCase() : null;
 }
 
 /** Everything on the Matter's timeline, unfiltered, in date order. */
@@ -260,7 +268,9 @@ export async function timelineCsv(s: FirmSession, matterId: string, filters: unk
     ]),
   ];
   await recordAudit(s, "timeline.downloaded", { targetType: "matter", targetId: matterId, matterId, metadata: { rows: String(t.entries.length) } });
-  const body = `﻿${lines.map((r) => r.map(csv).join(",")).join("\r\n")}\r\n`;
+  // Spreadsheets hold at most 32,767 characters a cell (more can spill into the next cell, past the formula guard).
+  const cell = (v: unknown) => csv(String(v ?? "").length > MAX_CELL ? `${String(v).slice(0, MAX_CELL)}… (shortened)` : v);
+  const body = `﻿${lines.map((r) => r.map(cell).join(",")).join("\r\n")}\r\n`;
   const safe = matter.huisNumber.replace(/[^A-Za-z0-9-]/g, "_").slice(0, 80) || "matter";
   return { filename: `${safe}-timeline.csv`, body };
 }

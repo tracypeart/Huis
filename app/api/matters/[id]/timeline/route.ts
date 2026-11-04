@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { api } from "../../../../../lib/api";
 import { setFlash } from "../../../../../lib/server";
 import { authConfig } from "../../../../../src/auth/config";
+import { UserFacingError } from "../../../../../src/errors";
 import { timelineCsv } from "../../../../../src/services/timeline";
 
 export const dynamic = "force-dynamic";
@@ -14,11 +15,15 @@ export const dynamic = "force-dynamic";
  */
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const form = await req.formData().catch(() => null);
-  const filters = Object.fromEntries(
-    ["category", "from", "to", "person", "q", "show", "source", "emails"].map((k) => [k, typeof form?.get(k) === "string" ? (form!.get(k) as string) : undefined]),
-  );
   const res = await api(req, async (s) => {
+    // Read the form only once the request is known to come from Huis and a signed-in person (security review 11).
+    // The form is a handful of short filters: anything large (or of unknown size) is refused unread.
+    const size = Number(req.headers.get("content-length") ?? NaN);
+    if (!Number.isFinite(size) || size > 64 * 1024) throw new UserFacingError("That request is too large.", 413);
+    const form = await req.formData().catch(() => null);
+    const filters = Object.fromEntries(
+      ["category", "from", "to", "person", "q", "show", "source", "emails"].map((k) => [k, typeof form?.get(k) === "string" ? (form!.get(k) as string) : undefined]),
+    );
     const out = await timelineCsv(s, id, filters, form?.get("acknowledge") === "on");
     const ascii = out.filename.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
     return new Response(out.body, {

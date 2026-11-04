@@ -323,7 +323,7 @@ const dnaPath = (fd: FormData) => {
   const back = text(fd, "back");
   // Only return to a page inside this Matter's Case DNA or timeline (with its filters).
   const ok = back && (/^\/matters\/[0-9a-f-]{36}\/dna(\/[0-9a-f-]{36})?(\?[a-z=0-9-]*)?$/i.test(back)
-    || /^\/matters\/[0-9a-f-]{36}\/timeline(\?[A-Za-z0-9=&%+._-]{0,1000})?$/.test(back));
+    || /^\/matters\/[0-9a-f-]{36}\/timeline(\?[A-Za-z0-9=&%+._*-]{0,2000})?$/.test(back));
   return ok && back.startsWith(`/matters/${matterId}/`) ? back : `/matters/${matterId}/dna`;
 };
 const nodeFields = (fd: FormData) => ({
