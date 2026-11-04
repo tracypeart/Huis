@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import pg from "pg";
 import { aiProvider } from "../ai/gateway";
+import { parseNef } from "../court/nef";
+import { toCharPositions } from "../services/cite";
 import { findEvents } from "../dna/extract";
 import { chunkText, MAX_CHUNKS } from "./chunk";
 
@@ -39,6 +41,17 @@ export class BrainWorker {
       if (job.kind === "evidence") {
         await this.pool.query("SELECT huis.worker_save_dna_suggestions($1, $2, $3)",
           [job.source_id, job.lock_token, JSON.stringify(findEvents(job.content))]);
+        // Court dates read from a federal court notice filed into the Matter (proposals only).
+        const nef = parseNef(job.content);
+        if (nef?.events.length) {
+          // Positions as the database counts them (characters, not UTF-16 units: security review 17, F2),
+          // and the filing each date belongs to, so the same notice in another mailbox isn't proposed twice (F3).
+          const events = nef.events.map((e) => ({
+            ...e, ...toCharPositions(job.content, e.start, e.end), caseNumber: nef.caseNumber, documentNumber: nef.documentNumber,
+          }));
+          await this.pool.query("SELECT huis.worker_save_court_suggestions($1, $2, $3)",
+            [job.source_id, job.lock_token, JSON.stringify(events)]);
+        }
       }
       const hash = createHash("sha256").update(job.content).digest("hex");
       // Very large documents: only the first part fits; the Brain says so.

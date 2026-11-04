@@ -298,6 +298,29 @@ Also fixed while reviewing: overlapping passages could produce a second, cut-sho
 - **Contrary authority:** authority cited as cutting against an element is shown, but isn't counted as a gap. An authority cited as "explains" counts as authority cited.
 - **The library is firm-wide by design.** Its note field now warns, and an attempted removal can reveal (one yes/no) that a Matter you can't see cites an authority.
 
+## Seventeenth review — Phase 8 part 1 (court calendar and federal court notices)
+
+**Scope:** the court calendar table and its database rules, the worker that proposes dates from court notices, the federal court notice reader, the court page, the dashboard list, and the calendar (.ics) download.
+**Result:** no confidentiality leak. Firm isolation, walls (including on the dashboard), clients and read-only staff held, in the service and in direct SQL; Huis's proposals couldn't be planted or rewritten; the document link stays on the courts' own site; the download is POST-only with confirmation. The reviewer confirmed 9 problems. **All fixed.** Regression tests are in `test/security-review-17.test.ts` (11 tests) and `test/court.test.ts`. Each fails without its fix.
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| R17-1 | High (availability) | The pattern that reads the court's name could take seconds to hours on an email with a long run of spaces or line breaks after "U.S. District Court", blocking the worker and every view of the Matter's court page | The court's name is looked for only in a short stretch after "… Court", with one bounded whitespace run; hostile inputs are in the tests |
+| R17-2 | Medium | An emoji earlier in an email shifted a proposal's quote (JavaScript and the database count positions differently; the R12-3 class) | Positions are converted to characters before saving (`src/services/cite.ts`) |
+| R17-3 | Medium-Low | The same notice in a second attorney's mailbox proposed rejected dates again and listed the filing twice | Proposals are keyed by the filing (case, document number, what and when), not the email; the docket shows each filing once |
+| R17-4 | Low-Medium | A deadline the same sentence vacates or strikes ("… is VACATED", "… are STRICKEN") was proposed | A date in a sentence that vacates, strikes, cancels, terminates, withdraws or moots it is not proposed; a leading "The" is dropped from titles |
+| R17-5 | Low-Medium | Folding long calendar lines could cut an emoji in half, corrupting the title in calendar programs (the R10-4 class) | Lines are folded by whole characters |
+| R17-6 | Low | Timed dates named a time zone without defining it (RFC 5545 requires a VTIMEZONE) | The firm's time zone is defined in the file (US and European rules); any other zone is written in UTC |
+| R17-7 | Low | Free-look days depended on the server's own time zone (one day too many east of UTC) | Today's date and the email's date are worked out by the database in the firm's time zone |
+| R17-8 | Low | Marking a done date done again replaced who marked it and when; confirming a confirmed date wrote an audit entry for a decision that didn't happen | Who and when stay as first recorded; changes that change nothing record nothing |
+| R17-9 | Low | Any email with court-notice wording, from anyone, became "court notice" proposals and docket entries | Only email sent by a federal court's CM/ECF system (an address at a uscourts.gov host) is read as a court notice, in the database and the service |
+
+**Also changed:** the calendar download now takes the confirmation as part of the export itself (as the other exports do), not only in the web route.
+
+**Accepted, not changed:**
+- **Sender check without signatures:** the sender is checked by address. Checking the court's email signatures (DKIM/DMARC) needs the inbox sync to keep those results; until then a forged sender address could still produce proposals, which still need an attorney to confirm each date.
+- **Forwarded notices:** a court notice an attorney forwards from another address isn't read as a notice. File the original from the inbox.
+
 ## Still open (tracked, not code defects)
 1. **MFA enforcement** — Microsoft sign-in doesn't yet require proof of MFA. Plan: require the firm's Microsoft MFA (Conditional Access) or a Huis passkey. Part of the end-of-build Azure/hosting step.
 2. **Administrator-level tampering** — someone with full database superuser access could switch off the protective rules and rewrite history consistently. The hash chains make ordinary tampering detectable, but defeating a superuser needs the chain's latest fingerprint stored outside the database (e.g. a daily signed export). Planned with production hosting.
