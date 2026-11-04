@@ -136,7 +136,8 @@ describe("AI Workspace", () => {
     expect((await db.withFirm(x.owner, (s) => s.client.query("DELETE FROM huis.brain_answers WHERE id = $1", [answerId]))).rowCount).toBe(0);
     await expect(db.withFirm(x.owner, (s) => s.client.query(
       `INSERT INTO huis.brain_answers (firm_id, matter_id, asked_by, question, answer, provider, model, conversation_id)
-       VALUES ($1, $2, $3, 'planted', 'planted', 'local', 'x', $4)`, [x.firmId, x.matter.id, x.ownerUserId, id]))).rejects.toThrow(/own conversation/);
+       VALUES ($1, $2, $3, 'planted', $5, 'local', 'x', $4)`, [x.firmId, x.matter.id, x.ownerUserId, id,
+        "Huis didn't find passages in this Matter that match the question. Try other words, or check that the documents have finished being read."]))).rejects.toThrow(/own conversation/);
     // A shared answer isn't the reader's: not in their "My questions", not in their export.
     expect(await db.withFirm(x.owner, (s) => listMyQuestions(s, x.matter.id))).toEqual([]);
     await db.withFirm(x.adminCtx, async (s) => askInConversation(s, await createConversation(s, x.matter.id, { title: "Mine", category: "trial" }), "Why did she request leave?"));

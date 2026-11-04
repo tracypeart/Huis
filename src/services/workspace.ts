@@ -94,8 +94,10 @@ export async function getConversation(s: FirmSession, id: string): Promise<Conve
     "SELECT id FROM huis.brain_answers WHERE conversation_id = $1 ORDER BY created_at, id LIMIT 500", [c.id])).rows.map((r) => r.id);
   const answers: BrainAnswer[] = [];
   for (const answerId of ids) answers.push(await getAnswer(s, answerId));
+  // Withheld = all answers − the ones this reader can open (both counted in full, not just the 500 shown).
   const total = (await s.client.query<{ n: number }>("SELECT huis.ai_conversation_answer_count($1) AS n", [c.id])).rows[0]?.n ?? 0;
-  return { conversation: { ...c, answers: ids.length }, answers, hidden: Math.max(0, total - ids.length) };
+  const visible = (await s.client.query<{ n: number }>("SELECT count(*)::int AS n FROM huis.brain_answers WHERE conversation_id = $1", [c.id])).rows[0]?.n ?? 0;
+  return { conversation: { ...c, answers: visible }, answers, hidden: Math.max(0, total - visible) };
 }
 
 /** The next question in one's own conversation. */

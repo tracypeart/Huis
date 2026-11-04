@@ -1,14 +1,14 @@
 # Phase 6 — AI Legal Intelligence
 
-**Status:** Part 1 (AI Workspace and Prompt Library) built and tested; **awaiting independent security review 13**. Parts 2–4 planned.
+**Status:** Part 1 (AI Workspace and Prompt Library) built, tested and through independent security review 13 (2 problems confirmed, both fixed). Parts 2–4 planned.
 
 ## Plan
 | Part | What | Status |
 |---|---|---|
-| 6.1 | **AI Workspace**: saved conversations inside each Matter, by category (strategy, research, deposition, discovery, timeline, damages, motion, trial, client, miscellaneous), private unless shared with the Matter's firm staff. **Prompt Library**: personal, firm-approved and built-in prompts | Built, review 13 pending |
+| 6.1 | **AI Workspace**: saved conversations inside each Matter, by category (strategy, research, deposition, discovery, timeline, damages, motion, trial, client, miscellaneous), private unless shared with the Matter's firm staff. **Prompt Library**: personal, firm-approved and built-in prompts | Review 13 done, fixes in |
 | 6.2 | **Specialized agents behind one interface**: a router that sends each question to the right agent (timeline, evidence, email, deposition, contradictions, privilege), each built on what Huis already has, with fixed rules and every answer cited | Planned |
 | 6.3 | **Light analysis + Reanalyze Matter**: "N new items since the last complete analysis", and a Matter analysis by fixed, explainable rules (new evidence, potential contradictions, claim elements with no evidence, items with no source), not a made-up "case health" score | Planned |
-| 6.4 | **Outside AI providers** through the AI Gateway: written answers, and two-model checking for significant outputs (one model answers, another reviews, Huis shows where they disagree). **Needs the O-3 decision first**: no client material goes to an outside provider until its zero-retention, no-training terms are signed. The provider is chosen by testing candidates on redacted legal tasks | Waiting on O-3 |
+| 6.4 | **Outside AI providers** through the AI Gateway: written answers, and two-model checking for significant outputs (one model answers, another reviews, Huis shows where they disagree). **Needs the O-3 decision first**: no client material goes to an outside provider until its zero-retention, no-training terms are signed. The provider is chosen by testing candidates on redacted legal tasks. Carried from review 13: a written answer keeps every passage it was given as a source, and each provider gets its own answer check in the database | Waiting on O-3 |
 
 Until 6.4, all AI in Huis is the **built-in** provider: it runs inside Huis, sends nothing outside, and answers by quoting the Matter's most relevant passages with their sources rather than writing conclusions.
 
@@ -22,7 +22,14 @@ Until 6.4, all AI in Huis is the **built-in** provider: it runs inside Huis, sen
 | Yours stays yours | A colleague's shared answers never appear in the reader's "My questions", and a full export of a Matter includes only the exporter's own questions and answers, as before |
 | Prompt Library | **Mine**: personal prompts, private to their owner. **Firm**: approved templates that every staff member can use; only firm administrators (owner, managing partner, firm administrator) add, change or delete them. **Huis**: built-in starting points by category, not legal advice. Pick a prompt in a conversation to fill in the question, then edit it before asking |
 | Who can use it | Firm staff only; clients and other outside users never see conversations or prompts. Ethical walls apply. Another firm gets "not found". In the database: a conversation's owner and Matter never change, an answer can only join its asker's own conversation in the same Matter, and firm prompts can only be written by administrators |
+| Answers are Huis's | The database checks every saved answer. Its sources are rebuilt from the passages it cites (only passages of that Matter the asker can open), and its time is set by the database. A built-in answer must be in the built-in form, with every quoted line being words its passage really contains. So no one can write a made-up "Huis answer" for colleagues to read |
 | Logs | The audit log records conversations created, changed, shared, unshared and deleted (with their category), and prompts created, changed and deleted (with their scope). It never records titles, questions, answers or prompt wording |
+
+**Security review 13** (independent; see `SECURITY-REVIEW-2026-11.md`) found no read leak. It confirmed 2 integrity problems, both fixed:
+- someone walled out of a Matter could still delete its shared conversations directly in the database;
+- an owner could plant a made-up answer for colleagues to read.
+
+Regression tests are in `test/security-review-13.test.ts`. After the fixes: all 262 tests, the type check, the build and the dependency scan pass, and the pre-release check is clean.
 
 **Fixed while checking (Phase 4):** an answer that quoted nothing still listed the passages Huis had looked at as its "sources", so an answer saying "Huis didn't find passages…" could list two sources under it. Saved answers now list only the passages they quote.
 

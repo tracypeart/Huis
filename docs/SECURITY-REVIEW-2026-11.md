@@ -210,6 +210,27 @@ Also fixed while reviewing: overlapping passages could produce a second, cut-sho
 
 **Found in passing (Phase 4, tracked):** if a queued Matter Brain source stops being clean before it is indexed, one indexing pass can stop early and leave later sources waiting until the next pass. Nothing is lost or exposed; indexing is only delayed.
 
+## Thirteenth review — Phase 6 part 1 (AI Workspace and Prompt Library)
+
+**Scope:** saved AI conversations and sharing (including the replaced rule for who may read Matter Brain answers), the conversation-count function, the Prompt Library, the pages, and every place that reads saved answers.
+**Result:** no read leak. Clients, other firms, people outside a wall (including walls added after sharing) and disabled users got nothing. "My questions" and the Matter export stayed limited to the person's own answers. Prompts kept their scope and owner, and other people's personal prompts couldn't be prefilled. The reviewer confirmed 2 integrity problems, both through direct database access as the app. **Both are fixed.** Regression tests are in `test/security-review-13.test.ts` (7 tests). Each fails without its fix.
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| R13-1 | Medium-Low | Someone walled out of a Matter could still delete the team's shared conversations, and their answers, there with a delete that had no conditions (the Phase 4 rule for answers had the same gap, which mattered once answers could be shared). The R9-1 pattern | Both delete rules now also require being able to see the Matter |
+| R13-2 | Medium | A conversation's owner could write a made-up "Matter Brain" answer straight into the database, with a fake quote cited to a real document and a backdated time, and colleagues would read it as Huis's | The database now rebuilds every saved answer's citations and sources from the passages it cites (only passages of that Matter the asker can open) and stamps the time itself. For the built-in AI, the answer must be in the built-in form and every quoted line must be words the cited passage contains. Any other provider is refused until Phase 6 part 4 adds one deliberately |
+
+**Also fixed:** a conversation with more than 500 answers would have counted the extra ones as withheld.
+
+**Carried into Phase 6 part 4 (outside providers):**
+- Saved answers list only the passages they quote. That is right for the built-in AI, which quotes only what it cites. A provider that writes answers may draw on passages it doesn't cite, so its answers must keep every passage they were given as sources, so they are withheld when any becomes unavailable.
+- Each provider also needs its own check in place of the built-in one.
+
+**Accepted, not changed:**
+- Firm prompts are visible to all firm staff, including people walled off from every Matter. The page warns against putting client details in them.
+- Audit entries are written by the app, so direct database writes don't produce them (true across Huis).
+- An owner removed from a Matter can no longer change or unshare their conversations there.
+
 ## Still open (tracked, not code defects)
 1. **MFA enforcement** — Microsoft sign-in doesn't yet require proof of MFA. Plan: require the firm's Microsoft MFA (Conditional Access) or a Huis passkey. Part of the end-of-build Azure/hosting step.
 2. **Administrator-level tampering** — someone with full database superuser access could switch off the protective rules and rewrite history consistently. The hash chains make ordinary tampering detectable, but defeating a superuser needs the chain's latest fingerprint stored outside the database (e.g. a daily signed export). Planned with production hosting.

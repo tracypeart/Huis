@@ -161,3 +161,69 @@ CREATE POLICY ai_prompts_update ON huis.ai_prompts FOR UPDATE TO huis_app
 CREATE POLICY ai_prompts_delete ON huis.ai_prompts FOR DELETE TO huis_app
   USING (firm_id = huis.current_firm_id() AND huis.is_internal_role(huis.app_role())
          AND ((scope = 'personal' AND owner_id = huis.current_user_id()) OR (scope = 'firm' AND huis.is_firm_admin())));
+
+-- ---------------------------------------------------------------------------
+-- Security review 13
+-- ---------------------------------------------------------------------------
+-- F1: someone walled out of a Matter can't delete its conversations or answers either
+-- (a DELETE with no WHERE clause would otherwise skip the visibility rule).
+DROP POLICY ai_conversations_delete ON huis.ai_conversations;
+CREATE POLICY ai_conversations_delete ON huis.ai_conversations FOR DELETE TO huis_app
+  USING (firm_id = huis.current_firm_id() AND huis.is_internal_role(huis.app_role()) AND huis.can_see_matter(matter_id)
+         AND owner_id = huis.current_user_id());
+DROP POLICY brain_answers_delete ON huis.brain_answers;
+CREATE POLICY brain_answers_delete ON huis.brain_answers FOR DELETE TO huis_app
+  USING (firm_id = huis.current_firm_id() AND asked_by = huis.current_user_id() AND huis.is_internal_role(huis.app_role())
+         AND huis.can_see_matter(matter_id));
+
+-- F2: an answer colleagues may read must be what Huis produced, not text someone wrote into the table.
+-- The database rebuilds its citations and sources from the passages it cites (only passages of this
+-- Matter that the asker can open), stamps the time itself, and for the built-in AI checks that the
+-- answer is in the built-in form and every quoted line is words the cited passage really contains.
+-- Outside providers (Phase 6 part 4) will add their own rule here when they are added.
+CREATE FUNCTION huis.brain_answer_check() RETURNS trigger
+LANGUAGE plpgsql SET search_path = huis, pg_temp AS $$
+DECLARE
+  c jsonb;
+  ch huis.brain_chunks;
+  v_out jsonb := '[]'::jsonb;
+  v_ev uuid[] := '{}';
+  v_notes uuid[] := '{}';
+  v_text text := '';
+  v_quote text[];
+  v_found boolean;
+BEGIN
+  NEW.created_at := now();
+  IF jsonb_typeof(NEW.citations) <> 'array' OR jsonb_array_length(NEW.citations) > 50 THEN RAISE EXCEPTION 'invalid citations'; END IF;
+  FOR c IN SELECT * FROM jsonb_array_elements(NEW.citations) LOOP
+    -- Row-level security applies (this runs as the asker): only passages they can open, in this Matter.
+    SELECT * INTO ch FROM huis.brain_chunks
+     WHERE id = CASE WHEN c->>'chunkId' ~ '^[0-9]{1,18}$' THEN (c->>'chunkId')::bigint END AND matter_id = NEW.matter_id;
+    IF NOT FOUND OR jsonb_typeof(c->'n') <> 'number' THEN RAISE EXCEPTION 'an answer can only cite passages of its own Matter'; END IF;
+    v_out := v_out || jsonb_build_object('n', (c->>'n')::int, 'chunkId', ch.id::text, 'evidenceId', ch.evidence_id, 'noteId', ch.note_id,
+                                         'start', ch.char_start, 'end', ch.char_end);
+    IF ch.evidence_id IS NOT NULL AND NOT ch.evidence_id = ANY (v_ev) THEN v_ev := v_ev || ch.evidence_id; END IF;
+    IF ch.note_id IS NOT NULL AND NOT ch.note_id = ANY (v_notes) THEN v_notes := v_notes || ch.note_id; END IF;
+  END LOOP;
+  NEW.citations := v_out;
+  NEW.source_evidence := v_ev;
+  NEW.source_notes := v_notes;
+
+  IF NEW.provider <> 'local' THEN RAISE EXCEPTION 'unknown AI provider'; END IF;
+  IF NEW.answer = 'Huis didn''t find passages in this Matter that match the question. Try other words, or check that the documents have finished being read.' THEN
+    IF jsonb_array_length(v_out) > 0 THEN RAISE EXCEPTION 'an answer that found nothing cites nothing'; END IF;
+    RETURN NEW;
+  END IF;
+  IF NEW.answer !~ '^The most relevant passages in this Matter:\n\n(• “[^”]*” \[[0-9]{1,2}\](\n|$))+$' THEN
+    RAISE EXCEPTION 'not an answer from the built-in AI';
+  END IF;
+  FOR v_quote IN SELECT regexp_matches(NEW.answer, '• “([^”]*)” \[([0-9]{1,2})\]', 'g') LOOP
+    SELECT replace(regexp_replace(k.content, '\s+', ' ', 'g'), '”', '"') INTO v_text
+      FROM jsonb_array_elements(v_out) x JOIN huis.brain_chunks k ON k.id = (x->>'chunkId')::bigint
+     WHERE (x->>'n')::int = v_quote[2]::int LIMIT 1;
+    v_found := v_text IS NOT NULL AND length(v_quote[1]) > 0 AND position(v_quote[1] IN v_text) > 0;
+    IF NOT v_found THEN RAISE EXCEPTION 'a quoted line must be words from the passage it cites'; END IF;
+  END LOOP;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER brain_answers_check BEFORE INSERT ON huis.brain_answers FOR EACH ROW EXECUTE FUNCTION huis.brain_answer_check();
