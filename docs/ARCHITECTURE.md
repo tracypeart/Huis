@@ -65,8 +65,8 @@ MFA and passkeys; SSO/SAML for enterprise; RBAC down to firm → location → ma
 | 28–29 | Calendar | Built-in calendar; court events become proposed deadlines; alerts by dashboard, email, SMS, push |
 | 30 | Financial | **Both** firm billing/timekeeping **and** financial evidence analysis |
 | 31 | Integrations | All on the list (order adjusted in §5) |
-| 32 | StrongSuit | Two-way through an adapter, if StrongSuit grants API/partner access; never a dependency |
-| 33 | StrongSuit contact | Tracy is researching and contacting a representative |
+| 32 | StrongSuit | StrongSuit supports an **API connection and a user-interface merger** with Huis. Plan for a two-way integration through an adapter (Phase 7 research, Phase 9 Integration Hub), with the merged interface in scope; Huis still works without it (never a dependency) |
+| 33 | StrongSuit contact | Tracy is holding discussions with StrongSuit about the API connection and interface merger |
 | 34–36 | Pricing | Combination model; **$237/user/month**; enterprise pricing for firms; **7-day free trial** (limited: 1 attorney, 3 matters, 5 GB, capped AI) |
 | 37–38 | Data ownership | Firm owns its data; full export any time |
 | — | Case DNA™ | Yes: relationship graph of people, events, evidence, claims, elements, law, damages |
@@ -132,7 +132,7 @@ Next.js + React + TypeScript + Tailwind; TypeScript backend (Python services onl
 
 | ID | Question | Owner |
 |---|---|---|
-| O-1 | StrongSuit API/partner access — use the 20-question list in the source spec | Tracy |
+| O-1 | StrongSuit API connection and interface merger (confirmed available): terms, zero-retention/no-training commitment, scope of the merged interface — use the 20-question list in the source spec | Tracy |
 | O-2 | Production hosting provider (Azure, Google Cloud or AWS) for privileged data | Tracy + build team |
 | O-3 | AI provider evaluation and zero-retention agreements | Build team |
 | O-4 | Owner and budget for Google CASA assessment and annual renewal | Tracy |
