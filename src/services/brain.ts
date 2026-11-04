@@ -107,8 +107,9 @@ export async function brainStatus(s: FirmSession, matterId: string): Promise<Bra
             count(*) FILTER (WHERE evidence_id IS NOT NULL AND status = 'indexed')::int AS ready,
             count(*) FILTER (WHERE note_id IS NOT NULL)::int AS notes,
             coalesce(sum(chunk_count) FILTER (WHERE status = 'indexed'), 0)::int AS passages,
-            count(*) FILTER (WHERE status IN ('queued', 'running'))::int AS waiting,
-            count(*) FILTER (WHERE status = 'failed')::int AS failed,
+            count(*) FILTER (WHERE status IN ('queued', 'running') AND NOT huis.brain_source_gave_up(status, attempts, locked_until))::int AS waiting,
+            -- Includes a document the worker died on after its last allowed attempt (security review 15, F1).
+            count(*) FILTER (WHERE huis.brain_source_gave_up(status, attempts, locked_until))::int AS failed,
             count(*) FILTER (WHERE status = 'indexed' AND partial)::int AS partial
        FROM huis.brain_sources WHERE matter_id = $1`, [matterId])).rows[0];
   return { documents: r.documents, documentsReady: r.ready, notes: r.notes, passages: r.passages, waiting: r.waiting, failed: r.failed, partial: r.partial };

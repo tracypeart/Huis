@@ -126,8 +126,8 @@ describe("security review 15 — confirmed findings", () => {
     const r = await db.withFirm(x.paraCtx, (s) => reanalyzeMatter(s, x.matter.id));
     const quarantinedSource = (await t.admin.query("SELECT status FROM huis.brain_sources WHERE evidence_id = $1", [a2.id])).rows[0];
     // Expected: only what the caller can see (and that can be read: clean evidence, notes) is retried and counted.
-    expect(quarantinedSource.status).toBe("failed");
     expect(r.retried).toBe(1);
+    expect(quarantinedSource.status).toBe("failed");
   });
 
   it("F3: Reanalyze resets attempts on poison documents without any limit, so a loop of clicks keeps the worker retrying forever", async () => {
@@ -238,8 +238,10 @@ describe("security review 15 — attacks correctly blocked", () => {
     await expect(db.withFirm(x.readerCtx, (s) => s.client.query("SELECT huis.brain_retry_failed($1)", [x.matter.id]))).rejects.toThrow(/not permitted|permission/);
     await expect(db.withFirm(x.paraCtx, (s) => s.client.query(
       "INSERT INTO huis.matter_analyses (firm_id, matter_id, run_by) VALUES ($1, $2, $3)", [x.firmId, x.walled.id, x.para.id]))).rejects.toThrow();
-    await db.withFirm(x.paraCtx, (s) => s.client.query(
-      "INSERT INTO huis.matter_analyses (firm_id, matter_id, run_by, run_at) VALUES ($1, $2, $3, now() + interval '10 years')", [x.firmId, x.matter.id, x.ownerUserId]));
+    // (After the F6 fix the app can't write a record at all: only Reanalyze does, with its own who and when.)
+    await expect(db.withFirm(x.paraCtx, (s) => s.client.query(
+      "INSERT INTO huis.matter_analyses (firm_id, matter_id, run_by, run_at) VALUES ($1, $2, $3, now() + interval '10 years')", [x.firmId, x.matter.id, x.ownerUserId]))).rejects.toThrow(/permission/);
+    await db.withFirm(x.paraCtx, (s) => reanalyzeMatter(s, x.matter.id));
     const row = (await t.admin.query("SELECT run_by, run_at FROM huis.matter_analyses WHERE matter_id = $1", [x.matter.id])).rows[0];
     expect(row.run_by).toBe(x.para.id);
     expect(new Date(row.run_at).getTime()).toBeLessThan(Date.now() + 60_000);
