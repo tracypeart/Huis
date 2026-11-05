@@ -1,12 +1,12 @@
 # Phase 9 — Integration Hub
 
-**Status:** Part 1 (the hub, and OneDrive / SharePoint import) merged after independent security review 19. Part 2a (Dropbox) built, tested and through independent security review 20 (1 problem confirmed, fixed for Dropbox and OneDrive). Part 2b (Google Drive) next.
+**Status:** Part 1 (the hub, and OneDrive / SharePoint import) merged after independent security review 19. Part 2a (Dropbox) built, tested and through independent security reviews 20 and 21 (review 21 re-checked it before Google Drive: 1 Medium and 2 Low problems confirmed, all fixed, see below). Part 2b (Google Drive) next.
 
 ## Plan
 | Part | What | Status |
 |---|---|---|
 | 9.1 | **Integration Hub** (connections, sync records, imports into Matters with chain of custody) and **OneDrive / SharePoint**: browse your OneDrive and the SharePoint sites you follow, import chosen files into a Matter as evidence | Review 19 done, fixes in |
-| 9.2a | **Dropbox**: browse your Dropbox and import chosen files into a Matter, like OneDrive | Review 20 done, fix in |
+| 9.2a | **Dropbox**: browse your Dropbox and import chosen files into a Matter, like OneDrive | Reviews 20 and 21 done, fixes in |
 | 9.2b | **Google Drive**: Google's own file picker now (the `drive.file` permission: Huis can only open the files picked); full browsing like OneDrive once Google's restricted-scope security assessment is done (the same assessment Gmail needs) | Next |
 | 9.3 | **Filevine, Clio and StrongSuit** adapters: link Matters, bring in documents, contacts and deadlines; StrongSuit's API connection and interface merger (O-1) | Needs partner or developer access |
 
@@ -51,5 +51,10 @@
 A Dropbox app for the firm (scoped access, permissions `account_info.read`, `files.metadata.read`, `files.content.read`), with redirect URI `<base URL>/api/integrations/dropbox/callback`, approved for production by Dropbox. Set `DROPBOX_APP_KEY` and `DROPBOX_APP_SECRET` for the app and the worker.
 
 **Security review 20:** see `SECURITY-REVIEW-2026-11.md`; regression tests in `test/security-review-20.test.ts` (6 tests).
+
+**Security review 21** (before Google Drive): see `SECURITY-REVIEW-2026-11.md`; regression tests in `test/security-review-21.test.ts` (5 tests). What changed for people using it:
+- An imported file's *Received from* says only the system ("Dropbox", "OneDrive / SharePoint"); the account it came from is in the chain of custody, which only firm staff see.
+- Huis imports the version you saw when you chose the file. If the file changed since, the import stops and asks you to open the folder and choose it again.
+- Every call to Dropbox and Microsoft has a time limit, and a download that stops sending data is stopped, so one stuck connection can't hold up the rest of Huis.
 
 **Tests:** `test/dropbox.test.ts`, 9 tests: read-only, offline, PKCE sign-in; the account identified by Dropbox's id, missing permissions and mismatched accounts refused; available on the hub, token sealed under the integration label; browsing with the way up (names and revisions only, token only to Dropbox); importing the exact revision with custody and a sync record; a file saved again mid-copy; each system's ids kept apart; reconnecting vs a missing file; paged folders.

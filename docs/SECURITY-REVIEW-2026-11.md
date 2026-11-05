@@ -366,6 +366,20 @@ Also fixed while reviewing: overlapping passages could produce a second, cut-sho
 
 **Also hardened (reviewer's note):** a Dropbox sign-in that carries any permission beyond the three read-only ones isn't kept, and each Dropbox access token is narrowed to those three.
 
+## Twenty-first review — Phase 9 part 2a again (Dropbox and the Integration Hub), before Google Drive
+
+**Scope:** a fresh reviewer re-checked the Dropbox part and the shared hub code before Phase 9.2b started: who can use a connection, takeovers, tokens and permissions, made-up ids, versions, privilege acknowledgement and walls, which role can write which rows, limits, and what errors and logs reveal.
+**Result:** nothing High. Connections stayed private to their owner; the security-definer functions kept their owner and grants; tokens went only to Dropbox; ids couldn't be faked; every re-check when the worker runs held. The reviewer confirmed 1 Medium and 2 Low problems and raised 1 hardening note. **All fixed**, with regression tests in `test/security-review-21.test.ts` (5 tests; the three confirmed findings fail against the code as reviewed). Fixes are in `db/migrations/0026_review21.sql`, `src/net/http.ts` and the adapters.
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| R21-1 | Medium | Imported evidence's "received from" read "Dropbox (*the attorney's account address*)", and clients who can see the item saw it (often a personal address; OneDrive showed a work address the same way). Review 19 had hidden the account in the chain of custody but missed this field | "Received from" names the system only ("Dropbox", "OneDrive / SharePoint"). The account stays in the chain of custody, shown to firm staff only. (Items imported before this fix, in development only, keep the old wording, since original records can't be edited) |
+| R21-2 | Low | No time limit on Dropbox (or Microsoft) calls: a connection that never answered stopped the single-task worker, and with it scanning, mail and alerts for every firm | Every outside call has a time limit (60 s by default, `HUIS_HTTP_TIMEOUT_MS`); downloads, including OneDrive downloads and Outlook messages, stop when no data arrives for 2 minutes (`HUIS_DOWNLOAD_IDLE_MS`) |
+| R21-3 | Low | The worker imported whatever version was current when it ran, so a file changed after the attorney chose it came in with content nobody had seen (recorded honestly, but without warning) | The import remembers the version shown when the file was chosen. If the file has changed, the import is refused: "the file changed after it was chosen; open the folder again and choose it again" |
+| R21-4 | Low (hardening) | Dropbox responses were read whole before their size was checked | Responses are read as they arrive and stopped as soon as they pass the limit; a declared size over the limit is refused before reading |
+
+**Noted for later:** the Gmail calls (`src/mail/google.ts`) don't use the new time limits yet; they should when Google Drive (9.2b) is built, since it shares Google's sign-in.
+
 ## Still open (tracked, not code defects)
 1. **MFA enforcement** — Microsoft sign-in doesn't yet require proof of MFA. Plan: require the firm's Microsoft MFA (Conditional Access) or a Huis passkey. Part of the end-of-build Azure/hosting step.
 2. **Administrator-level tampering** — someone with full database superuser access could switch off the protective rules and rewrite history consistently. The hash chains make ordinary tampering detectable, but defeating a superuser needs the chain's latest fingerprint stored outside the database (e.g. a daily signed export). Planned with production hosting.
