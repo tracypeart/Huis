@@ -36,10 +36,12 @@ async function main() {
     google: process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
       ? { clientId: process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_CLIENT_SECRET } : null,
   });
-  // Integration Hub: folder listings and imports for connected outside systems (OneDrive / SharePoint so far).
+  // Integration Hub: folder listings and imports for connected outside systems (OneDrive / SharePoint and Dropbox).
   const integrations = new IntegrationWorker(pool, evidenceVault(), {
     masterKey: process.env.HUIS_STORAGE_MASTER_KEY!,
     microsoft: clientId && clientSecret ? { clientId, clientSecret } : null,
+    dropbox: process.env.DROPBOX_APP_KEY && process.env.DROPBOX_APP_SECRET
+      ? { clientId: process.env.DROPBOX_APP_KEY, clientSecret: process.env.DROPBOX_APP_SECRET } : null,
   });
   const brain = new BrainWorker(pool);
   // Court date reminders. Email, SMS and push senders are set up with production hosting (O-2);

@@ -34,8 +34,10 @@ export const INTEGRATIONS: readonly IntegrationInfo[] = [
     access: "Only the files you pick (the drive.file permission).", needs: "Google Cloud Picker set-up.",
   },
   {
-    provider: "dropbox", name: "Dropbox", kind: "file_storage", status: "coming_next",
-    what: "Browse Dropbox and import chosen files into a Matter.", access: "Read-only.", needs: "Dropbox app review.",
+    provider: "dropbox", name: "Dropbox", kind: "file_storage", status: "available",
+    what: "Browse your Dropbox and import chosen files into a Matter as evidence.",
+    access: "Read-only. Huis can't change, move, share or delete your files.",
+    needs: "A Dropbox app for the firm (scoped access: account_info.read, files.metadata.read, files.content.read), approved for production by Dropbox.",
   },
   {
     provider: "filevine", name: "Filevine", kind: "case_management", status: "needs_agreement",

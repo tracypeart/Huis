@@ -50,5 +50,6 @@ export interface RemoteFile {
 export interface FileSource {
   list(location: string): Promise<Listing>;
   describe(id: string): Promise<RemoteFile>;
-  download(id: string): Promise<Readable>;
+  /** The file's bytes; given the version just read, a source that can fetch that exact version does. */
+  download(id: string, version?: string | null): Promise<Readable>;
 }

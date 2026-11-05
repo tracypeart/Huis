@@ -355,6 +355,17 @@ Also fixed while reviewing: overlapping passages could produce a second, cut-sho
 
 **Also hardened (reviewer's notes):** folder and file ids with a "." or ".." part are refused (in the app and the database); a folder that failed to list is asked for again after a minute, not on every page refresh; an owner who left the firm or became read-only has nothing listed.
 
+## Twentieth review — Phase 9 part 2a (Dropbox)
+
+**Scope:** the Dropbox adapter (connect flow with PKCE, token exchange and refresh, listing, metadata and revision downloads), the database changes that add Dropbox to the Integration Hub, and whether they kept every review 19 fix.
+**Result:** every review 19 fix held; ids and the Dropbox-API-Arg header can't be used for injection; tokens go only to Dropbox's own hosts; the connect callbacks can't be mixed up between systems; the read permissions are checked. The reviewer confirmed 1 problem, which also applied to OneDrive. **Fixed for both.** Regression tests are in `test/security-review-20.test.ts` (6 tests), `test/dropbox.test.ts` and `test/integrations.test.ts`.
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| R20-1 | Low-Medium | Someone could record a colleague's account id with their own *working* token (Dropbox, and OneDrive the same way): the worker accepted any token the provider accepted, marked the connection as working, and the colleague was then locked out of their own account (and the impostor's files were labelled as theirs) | Before every listing or import, the worker asks the provider whose account the token belongs to; anything but the recorded account is refused, needs reconnecting and is never marked as working |
+
+**Also hardened (reviewer's note):** a Dropbox sign-in that carries any permission beyond the three read-only ones isn't kept, and each Dropbox access token is narrowed to those three.
+
 ## Still open (tracked, not code defects)
 1. **MFA enforcement** — Microsoft sign-in doesn't yet require proof of MFA. Plan: require the firm's Microsoft MFA (Conditional Access) or a Huis passkey. Part of the end-of-build Azure/hosting step.
 2. **Administrator-level tampering** — someone with full database superuser access could switch off the protective rules and rewrite history consistently. The hash chains make ordinary tampering detectable, but defeating a superuser needs the chain's latest fingerprint stored outside the database (e.g. a daily signed export). Planned with production hosting.

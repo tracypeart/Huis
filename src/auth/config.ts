@@ -8,6 +8,8 @@ export interface AuthConfig {
   microsoft: { clientId: string; clientSecret: string } | null;
   /** Gmail connection (Google OAuth client). */
   google: { clientId: string; clientSecret: string } | null;
+  /** Dropbox app for the Integration Hub (not a sign-in method). */
+  dropbox: { clientId: string; clientSecret: string } | null;
   secureCookies: boolean;
 }
 
@@ -32,6 +34,8 @@ export function authConfig(): AuthConfig {
     microsoft: clientId && clientSecret ? { clientId, clientSecret } : null,
     google: process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
       ? { clientId: process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_CLIENT_SECRET } : null,
+    dropbox: process.env.DROPBOX_APP_KEY && process.env.DROPBOX_APP_SECRET
+      ? { clientId: process.env.DROPBOX_APP_KEY, clientSecret: process.env.DROPBOX_APP_SECRET } : null,
     secureCookies: baseUrl.startsWith("https://"),
   };
   return cached;

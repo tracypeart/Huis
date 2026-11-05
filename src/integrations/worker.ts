@@ -5,7 +5,8 @@ import { openCredential, sealCredential } from "../mail/credentials";
 import { refreshAccess } from "../mail/microsoft";
 import { storageKeys, type EvidenceVault } from "../storage/store";
 import { credentialId } from "./credentials";
-import { ONEDRIVE_SCOPES, OneDriveSource } from "./onedrive";
+import { dropboxAccountId, DropboxSource, refreshDropboxAccess } from "./dropbox";
+import { onedriveAccountOid, ONEDRIVE_SCOPES, OneDriveSource } from "./onedrive";
 import type { FileSource } from "./types";
 
 /** Largest file Huis imports from an outside system (matches the upload limit). */
@@ -14,6 +15,7 @@ export const MAX_IMPORT_BYTES = Number(process.env.HUIS_MAX_FILE_BYTES ?? 100 * 
 export interface IntegrationConfig {
   masterKey: string;
   microsoft: { clientId: string; clientSecret: string } | null;
+  dropbox?: { clientId: string; clientSecret: string } | null;
   /** For tests: build the source from an access token. */
   sourceFor?: (provider: string, accessToken: string) => FileSource;
 }
@@ -35,12 +37,25 @@ export class IntegrationWorker {
   private async open(h: Held, saveRotated: (sealed: Buffer) => Promise<void>): Promise<FileSource> {
     if (!h.ciphertext) throw Object.assign(new Error("reconnect the account"), { reconnect: true });
     const id = credentialId(h.firm_id, h.provider, h.account_subject);
-    if (h.provider !== "onedrive") throw Object.assign(new Error("this system isn't connected yet"), { final: true });
-    if (!this.cfg.microsoft) throw new Error("Microsoft is not configured");
     const refreshToken = openCredential(this.cfg.masterKey, id, h.ciphertext);
-    const access = await refreshAccess({ ...this.cfg.microsoft, refreshToken, scopes: ONEDRIVE_SCOPES });
+    let access: { accessToken: string; refreshToken: string };
+    if (h.provider === "onedrive") {
+      if (!this.cfg.microsoft) throw new Error("Microsoft is not configured");
+      access = await refreshAccess({ ...this.cfg.microsoft, refreshToken, scopes: ONEDRIVE_SCOPES });
+    } else if (h.provider === "dropbox") {
+      if (!this.cfg.dropbox) throw new Error("Dropbox is not configured");
+      access = await refreshDropboxAccess({ ...this.cfg.dropbox, refreshToken });
+    } else {
+      throw Object.assign(new Error("this system isn't connected yet"), { final: true });
+    }
+    // Security review 20, R20-1: the token must belong to the account this connection was recorded for, so
+    // nobody can file their own (working) token under a colleague's account id and lock them out.
+    const owner = h.provider === "dropbox" ? await dropboxAccountId(access.accessToken) : await onedriveAccountOid(access.accessToken);
+    const expected = h.provider === "dropbox" ? h.account_subject : (h.account_subject.split(":")[1] ?? "").toLowerCase();
+    if (!owner || owner !== expected) throw Object.assign(new Error("this sign-in belongs to a different account; reconnect"), { reconnect: true });
     if (access.refreshToken !== refreshToken) await saveRotated(sealCredential(this.cfg.masterKey, id, access.refreshToken));
-    return this.cfg.sourceFor ? this.cfg.sourceFor(h.provider, access.accessToken) : new OneDriveSource(access.accessToken);
+    if (this.cfg.sourceFor) return this.cfg.sourceFor(h.provider, access.accessToken);
+    return h.provider === "dropbox" ? new DropboxSource(access.accessToken) : new OneDriveSource(access.accessToken);
   }
 
   /** Lists one requested folder. Returns false when none is waiting. */
@@ -81,7 +96,7 @@ export class IntegrationWorker {
           else cb(null, chunk);
         },
       });
-      const body = await source.download(f.external_id);
+      const body = await source.download(f.external_id, file.version);
       body.on("error", (e) => cap.destroy(e));
       const put = await this.vault.put(f.firm_id, key, body.pipe(cap));
       stored = true;

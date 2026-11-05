@@ -308,3 +308,18 @@ describe("tokens and downloads", () => {
       [randomUUID(), randomUUID(), Buffer.from("x")])).rejects.toThrow(/not held/);
   });
 });
+
+describe("review 20 (OneDrive)", () => {
+  it("R20-1: a token for a different Microsoft account than the one recorded is never used, and the connection isn't verified", async () => {
+    const x = await setup();
+    ms.meId = "99999999-9999-9999-9999-999999999999";
+    try {
+      const l = await open(x.avery, x.connectionId);
+      expect(l.status).toBe("failed");
+      expect((await db.withFirm(x.avery, (s) => listMyConnections(s)))[0]).toMatchObject({ status: "needs_reconnect" });
+      expect((await t.admin.query("SELECT verified_at FROM huis.integration_connections WHERE id = $1", [x.connectionId])).rows[0].verified_at).toBeNull();
+    } finally {
+      ms.meId = OID;
+    }
+  });
+});
