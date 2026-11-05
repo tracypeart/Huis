@@ -2,7 +2,7 @@ import { Readable } from "node:stream";
 import type { JWTVerifyGetKey } from "jose";
 import { pkceChallenge, verifyMicrosoftIdToken } from "../auth/microsoft";
 import type { MailFolderInfo, MailMessageInfo, MailProvider, DeltaPage } from "./provider";
-import { fetchDownload, fetchWithTimeout } from "../net/http";
+import { apiTotalMs, fetchDownload, fetchWithTimeout, readTextCapped } from "../net/http";
 
 /**
  * Outlook / Microsoft 365 mailboxes through Microsoft Graph.
@@ -55,7 +55,8 @@ async function tokenRequest(params: Record<string, string>): Promise<TokenRespon
     body: new URLSearchParams(params),
     redirect: "error",
   });
-  const body = (await res.json().catch(() => ({}))) as TokenResponse;
+  let body: TokenResponse = {};
+  try { body = JSON.parse(await readTextCapped(res, 64 * 1024, "Microsoft response too large")) as TokenResponse; } catch { body = {}; }
   if (!res.ok || !body.access_token) {
     const code = typeof body.error === "string" && /^[a-z_]{1,40}$/.test(body.error) ? body.error : String(res.status);
     const err = new Error(`Microsoft token request failed (${code})`);
@@ -115,7 +116,7 @@ export async function graphFetch(token: string, url: string, init: { prefer?: st
         accept: init.stream ? "*/*" : "application/json",
       },
       redirect: "error",
-    });
+    }, init.stream ? {} : { totalMs: apiTotalMs() });
     const res = call.res;
     // Microsoft throttles busy mailboxes: honour Retry-After a few times.
     if ((res.status === 429 || res.status === 503 || res.status === 504) && attempt < 3) {

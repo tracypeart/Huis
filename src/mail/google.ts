@@ -3,7 +3,7 @@ import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from "jose";
 import { pkceChallenge } from "../auth/microsoft";
 import { UserFacingError } from "../errors";
 import type { MailboxPage, MailFolderInfo, MailMessageInfo, MailProvider } from "./provider";
-import { fetchDownload, fetchWithTimeout } from "../net/http";
+import { apiTotalMs, fetchDownload, fetchWithTimeout, readTextCapped } from "../net/http";
 
 /**
  * Gmail / Google Workspace mailboxes through the Gmail API.
@@ -77,7 +77,8 @@ async function tokenRequest(params: Record<string, string>): Promise<TokenRespon
     body: new URLSearchParams(params),
     redirect: "error",
   });
-  const body = (await res.json().catch(() => ({}))) as TokenResponse;
+  let body: TokenResponse = {};
+  try { body = JSON.parse(await readTextCapped(res, 64 * 1024, "Google response too large")) as TokenResponse; } catch { body = {}; }
   if (!res.ok || !body.access_token) {
     // Only Google's short error codes are kept: never raw text from the response.
     const code = typeof body.error === "string" && /^[a-z_]{1,40}$/.test(body.error) ? body.error : String(res.status);
@@ -141,7 +142,7 @@ function checkGmailUrl(url: string): string {
 async function gmailFetch(token: string, url: string): Promise<{ res: Response; stream: () => Readable }> {
   const target = checkGmailUrl(url);
   for (let attempt = 0; ; attempt++) {
-    const call = await fetchDownload(target, { headers: { authorization: `Bearer ${token}`, accept: "application/json" }, redirect: "error" });
+    const call = await fetchDownload(target, { headers: { authorization: `Bearer ${token}`, accept: "application/json" }, redirect: "error" }, { totalMs: apiTotalMs() });
     const res = call.res;
     // Google rate-limits busy mailboxes (429, or 403 with a rate-limit reason): back off a few times.
     if ((res.status === 429 || res.status === 500 || res.status === 503) && attempt < 3) {

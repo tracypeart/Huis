@@ -102,7 +102,7 @@ export class IntegrationWorker {
         this.pool.query("SELECT huis.worker_save_integration_credentials('import', $1, $2, $3)", [f.import_id, f.lock_token, sealed]).then(() => undefined));
       const file = await source.describe(f.external_id);
       // Security review 22, R22-3: import the version the person chose, never a newer one they haven't seen.
-      if (f.expected_version !== null && file.version !== f.expected_version) {
+      if (f.expected_version != null && file.version !== f.expected_version) {
         throw Object.assign(new Error("the file changed after it was chosen; open the folder again and choose it again"), { final: true });
       }
       if (file.size !== null && file.size > MAX_IMPORT_BYTES) throw Object.assign(new Error("the file is too large to import"), { final: true });

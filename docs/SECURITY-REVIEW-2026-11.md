@@ -388,6 +388,20 @@ Also fixed while reviewing: overlapping passages could produce a second, cut-sho
 | R22-3 | Low | The worker imported whatever version was current when it ran, so a file changed after the attorney chose it came in with content nobody had seen (recorded honestly, but without warning) | The import remembers the version shown when the file was chosen. If the file has changed, the import is refused: "the file changed after it was chosen; open the folder again and choose it again" |
 | R22-4 | Low (hardening) | Dropbox and Google Drive responses were read whole before their size was checked | Responses are read as they arrive and stopped as soon as they pass the limit; a declared size over the limit is refused before reading |
 
+## Twenty-third review — the review 22 fixes and Google Drive, together, before merging
+
+**Scope:** everything waiting to merge into `main`: Google Drive (Phase 9.2b, reviewed once as review 21) and the review 22 fixes on top of it, including the new time-limit helper used by Outlook, Gmail, OneDrive, Dropbox and Google Drive, and the database functions recreated in `0027_review22.sql`.
+**Result:** nothing High or Medium. Every recreated database function kept its owner, grants, security mode and checks; the worker-only claim is still callable only by the worker; nobody but a connection's owner can use it; no token or account address reaches clients; the picker page's looser browser policy applies to that page only; the review 21 and 22 fixes held. The reviewer confirmed 4 Low problems and made 2 notes. **All fixed**, with regression tests in `test/security-review-23.test.ts` (4 tests; the three about time limits fail against the code as reviewed).
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| R23-1 | Low | Files chosen before the review 22 change had no recorded version, so the "changed since you chose it" check didn't apply to them | The migration drops the held file rows (each folder is fetched again before anything from it can be imported) and stops imports still waiting, with a message to choose the file again |
+| R23-2 | Low | A file held in two listings (e.g. after moving folders) could take its name and version from the older one | The newest listing (the one the person just saw) decides |
+| R23-3 | Low | When a reader stopped early without an error (a size limit), the connection to the outside service stayed open until the idle limit | Any early stop closes the connection |
+| R23-4 | Low | A slow reader on Huis's side (storage catching up) counted as "no data arriving", so a download still flowing could be stopped | The idle limit only counts while Huis is ready for more data |
+| Note | Info | A few sign-in calls still used plain requests or read answers whole; API answers that trickle in had no overall deadline | Sign-in calls use the time limits and size caps; API answers (not file downloads) also have an overall deadline (5 minutes by default) |
+| Note | Info | A worker started before the database update would have refused every import | A missing chosen version is treated as "not recorded", never as "changed" |
+
 ## Still open (tracked, not code defects)
 1. **MFA enforcement** — Microsoft sign-in doesn't yet require proof of MFA. Plan: require the firm's Microsoft MFA (Conditional Access) or a Huis passkey. Part of the end-of-build Azure/hosting step.
 2. **Administrator-level tampering** — someone with full database superuser access could switch off the protective rules and rewrite history consistently. The hash chains make ordinary tampering detectable, but defeating a superuser needs the chain's latest fingerprint stored outside the database (e.g. a daily signed export). Planned with production hosting.

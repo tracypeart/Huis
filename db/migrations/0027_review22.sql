@@ -11,6 +11,15 @@ ALTER TABLE huis.integration_listing_items
 ALTER TABLE huis.integration_imports
   ADD COLUMN expected_version text CHECK (expected_version IS NULL OR length(expected_version) <= 200);
 
+-- Review 23: choices made before this change have no recorded version, so the check above couldn't apply to them.
+-- Every held listing is fetched again before anything from it can be imported (the files' rows are dropped and
+-- the listings marked out of date), and imports still waiting are stopped with a clear message.
+DELETE FROM huis.integration_listing_items;
+UPDATE huis.integration_listings SET requested_at = now() - interval '1 day' WHERE status = 'ready';
+UPDATE huis.integration_imports SET status = 'failed', lock_token = NULL,
+       last_error = 'Huis changed how imports are checked; open the folder again and choose the file again'
+ WHERE status IN ('queued', 'running');
+
 CREATE OR REPLACE FUNCTION huis.worker_save_integration_listing(
   p_listing_id uuid, p_lock_token uuid, p_title text, p_parent text, p_items jsonb, p_truncated boolean, p_error text, p_reconnect boolean
 ) RETURNS void
@@ -79,8 +88,12 @@ BEGIN
     -- successful listing, so they stay usable while the folder is being fetched again.
     v_name := NULL;
     v_version := NULL;
+    -- Review 23: a file can sit in two held listings (e.g. it moved folders); the newest listing is the one
+    -- the person just saw, so its name and version are the ones recorded.
     SELECT i.name, i.version INTO v_name, v_version FROM huis.integration_listing_items i
+      JOIN huis.integration_listings l ON l.id = i.listing_id
      WHERE i.connection_id = p_connection_id AND i.item_id = v_item
+     ORDER BY l.requested_at DESC
      LIMIT 1;
     IF v_name IS NULL THEN RAISE EXCEPTION 'that file was not listed'; END IF;
     BEGIN

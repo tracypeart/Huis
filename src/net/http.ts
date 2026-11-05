@@ -51,13 +51,17 @@ export async function readTextCapped(res: Response, max: number, tooLarge: strin
 }
 
 /**
- * A download whose headers must arrive within the request limit, and whose data
- * must keep flowing: if nothing arrives for `idleMs`, the download is stopped and
- * the stream fails.
+ * A download whose headers must arrive within the request limit, and whose data must keep flowing:
+ * if the outside service sends nothing for `idleMs` while Huis is ready for more, the download is
+ * stopped and the stream fails. A slow reader on Huis's side (e.g. storage catching up) is never
+ * mistaken for a stalled download (review 23). `totalMs`, for API answers, caps the whole call.
+ * Whenever the reader gives up (an error, a size limit, or just stopping early), the connection is
+ * closed too (review 23).
  */
-export async function fetchDownload(url: string, init: RequestInit = {}, opts: { headerMs?: number; idleMs?: number } = {}):
+export async function fetchDownload(url: string, init: RequestInit = {}, opts: { headerMs?: number; idleMs?: number; totalMs?: number } = {}):
   Promise<{ res: Response; stream: () => Readable }> {
   const controller = new AbortController();
+  const started = Date.now();
   const headerTimer = setTimeout(() => controller.abort(), opts.headerMs ?? requestTimeoutMs());
   let res: Response;
   try {
@@ -72,24 +76,41 @@ export async function fetchDownload(url: string, init: RequestInit = {}, opts: {
   const stream = (): Readable => {
     if (!res.body) throw new Error("the outside service sent no file");
     let idle: NodeJS.Timeout | undefined;
+    let total: NodeJS.Timeout | undefined;
+    let finished = false;
+    const stop = () => { if (idle) clearTimeout(idle); if (total) clearTimeout(total); };
     const guard = new Transform({
       transform(chunk, _e, cb) { arm(); cb(null, chunk); },
-      flush(cb) { if (idle) clearTimeout(idle); cb(); },
-      // A consumer that gives up (e.g. the file is too large) also stops the download.
-      destroy(err, cb) { if (idle) clearTimeout(idle); if (err) controller.abort(); cb(err); },
+      flush(cb) { finished = true; stop(); cb(); },
+      destroy(err, cb) {
+        stop();
+        // Unless every byte arrived, giving up (for any reason, with or without an error) closes the connection.
+        if (!finished) controller.abort();
+        cb(err);
+      },
     });
+    // True when Huis hasn't yet taken what already arrived: the wait is on Huis's side, not the service's.
+    const readerBehind = () => guard.writableNeedDrain || guard.readableLength >= guard.readableHighWaterMark;
     const arm = () => {
       if (idle) clearTimeout(idle);
       idle = setTimeout(() => {
+        if (readerBehind()) { arm(); return; }
         controller.abort();
         guard.destroy(timedOut());
       }, idleMs);
       idle.unref?.();
     };
     arm();
+    if (opts.totalMs !== undefined) {
+      total = setTimeout(() => { controller.abort(); guard.destroy(timedOut()); }, Math.max(0, opts.totalMs - (Date.now() - started)));
+      total.unref?.();
+    }
     const src = Readable.fromWeb(res.body as never);
     src.on("error", (e) => guard.destroy(controller.signal.aborted ? timedOut() : e));
     return src.pipe(guard);
   };
   return { res, stream };
 }
+
+/** An overall limit for API answers (not file downloads): long enough for a large page, short enough to never hold the worker. */
+export const apiTotalMs = (): number => Math.max(requestTimeoutMs() * 5, 60_000);

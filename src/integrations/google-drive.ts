@@ -4,7 +4,7 @@ import { pkceChallenge } from "../auth/microsoft";
 import { UserFacingError } from "../errors";
 import { googleAuthBase, googleTokenRequest, verifyGoogleIdToken } from "../mail/google";
 import type { FileSource, ListedItem, Listing, RemoteFile } from "./types";
-import { fetchDownload } from "../net/http";
+import { apiTotalMs, fetchDownload } from "../net/http";
 
 /**
  * Google Drive through the Drive API (v3), with Google's own file picker.
@@ -95,7 +95,8 @@ export async function refreshGoogleDriveAccess(p: { clientId: string; clientSecr
 /** One Drive call. Security review 22, R22-2: the answer must start within the time limit and keep flowing. */
 async function googleFetch(token: string, url: string, accept = "application/json"): Promise<{ res: Response; stream: () => Readable }> {
   for (let attempt = 0; ; attempt++) {
-    const call = await fetchDownload(url, { headers: { authorization: `Bearer ${token}`, accept }, redirect: "manual" });
+    const call = await fetchDownload(url, { headers: { authorization: `Bearer ${token}`, accept }, redirect: "manual" },
+      accept === "application/json" ? { totalMs: apiTotalMs() } : {});
     const res = call.res;
     if ((res.status === 429 || res.status === 500 || res.status === 503) && attempt < 3) {
       const wait = Math.min(30, Number(res.headers.get("retry-after") ?? "3") || 3);

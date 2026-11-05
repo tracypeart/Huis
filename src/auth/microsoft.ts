@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createRemoteJWKSet, decodeJwt, jwtVerify, type JWTVerifyGetKey } from "jose";
+import { fetchWithTimeout, readTextCapped } from "../net/http";
 
 /**
  * Microsoft sign-in (OpenID Connect authorization-code flow with PKCE).
@@ -54,7 +55,7 @@ export function microsoftAuthorizeUrl(p: {
 export async function exchangeMicrosoftCode(p: {
   clientId: string; clientSecret: string; redirectUri: string; code: string; verifier: string;
 }): Promise<string> {
-  const res = await fetch(`${AUTHORITY}/oauth2/v2.0/token`, {
+  const res = await fetchWithTimeout(`${AUTHORITY}/oauth2/v2.0/token`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -67,7 +68,8 @@ export async function exchangeMicrosoftCode(p: {
       scope: MICROSOFT_SCOPES.join(" "),
     }),
   });
-  const body = (await res.json().catch(() => ({}))) as { id_token?: string; error?: string };
+  let body: { id_token?: string; error?: string } = {};
+  try { body = JSON.parse(await readTextCapped(res, 64 * 1024, "Microsoft response too large")) as typeof body; } catch { body = {}; }
   if (!res.ok || !body.id_token) {
     // Never echo Microsoft's raw error text to the browser; it can include detail.
     throw new Error(`Microsoft sign-in failed (${body.error ?? res.status}).`);
