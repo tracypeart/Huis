@@ -29,9 +29,10 @@ export const INTEGRATIONS: readonly IntegrationInfo[] = [
     needs: "The firm's Microsoft sign-in app needs the Files.Read.All permission (delegated).",
   },
   {
-    provider: "google_drive", name: "Google Drive", kind: "file_storage", status: "coming_next",
-    what: "Choose files with Google's own file picker and import them into a Matter.",
-    access: "Only the files you pick (the drive.file permission).", needs: "Google Cloud Picker set-up.",
+    provider: "google_drive", name: "Google Drive", kind: "file_storage", status: "available",
+    what: "Choose files with Google's own file picker and import them into a Matter as evidence. Google Docs, Sheets and Slides come in as Word, Excel and PowerPoint.",
+    access: "Only the files you choose (Google's drive.file permission). Huis can't see, change or delete anything else in your Drive.",
+    needs: "The firm's Google Cloud project needs the Drive and Picker APIs, the drive.file permission, a Picker API key and the project number.",
   },
   {
     provider: "dropbox", name: "Dropbox", kind: "file_storage", status: "available",

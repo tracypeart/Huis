@@ -27,7 +27,7 @@ import {
 } from "../src/services/inbox";
 import { addCourtEvent, addNoticeSender, decideCourtEvent, deleteCourtEvent, removeNoticeSender, setCourtEventDone, updateCourtEvent } from "../src/services/court";
 import { markAlertsRead, setAlertPreferences } from "../src/services/alerts";
-import { browse, disconnectIntegration, importFiles } from "../src/services/integrations";
+import { browse, disconnectIntegration, importFiles, pickFiles } from "../src/services/integrations";
 import { ROLES } from "../src/security/permissions";
 import { UserFacingError } from "../src/errors";
 import { act, db, getPending, setSessionCookie, withSession } from "./server";
@@ -607,6 +607,16 @@ export async function integrationImportAction(fd: FormData): Promise<void> {
     const r = await importFiles(s, id, { matterId, folderId: text(fd, "folderId") ?? "", items, acknowledgePrivilegeWaiverRisk: fd.get("acknowledge") === "on" });
     if (r.queued === 0) return { message: "Those files are already on their way into the Matter." };
     return { message: `Importing ${r.queued} file${r.queued === 1 ? "" : "s"}${r.already ? ` (${r.already} already on the way)` : ""}. Each is scanned and fingerprinted like any upload.` };
+  }));
+}
+
+/** The files a person chose in Google's picker (Google Drive): the worker checks them, then they can be imported. */
+export async function integrationPickAction(fd: FormData): Promise<void> {
+  const id = text(fd, "connectionId") ?? "";
+  const files = fd.getAll("file").filter((v): v is string => typeof v === "string");
+  return act(browseLink(id, "picked", text(fd, "matterId")), "Checking the files you chose…", () => withSession(async (s) => {
+    const n = await pickFiles(s, id, files);
+    return { message: `Checking ${n} file${n === 1 ? "" : "s"} with your Google sign-in. They'll appear below in a moment.` };
   }));
 }
 

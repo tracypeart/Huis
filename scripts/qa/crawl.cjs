@@ -17,7 +17,7 @@ const SKIP = [/^\/api\/auth\/signout/, /^\/api\/auth\/microsoft\/start/];
     page.on("pageerror", (e) => problems.push({ url: current, kind: "pageerror", text: e.message.slice(0, 300) }));
     const seeds = ["/dashboard", "/matters", "/matters/new", "/inbox", "/search", "/search?q=FMLA", "/clients", "/contacts", "/users", "/audit",
       `/matters/${s.matterId}`, `/matters/${s.matterId}/brain`, `/matters/${s.matterId}/brain?a=${s.answerId}`, `/matters/${s.matterId}/dna`, `/matters/${s.matterId}/timeline`, `/matters/${s.matterId}/timeline?category=employment&show=confirmed`, `/matters/${s.walledId}/timeline`, `/matters/${s.matterId}/contradictions`, `/matters/${s.walledId}/contradictions`, `/matters/${s.matterId}/workspace`, `/matters/${s.walledId}/workspace`, "/prompts", `/matters/${s.matterId}/analysis`, `/matters/${s.matterId}/claims`, `/matters/${s.walledId}/claims`, "/authorities", `/matters/${s.walledId}/analysis`,
-      `/matters/${s.matterId}/dna/${s.claimId}`, `/matters/${s.walledId}`, `/inbox/mailboxes/${s.connectionId}`, "/integrations", `/integrations/${s.integrationId}`, "/", "/signin", "/onboarding", "/select-firm"];
+      `/matters/${s.matterId}/dna/${s.claimId}`, `/matters/${s.walledId}`, `/inbox/mailboxes/${s.connectionId}`, "/integrations", `/integrations/${s.integrationId}`, `/integrations/${s.googleDriveId}`, `/integrations/${s.googleDriveId}/pick`, `/integrations/${s.integrationId}/pick`, "/", "/signin", "/onboarding", "/select-firm"];
     const queue = [...seeds];
     const seen = new Set();
     const pages = [];

@@ -20,7 +20,8 @@ import { createContact } from "../../src/services/contacts";
 import { addClaimFromTemplate, addFactFromPassage, addNode, claimView, decideNode, findEvidenceFor, linkNodes, listNodes } from "../../src/services/dna";
 import { assembleOriginal, getUploadSession, markChunkReceived, newEvidenceId, recordEvidence, startUpload, storeChunk } from "../../src/services/evidence";
 import { connectMailbox, fileMessage, listMessages, setMatterColor } from "../../src/services/inbox";
-import { browse, connectIntegration, importFiles } from "../../src/services/integrations";
+import { browse, connectIntegration, importFiles, pickFiles } from "../../src/services/integrations";
+import { FakeGoogleDrive, GDRIVE_SUB } from "../../test/fake-google-drive";
 import { IntegrationWorker } from "../../src/integrations/worker";
 import { addMatterMember, createMatter, linkContactToMatter, listMatterFolders, setCourtCaseNumber } from "../../src/services/matters";
 import { requestCopy } from "../../src/services/workingCopies";
@@ -130,6 +131,16 @@ async function main() {
   await db.withFirm(avery, (s) => importFiles(s, integrationId, { matterId: x.matter.id, folderId: corr.id, items: ["drive:D1:I-memo"] }));
   while (await hub.runOnce()) { /* import */ }
   ms.server.close();
+  // A connected Google Drive (files chosen in Google's picker), with one chosen file listed.
+  const gd = new FakeGoogleDrive();
+  await gd.start();
+  gd.files = [{ id: "1QaPiCkEdFiLe_memo000000001", name: "Witness statement.pdf", mimeType: "application/pdf", content: "%PDF-statement", rev: "0Bqa-1" }];
+  process.env.HUIS_GOOGLE_TOKEN_BASE = gd.base; process.env.HUIS_GDRIVE_API_BASE = gd.base; process.env.HUIS_GOOGLE_USERINFO_BASE = gd.base;
+  const googleDriveId = await db.withFirm(avery, (s) => connectIntegration(s, { provider: "google_drive", subject: GDRIVE_SUB, tenant: null, label: "avery@lawfirm.example", refreshToken: "GDRT-1", masterKey: master }));
+  const gHub = new IntegrationWorker(pool, vault, { masterKey: master, microsoft: null, google: { clientId: "gc", clientSecret: "gs" } });
+  await db.withFirm(avery, (s) => pickFiles(s, googleDriveId, ["1QaPiCkEdFiLe_memo000000001"]));
+  while (await gHub.runOnce()) { /* list */ }
+  gd.server.close();
   await processor.drain();
 
   // Matter Brain and Case DNA.
@@ -189,8 +200,9 @@ async function main() {
   }
   const env = { HUIS_DATABASE_URL: appUrl, HUIS_WORKER_DATABASE_URL: workerUrl, HUIS_STORAGE_DIR: storageDir, HUIS_STORAGE_MASTER_KEY: master,
     HUIS_SESSION_SECRET: secret, HUIS_BASE_URL: "http://localhost:3100", MICROSOFT_CLIENT_ID: "c", MICROSOFT_CLIENT_SECRET: "s",
-    GOOGLE_CLIENT_ID: "gc", GOOGLE_CLIENT_SECRET: "gs", DROPBOX_APP_KEY: "dk", DROPBOX_APP_SECRET: "ds" };
-  await writeFile(process.env.HUIS_QA_STATE ?? "qa-state.json", JSON.stringify({ env, cookies, matterId: x.matter.id, walledId: x.walled.id, answerId, claimId, connectionId, integrationId, dbName: name }, null, 2));
+    GOOGLE_CLIENT_ID: "gc", GOOGLE_CLIENT_SECRET: "gs", DROPBOX_APP_KEY: "dk", DROPBOX_APP_SECRET: "ds",
+    GOOGLE_PICKER_API_KEY: "qa-picker-key", GOOGLE_CLOUD_PROJECT_NUMBER: "123456789012" };
+  await writeFile(process.env.HUIS_QA_STATE ?? "qa-state.json", JSON.stringify({ env, cookies, matterId: x.matter.id, walledId: x.walled.id, answerId, claimId, connectionId, integrationId, googleDriveId, dbName: name }, null, 2));
   await admin.end();
   await db.close();
   console.log("ok");

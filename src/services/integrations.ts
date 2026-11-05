@@ -54,7 +54,7 @@ export async function getConnection(s: FirmSession, id: string): Promise<Integra
 
 /** Records a newly authorized account (called from the connect callback). */
 export async function connectIntegration(s: FirmSession, p: {
-  provider: "onedrive" | "dropbox"; subject: string; tenant: string | null; label: string | null; refreshToken: string; masterKey: string;
+  provider: "onedrive" | "dropbox" | "google_drive"; subject: string; tenant: string | null; label: string | null; refreshToken: string; masterKey: string;
 }): Promise<string> {
   staffOnly(s, "connect an outside system");
   if (s.actor.role === "read_only") throw new PermissionDeniedError("connect an outside system");
@@ -75,9 +75,11 @@ export async function disconnectIntegration(s: FirmSession, id: string): Promise
 // ---------------------------------------------------------------------------
 // Browsing
 // ---------------------------------------------------------------------------
-const LOCATION_SHAPE = /^(root|sites|site:[A-Za-z0-9,._-]{1,300}|drive:[A-Za-z0-9!._-]{1,200}:[A-Za-z0-9!._-]{1,200}|dbx:id:[A-Za-z0-9_-]{1,200})$/;
+const LOCATION_SHAPE = /^(root|sites|picked|site:[A-Za-z0-9,._-]{1,300}|drive:[A-Za-z0-9!._-]{1,200}:[A-Za-z0-9!._-]{1,200}|dbx:id:[A-Za-z0-9_-]{1,200}|gdrive:[A-Za-z0-9_-]{10,200})$/;
 /** What a file id starts with, per system. */
-const FILE_ID_PREFIX: Record<string, string> = { onedrive: "drive:", dropbox: "dbx:" };
+const FILE_ID_PREFIX: Record<string, string> = { onedrive: "drive:", dropbox: "dbx:", google_drive: "gdrive:" };
+/** Systems whose files are chosen in the system's own picker rather than browsed (Google Drive, drive.file). */
+export const PICKER_PROVIDERS = new Set(["google_drive"]);
 /** A folder or file id of the provider's shape, with no "." or ".." part (which would become other Graph paths). */
 export const LOCATION = { test: (v: string) => LOCATION_SHAPE.test(v) && !v.split(/[:,]/).some((p) => /^\.+$/.test(p)) };
 /** A listing older than this is fetched again when the folder is opened. */
@@ -101,6 +103,13 @@ async function readListing(s: FirmSession, connectionId: string, location: strin
 export async function browse(s: FirmSession, connectionId: string, location = "root", refresh = false): Promise<FolderListing> {
   const c = await getConnection(s, connectionId);
   if (!LOCATION.test(location)) throw new NotFoundError("Folder");
+  if (PICKER_PROVIDERS.has(c.provider)) {
+    // Nothing to browse: the files the person last chose in the picker (checked by the worker).
+    if (location !== "picked") throw new NotFoundError("Folder");
+    return (await readListing(s, c.id, "picked"))
+      ?? { location: "picked", status: "ready", title: null, parent: null, items: [], truncated: false, error: null, fetchedAt: new Date() };
+  }
+  if (location === "picked") throw new NotFoundError("Folder");
   let l = await readListing(s, c.id, location);
   const age = l ? Date.now() - l.fetchedAt.getTime() : 0;
   const stale = l && l.status === "ready" && age > STALE_MS;
@@ -112,6 +121,25 @@ export async function browse(s: FirmSession, connectionId: string, location = "r
     l = (await readListing(s, c.id, location))!;
   }
   return l;
+}
+
+/** Google Drive file ids as the picker returns them. */
+const PICKED = z.array(z.string().regex(/^[A-Za-z0-9_-]{10,200}$/)).min(1).max(200);
+
+/**
+ * Records the files the person chose in Google's picker. The worker checks each one with the connection's own
+ * sign-in and lists only files that account can open; nothing is copied until the person imports.
+ */
+export async function pickFiles(s: FirmSession, connectionId: string, files: unknown): Promise<number> {
+  const c = await getConnection(s, connectionId);
+  if (!PICKER_PROVIDERS.has(c.provider)) throw new NotFoundError("Connection");
+  if (s.actor.role === "read_only") throw new PermissionDeniedError("choose files from an outside system");
+  const parsed = PICKED.safeParse(files);
+  if (!parsed.success) throw new UserFacingError("Choose between 1 and 200 files.");
+  const ids = [...new Set(parsed.data)];
+  await s.client.query("SELECT huis.request_integration_picked($1, $2)", [c.id, ids]);
+  await recordAudit(s, "integration.files_chosen", { targetType: "integration", targetId: c.id, metadata: { provider: c.provider, files: ids.length } });
+  return ids.length;
 }
 
 // ---------------------------------------------------------------------------

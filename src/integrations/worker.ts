@@ -6,6 +6,7 @@ import { refreshAccess } from "../mail/microsoft";
 import { storageKeys, type EvidenceVault } from "../storage/store";
 import { credentialId } from "./credentials";
 import { dropboxAccountId, DropboxSource, refreshDropboxAccess } from "./dropbox";
+import { googleAccountId, GoogleDriveSource, refreshGoogleDriveAccess } from "./googledrive";
 import { onedriveAccountOid, ONEDRIVE_SCOPES, OneDriveSource } from "./onedrive";
 import type { FileSource } from "./types";
 
@@ -16,12 +17,14 @@ export interface IntegrationConfig {
   masterKey: string;
   microsoft: { clientId: string; clientSecret: string } | null;
   dropbox?: { clientId: string; clientSecret: string } | null;
+  /** The Google OAuth client (the same one Gmail uses). */
+  google?: { clientId: string; clientSecret: string } | null;
   /** For tests: build the source from an access token. */
   sourceFor?: (provider: string, accessToken: string) => FileSource;
 }
 
 interface Held { firm_id: string; provider: string; account_subject: string; ciphertext: Buffer | null }
-interface ListingJob extends Held { listing_id: string; lock_token: string; connection_id: string; location: string }
+interface ListingJob extends Held { listing_id: string; lock_token: string; connection_id: string; location: string; picked: string[] | null }
 interface ImportJob extends Held {
   import_id: string; lock_token: string; matter_id: string; connection_id: string; external_id: string; external_name: string;
   /** The version the person saw in the listing when they chose the file (security review 21, R21-3). */
@@ -49,17 +52,22 @@ export class IntegrationWorker {
     } else if (h.provider === "dropbox") {
       if (!this.cfg.dropbox) throw new Error("Dropbox is not configured");
       access = await refreshDropboxAccess({ ...this.cfg.dropbox, refreshToken });
+    } else if (h.provider === "google_drive") {
+      if (!this.cfg.google) throw new Error("Google is not configured");
+      access = await refreshGoogleDriveAccess({ ...this.cfg.google, refreshToken });
     } else {
       throw Object.assign(new Error("this system isn't connected yet"), { final: true });
     }
     // Security review 20, R20-1: the token must belong to the account this connection was recorded for, so
     // nobody can file their own (working) token under a colleague's account id and lock them out.
-    const owner = h.provider === "dropbox" ? await dropboxAccountId(access.accessToken) : await onedriveAccountOid(access.accessToken);
-    const expected = h.provider === "dropbox" ? h.account_subject : (h.account_subject.split(":")[1] ?? "").toLowerCase();
+    const owner = h.provider === "dropbox" ? await dropboxAccountId(access.accessToken)
+      : h.provider === "google_drive" ? await googleAccountId(access.accessToken) : await onedriveAccountOid(access.accessToken);
+    const expected = h.provider === "onedrive" ? (h.account_subject.split(":")[1] ?? "").toLowerCase() : h.account_subject;
     if (!owner || owner !== expected) throw Object.assign(new Error("this sign-in belongs to a different account; reconnect"), { reconnect: true });
     if (access.refreshToken !== refreshToken) await saveRotated(sealCredential(this.cfg.masterKey, id, access.refreshToken));
     if (this.cfg.sourceFor) return this.cfg.sourceFor(h.provider, access.accessToken);
-    return h.provider === "dropbox" ? new DropboxSource(access.accessToken) : new OneDriveSource(access.accessToken);
+    return h.provider === "dropbox" ? new DropboxSource(access.accessToken)
+      : h.provider === "google_drive" ? new GoogleDriveSource(access.accessToken) : new OneDriveSource(access.accessToken);
   }
 
   /** Lists one requested folder. Returns false when none is waiting. */
@@ -72,7 +80,7 @@ export class IntegrationWorker {
     try {
       const source = await this.open(j, (sealed) =>
         this.pool.query("SELECT huis.worker_save_integration_credentials('listing', $1, $2, $3)", [j.listing_id, j.lock_token, sealed]).then(() => undefined));
-      const l = await source.list(j.location);
+      const l = await source.list(j.location, j.picked ?? []);
       await save(l.title, l.parent, l.items, l.truncated, null, false);
     } catch (err) {
       await save(null, null, [], false, errText(err), flag(err, "reconnect")).catch(() => undefined);

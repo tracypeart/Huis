@@ -8,6 +8,11 @@ export interface AuthConfig {
   microsoft: { clientId: string; clientSecret: string } | null;
   /** Gmail connection (Google OAuth client). */
   google: { clientId: string; clientSecret: string } | null;
+  /**
+   * Google's file picker, for Google Drive in the Integration Hub: a browser API key restricted (in Google
+   * Cloud) to the Picker API and Huis's address, and the Cloud project number. Neither is a secret.
+   */
+  googlePicker: { apiKey: string; appId: string } | null;
   /** Dropbox app for the Integration Hub (not a sign-in method). */
   dropbox: { clientId: string; clientSecret: string } | null;
   secureCookies: boolean;
@@ -34,6 +39,8 @@ export function authConfig(): AuthConfig {
     microsoft: clientId && clientSecret ? { clientId, clientSecret } : null,
     google: process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
       ? { clientId: process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_CLIENT_SECRET } : null,
+    googlePicker: process.env.GOOGLE_PICKER_API_KEY && /^[0-9]{6,20}$/.test(process.env.GOOGLE_CLOUD_PROJECT_NUMBER ?? "")
+      ? { apiKey: process.env.GOOGLE_PICKER_API_KEY, appId: process.env.GOOGLE_CLOUD_PROJECT_NUMBER! } : null,
     dropbox: process.env.DROPBOX_APP_KEY && process.env.DROPBOX_APP_SECRET
       ? { clientId: process.env.DROPBOX_APP_KEY, clientSecret: process.env.DROPBOX_APP_SECRET } : null,
     secureCookies: baseUrl.startsWith("https://"),

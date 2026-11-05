@@ -48,7 +48,8 @@ export interface RemoteFile {
 
 /** A file source (cloud storage): browse and download, read-only. */
 export interface FileSource {
-  list(location: string): Promise<Listing>;
+  /** A folder; for a picker-based source (Google Drive), "picked" with the ids the person chose. */
+  list(location: string, picked?: readonly string[]): Promise<Listing>;
   describe(id: string): Promise<RemoteFile>;
   /** The file's bytes; given the version just read, a source that can fetch that exact version does. */
   download(id: string, version?: string | null): Promise<Readable>;

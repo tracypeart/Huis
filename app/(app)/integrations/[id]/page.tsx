@@ -5,7 +5,7 @@ import { getFlash, withSession } from "../../../../lib/server";
 import { CLASSIFICATION_LABELS, FlashBanner } from "../../../../lib/ui";
 import { NotFoundError, PermissionDeniedError } from "../../../../src/errors";
 import { integrationInfo } from "../../../../src/integrations/registry";
-import { browse, getConnection, LOCATION, listImports } from "../../../../src/services/integrations";
+import { browse, getConnection, LOCATION, listImports, PICKER_PROVIDERS } from "../../../../src/services/integrations";
 import { listMatterFolders, listMatters } from "../../../../src/services/matters";
 
 export const dynamic = "force-dynamic";
@@ -22,21 +22,28 @@ export default async function BrowsePage({ params, searchParams }: {
   const { id } = await params;
   const sp = await searchParams;
   const flash = await getFlash(sp.f);
-  const at = sp.at && LOCATION.test(sp.at) ? sp.at : "root";
+  const asked = sp.at && LOCATION.test(sp.at) ? sp.at : "root";
   const data = await withSession(async (s) => {
     let c;
     try { c = await getConnection(s, id); } catch (err) {
       if (err instanceof NotFoundError || err instanceof PermissionDeniedError) return null;
       throw err;
     }
-    const listing = await browse(s, c.id, at);
+    // Google Drive (drive.file) has no folders to browse: the files the person chose in Google's picker.
+    const at = PICKER_PROVIDERS.has(c.provider) ? "picked" : asked === "picked" ? "root" : asked;
+    let listing;
+    try { listing = await browse(s, c.id, at); } catch (err) {
+      if (err instanceof NotFoundError) return null;
+      throw err;
+    }
     const matters = await listMatters(s);
     const matterId = sp.matter && UUID.test(sp.matter) && matters.some((x) => x.id === sp.matter) ? sp.matter : null;
     const folders = matterId ? await listMatterFolders(s, matterId) : [];
-    return { c, listing, matters, matterId, folders, imports: await listImports(s, c.id, 20) };
+    return { c, at, listing, matters, matterId, folders, imports: await listImports(s, c.id, 20), canPick: s.actor.role !== "read_only" };
   });
   if (!data) notFound();
-  const { c, listing } = data;
+  const { c, listing, at } = data;
+  const picker = PICKER_PROVIDERS.has(c.provider);
   const link = (to: string) => {
     const q = new URLSearchParams();
     if (to !== "root") q.set("at", to);
@@ -53,7 +60,7 @@ export default async function BrowsePage({ params, searchParams }: {
       {waiting ? <meta httpEquiv="refresh" content="3" /> : null}
       <p className="notice"><Link href="/integrations">← Integrations</Link></p>
       <h1>{integrationInfo(c.provider)?.name ?? c.provider}</h1>
-      <p className="sub">{c.accountLabel ?? "Connected account"} · read-only · only you can browse this account</p>
+      <p className="sub">{c.accountLabel ?? "Connected account"} · {picker ? "only the files you choose" : "read-only"} · only you can {picker ? "use" : "browse"} this account</p>
       <FlashBanner flash={flash} />
       {c.status === "needs_reconnect" ? (
         <div className="card"><p>This account needs reconnecting{c.lastError ? ` (${c.lastError})` : ""}. <a href={`/api/integrations/${c.provider}/start`}>Reconnect</a></p></div>
@@ -76,16 +83,22 @@ export default async function BrowsePage({ params, searchParams }: {
 
       <div className="card">
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "space-between", alignItems: "center" }}>
-          <h2 style={{ margin: 0 }}>{listing.title ?? "Loading…"}</h2>
-          <form action={integrationRefreshAction}>
-            <input type="hidden" name="connectionId" value={c.id} /><input type="hidden" name="at" value={at} />
-            <button type="submit" className="secondary">Refresh</button>
-          </form>
+          <h2 style={{ margin: 0 }}>{picker ? "Files you chose" : listing.title ?? "Loading…"}</h2>
+          {picker ? (
+            data.canPick && c.status === "active"
+              ? <Link className="button" href={`/integrations/${c.id}/pick${data.matterId ? `?matter=${data.matterId}` : ""}`}>Choose files from Google Drive</Link>
+              : null
+          ) : (
+            <form action={integrationRefreshAction}>
+              <input type="hidden" name="connectionId" value={c.id} /><input type="hidden" name="at" value={at} />
+              <button type="submit" className="secondary">Refresh</button>
+            </form>
+          )}
         </div>
         {listing.parent ? <p className="notice"><Link href={link(listing.parent)}>↑ Up</Link></p> : null}
         {listing.status === "queued" || listing.status === "running"
-          ? <p className="notice">{listing.items.length ? "Checking this folder for changes…" : "Fetching this folder…"}</p> : null}
-        {listing.status === "failed" ? <p className="notice">Couldn&apos;t list this folder{listing.error ? `: ${listing.error}` : ""}.</p> : null}
+          ? <p className="notice">{picker ? "Checking the files you chose with your Google sign-in…" : listing.items.length ? "Checking this folder for changes…" : "Fetching this folder…"}</p> : null}
+        {listing.status === "failed" ? <p className="notice">Couldn&apos;t {picker ? "check the files you chose" : "list this folder"}{listing.error ? `: ${listing.error}` : ""}.</p> : null}
         {/* The last listing stays usable while it is being refreshed. */}
         {listing.status === "ready" || listing.items.length ? (
           <form action={integrationImportAction}>
@@ -93,7 +106,7 @@ export default async function BrowsePage({ params, searchParams }: {
             <input type="hidden" name="at" value={at} />
             {data.matterId ? <input type="hidden" name="matterId" value={data.matterId} /> : null}
             <table><tbody>
-              {listing.items.length === 0 ? <tr><td className="notice">This folder is empty.</td></tr> : null}
+              {listing.items.length === 0 ? <tr><td className="notice">{picker ? "No files chosen yet. Choose files from Google Drive to import them." : "This folder is empty."}</td></tr> : null}
               {listing.items.map((i) => (
                 <tr key={i.id}>
                   <td style={{ width: 1 }}>{i.kind === "file" && data.matterId ? <input type="checkbox" name="item" value={i.id} aria-label={`Import ${i.name}`} /> : null}</td>
@@ -105,7 +118,9 @@ export default async function BrowsePage({ params, searchParams }: {
                 </tr>
               ))}
             </tbody></table>
-            {listing.truncated ? <p className="notice">This folder has more items than Huis lists at once; open a subfolder to narrow it down.</p> : null}
+            {listing.truncated ? <p className="notice">{picker
+              ? "Some of the files you chose can't be imported: folders, Google Forms or Sites, files the connected account can't open (for example, chosen while signed in to a different Google account), or files deleted since."
+              : "This folder has more items than Huis lists at once; open a subfolder to narrow it down."}</p> : null}
             {data.matterId && files.length ? (
               <>
                 <label style={{ marginTop: 12 }}>Matter folder
@@ -122,7 +137,9 @@ export default async function BrowsePage({ params, searchParams }: {
             ) : null}
           </form>
         ) : null}
-        <p className="notice">Huis keeps only names, sizes and dates of the folders you open. A file&apos;s contents are copied only when you import it, and the same version is imported into a Matter once.</p>
+        <p className="notice">{picker
+          ? "Huis can open only the files you choose in Google's picker, and keeps only their names, sizes and dates until you import. Google Docs, Sheets and Slides are imported as Word, Excel and PowerPoint. The same version is imported into a Matter once."
+          : "Huis keeps only names, sizes and dates of the folders you open. A file's contents are copied only when you import it, and the same version is imported into a Matter once."}</p>
       </div>
 
       {data.imports.length ? (
