@@ -61,6 +61,9 @@ export default async function CourtPage({ params, searchParams }: { params: Prom
       <span className="badge">{EVENT_KIND_LABELS[e.kind]}</span> {e.title}
       {e.location || e.judge ? <div className="notice">{[e.location, e.judge].filter(Boolean).join(" · ")}</div> : null}
       {e.notes ? <div className="notice">{e.notes}</div> : null}
+      {e.reader && !e.readerVerified ? (
+        <div className="notice"><span className="badge walled">Utah format not yet verified</span> Read from a Utah notice by a reader not yet checked against real notices: compare it with the notice carefully.</div>
+      ) : null}
       {e.quote && e.sourceEvidenceId ? (
         <div className="notice">From <Link href={`/evidence/${e.sourceEvidenceId}`}>{e.sourceTitle ?? "the court notice"}</Link>: “{e.quote}”</div>
       ) : null}
@@ -88,7 +91,7 @@ export default async function CourtPage({ params, searchParams }: { params: Prom
 
   return (
     <>
-      <p className="notice"><Link href={`/matters/${m.id}`}>← {m.title}</Link> · <Link href={`/matters/${m.id}/timeline`}>Timeline</Link></p>
+      <p className="notice"><Link href={`/matters/${m.id}`}>← {m.title}</Link> · <Link href={`/matters/${m.id}/timeline`}>Timeline</Link> · <Link href="/alerts">Alerts</Link> · <Link href="/court-connections">Court connections</Link></p>
       <h1>Court calendar</h1>
       <p className="sub">
         {m.courtCaseNumber ? <>Case {m.courtCaseNumber}. </> : null}
@@ -202,8 +205,9 @@ export default async function CourtPage({ params, searchParams }: { params: Prom
       <div className="card">
         <h2>Docket from court notices ({notices.length})</h2>
         <p className="notice">
-          Federal court notices (CM/ECF) filed into this Matter, newest first. File them from the Huis Inbox. Each notice gives you one free look at the
-          filed document for 15 days: download it during that look to avoid PACER fees. Utah state notices follow once sample notices are available.
+          Court notices filed into this Matter, newest first: federal CM/ECF notices, and Utah notices from a Utah courts address or your firm&apos;s
+          registered e-filing provider (see <Link href="/court-connections">Court connections</Link>). File them from the Huis Inbox. Each federal notice gives you one free look at the
+          filed document for 15 days: download it during that look to avoid PACER fees.
         </p>
         {notices.length === 0 ? <p className="notice">No federal court notices filed into this Matter yet.</p> : (
           <table><tbody>
@@ -216,6 +220,7 @@ export default async function CourtPage({ params, searchParams }: { params: Prom
                     {[n.court, n.caseNumber].filter(Boolean).join(" · ")} · <Link href={`/evidence/${n.evidenceId}`}>Open the notice</Link>
                     {n.datesFound ? <> · {n.datesFound} date{n.datesFound === 1 ? "" : "s"} found</> : null}
                   </div>
+                  {!n.readerVerified ? <div className="notice"><span className="badge walled">Utah format not yet verified</span></div> : null}
                   {n.caseMismatch ? <div className="notice"><span className="badge walled">Different case number</span> This notice names case {n.caseNumber}, not this Matter&apos;s {m.courtCaseNumber}. Check it was filed to the right Matter.</div> : null}
                 </td>
                 <td style={{ width: 170, verticalAlign: "top" }}>

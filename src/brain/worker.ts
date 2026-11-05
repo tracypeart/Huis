@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import pg from "pg";
 import { aiProvider } from "../ai/gateway";
-import { parseNef } from "../court/nef";
+import { NOTICE_READERS } from "../court/connectors";
 import { toCharPositions } from "../services/cite";
 import { findEvents } from "../dna/extract";
 import { chunkText, MAX_CHUNKS } from "./chunk";
@@ -41,16 +41,20 @@ export class BrainWorker {
       if (job.kind === "evidence") {
         await this.pool.query("SELECT huis.worker_save_dna_suggestions($1, $2, $3)",
           [job.source_id, job.lock_token, JSON.stringify(findEvents(job.content))]);
-        // Court dates read from a federal court notice filed into the Matter (proposals only).
-        const nef = parseNef(job.content);
-        if (nef?.events.length) {
+        // Court dates from a court notice filed into the Matter (proposals only), through the CourtConnector
+        // readers. The database checks the sender for each reader (federal: a uscourts.gov address; Utah: a
+        // utcourts.gov address or the firm's registered e-filing provider), so the worker just offers what it read.
+        for (const reader of NOTICE_READERS) {
+          const notice = reader.read(job.content);
+          if (!notice?.events.length) continue;
           // Positions as the database counts them (characters, not UTF-16 units: security review 17, F2),
           // and the filing each date belongs to, so the same notice in another mailbox isn't proposed twice (F3).
-          const events = nef.events.map((e) => ({
-            ...e, ...toCharPositions(job.content, e.start, e.end), caseNumber: nef.caseNumber, documentNumber: nef.documentNumber,
+          const events = notice.events.map((e) => ({
+            ...e, ...toCharPositions(job.content, e.start, e.end), caseNumber: notice.caseNumber, documentNumber: notice.documentNumber,
           }));
-          await this.pool.query("SELECT huis.worker_save_court_suggestions($1, $2, $3)",
-            [job.source_id, job.lock_token, JSON.stringify(events)]);
+          await this.pool.query("SELECT huis.worker_save_court_proposals($1, $2, $3, $4)",
+            [job.source_id, job.lock_token, reader.id, JSON.stringify(events)]);
+          break;
         }
       }
       const hash = createHash("sha256").update(job.content).digest("hex");

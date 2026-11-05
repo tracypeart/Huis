@@ -1,20 +1,22 @@
 import Link from "next/link";
 import { withSession } from "../../lib/server";
 import { ROLE_LABELS } from "../../lib/ui";
+import { unreadAlertCount } from "../../src/services/alerts";
 import { can, INTERNAL_ROLES } from "../../src/security/permissions";
 
 export const dynamic = "force-dynamic";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
-  const { actor, firmName } = await withSession(async (s) => {
+  const { actor, firmName, unread } = await withSession(async (s) => {
     const { rows } = await s.client.query<{ name: string }>("SELECT name FROM huis.firms");
-    return { actor: s.actor, firmName: rows[0]?.name ?? "" };
+    return { actor: s.actor, firmName: rows[0]?.name ?? "", unread: await unreadAlertCount(s) };
   });
   return (
     <div className="shell">
       <nav className="nav" aria-label="Main">
         <div className="logo">Huis Law IP<small>{firmName}</small></div>
         <Link href="/dashboard">Dashboard</Link>
+        {INTERNAL_ROLES.has(actor.role) ? <Link href="/alerts">Alerts{unread ? <span className="badge privileged" style={{ marginLeft: 6 }}>{unread > 99 ? "99+" : unread}</span> : null}</Link> : null}
         {INTERNAL_ROLES.has(actor.role) ? <Link href="/inbox">Inbox</Link> : null}
         <Link href="/matters">Matters</Link>
         <Link href="/search">Search</Link>

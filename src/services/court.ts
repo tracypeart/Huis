@@ -1,8 +1,9 @@
 import { z } from "zod";
-import { FREE_LOOK_DAYS, isCourtSender, parseNef } from "../court/nef";
+import { NOTICE_READERS, readCourtNotice, type NoticeReaderId } from "../court/connectors";
+import { FREE_LOOK_DAYS } from "../court/nef";
 import type { FirmSession } from "../db/tenant";
 import { NotFoundError, PermissionDeniedError, UserFacingError } from "../errors";
-import { INTERNAL_ROLES } from "../security/permissions";
+import { ADMIN_ROLES, INTERNAL_ROLES } from "../security/permissions";
 import { recordAudit } from "./audit";
 import { getMatter } from "./matters";
 
@@ -40,12 +41,14 @@ export interface CourtEvent {
   id: string; matterId: string; kind: EventKind; title: string; date: string; time: string | null; location: string | null;
   judge: string | null; notes: string; status: "suggested" | "confirmed" | "rejected"; origin: "attorney" | "huis";
   sourceEvidenceId: string | null; sourceTitle: string | null; quote: string | null; done: boolean; createdAt: Date;
+  /** Which notice reader proposed it, and whether that reader has been checked against real notices. */
+  reader: NoticeReaderId | null; readerVerified: boolean;
   /** Days from today (in the firm's time zone) until the date; negative once it has passed. */
   daysAway: number;
 }
 
 const COLS = `e.id, e.matter_id, e.kind, e.title, e.event_date::text AS date, to_char(e.event_time, 'HH24:MI') AS time, e.location, e.judge,
-  e.notes, e.status, e.origin, e.source_evidence_id, i.original_filename AS source_title, e.quote, e.done_at IS NOT NULL AS done, e.created_at,
+  e.notes, e.status, e.origin, e.source_evidence_id, i.original_filename AS source_title, e.quote, e.done_at IS NOT NULL AS done, e.created_at, e.reader,
   (e.event_date - (now() AT TIME ZONE (SELECT time_zone FROM huis.firms WHERE id = huis.current_firm_id()))::date) AS days_away`;
 const FROM = "huis.court_events e LEFT JOIN huis.evidence_items i ON i.id = e.source_evidence_id";
 const toEvent = (r: Record<string, unknown>): CourtEvent => ({
@@ -53,6 +56,8 @@ const toEvent = (r: Record<string, unknown>): CourtEvent => ({
   time: (r.time as string | null) ?? null, location: (r.location as string | null) ?? null, judge: (r.judge as string | null) ?? null,
   notes: r.notes as string, status: r.status as CourtEvent["status"], origin: r.origin as CourtEvent["origin"],
   sourceEvidenceId: (r.source_evidence_id as string | null) ?? null, sourceTitle: (r.source_title as string | null) ?? null,
+  reader: (r.reader as NoticeReaderId | null) ?? null,
+  readerVerified: r.reader ? NOTICE_READERS.find((x) => x.id === r.reader)?.verified ?? false : true,
   quote: (r.quote as string | null) ?? null, done: Boolean(r.done), createdAt: r.created_at as Date, daysAway: Number(r.days_away),
 });
 
@@ -108,11 +113,12 @@ export interface CourtNotice {
   freeLookDaysLeft: number | null;
   /** The notice names a different case number than the Matter's. */
   caseMismatch: boolean;
+  reader: NoticeReaderId; readerVerified: boolean;
 }
 
 const caseKey = (v: string | null | undefined) => (v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 
-/** The Matter's docket, read from the federal court notices filed into it (newest first). Huis keeps no copy. */
+/** The Matter's docket, read from the court notices filed into it (newest first). Huis keeps no copy. */
 export async function courtNotices(s: FirmSession, matterId: string): Promise<CourtNotice[]> {
   reader(s);
   const matter = await getMatter(s, matterId);
@@ -124,15 +130,16 @@ export async function courtNotices(s: FirmSession, matterId: string): Promise<Co
        JOIN huis.evidence_email m ON m.evidence_id = i.id
        JOIN huis.evidence_text t ON t.evidence_id = i.id
        JOIN huis.firms f ON f.id = huis.current_firm_id()
-      WHERE i.matter_id = $1 AND i.status = 'clean' AND i.duplicate_of IS NULL AND huis.is_court_sender(m.from_addr)
-        AND position('Notice of Electronic Filing' IN t.content) > 0
+      WHERE i.matter_id = $1 AND i.status = 'clean' AND i.duplicate_of IS NULL
+        AND ((huis.is_court_sender(m.from_addr) AND position('Notice of Electronic Filing' IN t.content) > 0)
+             OR huis.is_notice_sender(huis.current_firm_id(), 'utah', m.from_addr))
       ORDER BY m.sent_at DESC NULLS LAST, i.id LIMIT 500`, [matterId]);
+  const senders = (await s.client.query<{ address: string }>("SELECT address FROM huis.court_notice_senders")).rows.map((x) => x.address);
   const out: CourtNotice[] = [];
   const seen = new Set<string>();
   for (const r of rows) {
-    // Only email from a federal court's CM/ECF system (F9).
-    if (!isCourtSender(r.from_addr as string | null)) continue;
-    const n = parseNef(String(r.content));
+    // Only email from a court (or the firm's registered e-filing provider), read by the matching reader (F9).
+    const n = readCourtNotice(String(r.content), r.from_addr as string | null, senders);
     if (!n) continue;
     // The same filing, sent to several attorneys of record, is one docket entry (F3).
     const filing = `${caseKey(n.caseNumber)}|${n.documentNumber ?? ""}|${n.enteredOn ?? ""}|${n.docketText.slice(0, 500)}`;
@@ -145,6 +152,7 @@ export async function courtNotices(s: FirmSession, matterId: string): Promise<Co
       evidenceId: r.id, subject: String(r.subject).slice(0, 300), sentAt: r.sent_at, court: n.court, caseNumber: n.caseNumber,
       caseName: n.caseName, documentNumber: n.documentNumber, enteredOn: n.enteredOn, docketText: n.docketText,
       documentUrl: n.documentUrl, datesFound: n.events.length,
+      reader: n.connector, readerVerified: NOTICE_READERS.find((x) => x.id === n.connector)?.verified ?? false,
       freeLookDaysLeft: left != null && left > 0 && n.documentUrl ? Math.min(left, FREE_LOOK_DAYS) : null,
       // "2:26-cv-00123-DBB" (with the judge's initials) is the same case as "2:26-cv-00123".
       caseMismatch: Boolean(n.caseNumber && matter.courtCaseNumber
@@ -323,4 +331,48 @@ export async function courtCalendarIcs(s: FirmSession, matterId: string, acknowl
   await audit(s, "calendar_exported", matterId, matterId, { count: String(events.length) });
   const safe = m.huisNumber.replace(/[^A-Za-z0-9-]+/g, "-").slice(0, 60) || "matter";
   return { filename: `${safe}-court-dates.ics`, body: `${lines.map(fold).join("\r\n")}\r\n` };
+}
+
+// ---------------------------------------------------------------------------
+// Court notice senders (the firm's e-filing service provider)
+// ---------------------------------------------------------------------------
+export interface NoticeSender { id: string; address: string; label: string; createdAt: Date }
+
+export async function listNoticeSenders(s: FirmSession): Promise<NoticeSender[]> {
+  reader(s);
+  const { rows } = await s.client.query("SELECT id, address, label, created_at FROM huis.court_notice_senders ORDER BY address LIMIT 200");
+  return rows.map((r) => ({ id: r.id, address: r.address, label: r.label, createdAt: r.created_at }));
+}
+
+const senderInput = z.object({
+  address: z.email("Enter the sender's email address.").max(320).transform((v) => v.trim().toLowerCase()),
+  label: z.string().trim().min(1).max(100),
+});
+
+/**
+ * Registers the address the firm's e-filing provider sends Utah court notices from.
+ * Administrators only. The firm's email already filed from it is read again.
+ */
+export async function addNoticeSender(s: FirmSession, input: unknown): Promise<string> {
+  if (!ADMIN_ROLES.has(s.actor.role)) throw new PermissionDeniedError("register court notice senders");
+  const v = senderInput.parse(input);
+  // Free email services can't be registered: anyone could send from them.
+  if (/@(gmail|googlemail|outlook|hotmail|live|yahoo|aol|icloud|me|proton|protonmail|gmx|mail)\.[a-z.]+$/i.test(v.address)) {
+    throw new UserFacingError("That's a personal email service. Register your e-filing provider's own notification address.");
+  }
+  const existing = (await s.client.query<{ id: string }>("SELECT id FROM huis.court_notice_senders WHERE address = $1", [v.address])).rows[0];
+  const id = existing?.id ?? (await s.client.query<{ id: string }>(
+    "INSERT INTO huis.court_notice_senders (firm_id, address, label, added_by) VALUES ($1, $2, $3, $4) RETURNING id",
+    [s.actor.firmId, v.address, v.label, s.actor.userId])).rows[0]!.id;
+  await s.client.query("SELECT huis.requeue_notices_from($1)", [v.address]);
+  await recordAudit(s, "court.notice_sender_added", { targetType: "firm", targetId: s.actor.firmId, metadata: { domain: v.address.split("@")[1] ?? "" } });
+  return id;
+}
+
+export async function removeNoticeSender(s: FirmSession, id: string): Promise<void> {
+  if (!ADMIN_ROLES.has(s.actor.role)) throw new PermissionDeniedError("register court notice senders");
+  if (!uuid.safeParse(id).success) throw new NotFoundError("Sender");
+  const r = await s.client.query("DELETE FROM huis.court_notice_senders WHERE id = $1 RETURNING address", [id]);
+  if (!r.rowCount) throw new NotFoundError("Sender");
+  await recordAudit(s, "court.notice_sender_removed", { targetType: "firm", targetId: s.actor.firmId, metadata: { domain: String(r.rows[0].address).split("@")[1] ?? "" } });
 }
