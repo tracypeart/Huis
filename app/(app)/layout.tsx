@@ -18,6 +18,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <Link href="/dashboard">Dashboard</Link>
         {INTERNAL_ROLES.has(actor.role) ? <Link href="/alerts">Alerts{unread ? <span className="badge privileged" style={{ marginLeft: 6 }}>{unread > 99 ? "99+" : unread}</span> : null}</Link> : null}
         {INTERNAL_ROLES.has(actor.role) ? <Link href="/inbox">Inbox</Link> : null}
+        {INTERNAL_ROLES.has(actor.role) ? <Link href="/integrations">Integrations</Link> : null}
         <Link href="/matters">Matters</Link>
         <Link href="/search">Search</Link>
         {INTERNAL_ROLES.has(actor.role) ? <Link href="/prompts">AI Prompts</Link> : null}

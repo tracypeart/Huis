@@ -340,6 +340,21 @@ Also fixed while reviewing: overlapping passages could produce a second, cut-sho
 
 **Accepted, not changed:** the list of personal email services refused as notice senders isn't exhaustive; registration is by exact address, so this adds no spoofing risk beyond the accepted one (no DKIM/DMARC check yet, review 17).
 
+## Nineteenth review — Phase 9 part 1 (Integration Hub, OneDrive and SharePoint)
+
+**Scope:** connections to outside systems (connecting, takeover, disconnecting), sealed sign-in tokens, worker-mediated folder listings, imports into Matters and their re-checks, sync records, the chain of custody for imported files, the OneDrive adapter (Graph URLs, download links, paging), the connect flow, and the new pages and database rules.
+**Result:** connections stayed private to their owner (not colleagues, the firm owner or other firms); the app can't read tokens, write listings, imports or sync records, call worker functions or create imported evidence; imports are checked again when the worker runs (disabled, demoted, walled off, folder newly shared); the token never reaches download hosts; no slow patterns. The reviewer confirmed 5 problems. **All fixed.** Regression tests are in `test/security-review-19.test.ts` (12 tests) and `test/integrations.test.ts`. Each fails without its fix.
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| R19-2 | Medium | A file imported into a folder the client can see showed the client, in its chain of custody, where it lived in the attorney's OneDrive — a folder path that can name other clients — and the organization and outside ids | Those details are shown only to firm staff; others see that it was imported, from which system and when. The stored event is unchanged, so the chain still verifies |
+| R19-1 | Low-Medium | A colleague could record someone's Microsoft account id with a made-up token (before they connected, or while their connection needed reconnecting) and lock them out of their own OneDrive (review 5, R5-5, for mailboxes) | Only a connection Microsoft has accepted (a listing or import worked) can't be taken over; one that never worked goes to whoever signs in with the account, and is wiped |
+| R19-3 | Low-Medium | A file saved again while being copied could be recorded as its old version with the new contents (same size), defeating "the same version once" | The worker checks the file's version and size again after copying; if they changed, it tries again, so the record and the bytes match |
+| R19-5 | Low-Medium (availability) | An import request looked up each chosen file by scanning every held folder listing (up to 300 × 1,000 entries, 200 times) — seconds of database time per request | Listed files are kept as indexed rows; each lookup is one index read |
+| R19-4 | Low | One refused short-lived download link (expired, or downloads blocked on that file) marked the whole account as needing reconnecting | Only Graph refusing the token does; a refused link fails just that import |
+
+**Also hardened (reviewer's notes):** folder and file ids with a "." or ".." part are refused (in the app and the database); a folder that failed to list is asked for again after a minute, not on every page refresh; an owner who left the firm or became read-only has nothing listed.
+
 ## Still open (tracked, not code defects)
 1. **MFA enforcement** — Microsoft sign-in doesn't yet require proof of MFA. Plan: require the firm's Microsoft MFA (Conditional Access) or a Huis passkey. Part of the end-of-build Azure/hosting step.
 2. **Administrator-level tampering** — someone with full database superuser access could switch off the protective rules and rewrite history consistently. The hash chains make ordinary tampering detectable, but defeating a superuser needs the chain's latest fingerprint stored outside the database (e.g. a daily signed export). Planned with production hosting.

@@ -245,3 +245,20 @@ Huis tells you. Each item shows whether its text was read completely, partly (fo
 
 ### Are there size limits?
 Uploads can be very large (up to 100 GB per file by default, and whole folders or thumb drives keep their structure). To stop "zip bombs", Huis refuses archive contents that are suspiciously compressed and caps how much one upload may unpack. Anything skipped is noted on the item.
+
+## Integrations (Phase 9)
+
+### Can Huis bring in files from OneDrive or SharePoint?
+Yes. On **Integrations**, connect your own Microsoft 365 account (read-only file access; Huis can't change, move or delete anything). Browse your files and the SharePoint sites you follow, choose a Matter and folder, tick files and import them. Each becomes evidence in the Matter: scanned, fingerprinted, and with a chain of custody saying where it came from and which version.
+
+### Can my colleagues or the firm's administrators browse my OneDrive through Huis?
+No. A connection is yours alone; the database enforces it, administrators included. They see only the files you import into Matters they can see.
+
+### What happens if the file changes in OneDrive later?
+Nothing changes in Huis: the imported copy is kept exactly as it was. Importing it again brings in the new version as a separate item; the same version is never imported into a Matter twice.
+
+### Will a client see my OneDrive folder names?
+No. Where an imported file lived in your systems is shown only to firm staff. A client who can see the item sees only that it was imported, from which system and when.
+
+### What about Google Drive, Dropbox, Filevine, Clio and StrongSuit?
+Google Drive and Dropbox come next. Filevine and Clio need developer access from those companies, and StrongSuit (which supports an API connection and a user-interface merger) is being discussed with them. The Integrations page shows where each stands.

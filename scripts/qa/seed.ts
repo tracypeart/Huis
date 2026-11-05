@@ -20,6 +20,8 @@ import { createContact } from "../../src/services/contacts";
 import { addClaimFromTemplate, addFactFromPassage, addNode, claimView, decideNode, findEvidenceFor, linkNodes, listNodes } from "../../src/services/dna";
 import { assembleOriginal, getUploadSession, markChunkReceived, newEvidenceId, recordEvidence, startUpload, storeChunk } from "../../src/services/evidence";
 import { connectMailbox, fileMessage, listMessages, setMatterColor } from "../../src/services/inbox";
+import { browse, connectIntegration, importFiles } from "../../src/services/integrations";
+import { IntegrationWorker } from "../../src/integrations/worker";
 import { addMatterMember, createMatter, linkContactToMatter, listMatterFolders, setCourtCaseNumber } from "../../src/services/matters";
 import { requestCopy } from "../../src/services/workingCopies";
 import { inviteUser } from "../../src/services/users";
@@ -115,6 +117,18 @@ async function main() {
   const corr = (await db.withFirm(avery, (s) => listMatterFolders(s, x.matter.id))).find((fo) => fo.name === "Correspondence")!;
   await db.withFirm(avery, (s) => fileMessage(s, msg.id, { matterId: x.matter.id, folderId: corr.id }));
   while (await mail.fileOnce()) { /* file */ }
+  // A connected OneDrive with one imported file (Integration Hub).
+  ms.drive = {
+    "D1-root": { id: "D1-root", drive: "D1", name: "root", parent: null, folder: true },
+    "F-smith": { id: "F-smith", drive: "D1", name: "Smith", parent: "D1-root", folder: true },
+    "I-memo": { id: "I-memo", drive: "D1", name: "Termination memo.txt", parent: "D1-root", content: "Fired April 18.", mime: "text/plain", path: "/drive/root:" },
+  };
+  const integrationId = await db.withFirm(avery, (s) => connectIntegration(s, { provider: "onedrive", subject: "tid:oid", tenant: "tid", label: "avery@lawfirm.example", refreshToken: "RT-1", masterKey: master }));
+  const hub = new IntegrationWorker(pool, vault, { masterKey: master, microsoft: { clientId: "c", clientSecret: "s" } });
+  await db.withFirm(avery, (s) => browse(s, integrationId));
+  while (await hub.runOnce()) { /* list */ }
+  await db.withFirm(avery, (s) => importFiles(s, integrationId, { matterId: x.matter.id, folderId: corr.id, items: ["drive:D1:I-memo"] }));
+  while (await hub.runOnce()) { /* import */ }
   ms.server.close();
   await processor.drain();
 
@@ -176,7 +190,7 @@ async function main() {
   const env = { HUIS_DATABASE_URL: appUrl, HUIS_WORKER_DATABASE_URL: workerUrl, HUIS_STORAGE_DIR: storageDir, HUIS_STORAGE_MASTER_KEY: master,
     HUIS_SESSION_SECRET: secret, HUIS_BASE_URL: "http://localhost:3100", MICROSOFT_CLIENT_ID: "c", MICROSOFT_CLIENT_SECRET: "s",
     GOOGLE_CLIENT_ID: "gc", GOOGLE_CLIENT_SECRET: "gs" };
-  await writeFile(process.env.HUIS_QA_STATE ?? "qa-state.json", JSON.stringify({ env, cookies, matterId: x.matter.id, walledId: x.walled.id, answerId, claimId, connectionId, dbName: name }, null, 2));
+  await writeFile(process.env.HUIS_QA_STATE ?? "qa-state.json", JSON.stringify({ env, cookies, matterId: x.matter.id, walledId: x.walled.id, answerId, claimId, connectionId, integrationId, dbName: name }, null, 2));
   await admin.end();
   await db.close();
   console.log("ok");

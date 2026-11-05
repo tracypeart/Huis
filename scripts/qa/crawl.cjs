@@ -4,9 +4,10 @@ const s = require(require("path").resolve(process.env.HUIS_QA_STATE ?? "qa-state
 const BASE = process.env.HUIS_QA_BASE ?? "http://localhost:3100";
 const SKIP = [/^\/api\/auth\/signout/, /^\/api\/auth\/microsoft\/start/];
 (async () => {
-  const browser = await chromium.launch();
   const report = {};
   for (const [role, cookie] of Object.entries(s.cookies)) {
+    // A fresh browser for each kind of user (one browser for every page of every role can run out of memory).
+    const browser = await chromium.launch();
     const ctx = await browser.newContext({ viewport: { width: 1300, height: 900 } });
     await ctx.addCookies([{ name: "huis_session", value: cookie, domain: "localhost", path: "/", httpOnly: true }]);
     const page = await ctx.newPage();
@@ -16,7 +17,7 @@ const SKIP = [/^\/api\/auth\/signout/, /^\/api\/auth\/microsoft\/start/];
     page.on("pageerror", (e) => problems.push({ url: current, kind: "pageerror", text: e.message.slice(0, 300) }));
     const seeds = ["/dashboard", "/matters", "/matters/new", "/inbox", "/search", "/search?q=FMLA", "/clients", "/contacts", "/users", "/audit",
       `/matters/${s.matterId}`, `/matters/${s.matterId}/brain`, `/matters/${s.matterId}/brain?a=${s.answerId}`, `/matters/${s.matterId}/dna`, `/matters/${s.matterId}/timeline`, `/matters/${s.matterId}/timeline?category=employment&show=confirmed`, `/matters/${s.walledId}/timeline`, `/matters/${s.matterId}/contradictions`, `/matters/${s.walledId}/contradictions`, `/matters/${s.matterId}/workspace`, `/matters/${s.walledId}/workspace`, "/prompts", `/matters/${s.matterId}/analysis`, `/matters/${s.matterId}/claims`, `/matters/${s.walledId}/claims`, "/authorities", `/matters/${s.walledId}/analysis`,
-      `/matters/${s.matterId}/dna/${s.claimId}`, `/matters/${s.walledId}`, `/inbox/mailboxes/${s.connectionId}`, "/", "/signin", "/onboarding", "/select-firm"];
+      `/matters/${s.matterId}/dna/${s.claimId}`, `/matters/${s.walledId}`, `/inbox/mailboxes/${s.connectionId}`, "/integrations", `/integrations/${s.integrationId}`, "/", "/signin", "/onboarding", "/select-firm"];
     const queue = [...seeds];
     const seen = new Set();
     const pages = [];
@@ -44,7 +45,7 @@ const SKIP = [/^\/api\/auth\/signout/, /^\/api\/auth\/microsoft\/start/];
       if (/Application error|Internal Server Error|Unhandled Runtime Error|This page could not be found/i.test(body)) flags.push(body.match(/Application error[^\n]*|Internal Server Error|Unhandled Runtime Error|This page could not be found/i)[0]);
       if (/undefined|NaN|\[object Object\]/.test(body)) flags.push("text shows: " + (body.match(/.{0,40}(undefined|NaN|\[object Object\]).{0,40}/) || [""])[0].replace(/\s+/g, " "));
       pages.push({ path, status, final: final !== path ? final : undefined, flags: flags.length ? flags : undefined });
-      const links = await page.$$eval("a[href]", (as) => as.map((a) => a.getAttribute("href")));
+      const links = await page.$$eval("a[href]", (as) => as.map((a) => a.getAttribute("href"))).catch((e) => { console.error("links failed at", path, e.message.slice(0, 80)); return []; });
       for (const h of links) {
         if (!h || h.startsWith("http") || h.startsWith("mailto:") || h.startsWith("#")) continue;
         if (!seen.has(h.replace(/[?&]f=[^&]*/, ""))) queue.push(h);
@@ -52,6 +53,7 @@ const SKIP = [/^\/api\/auth\/signout/, /^\/api\/auth\/microsoft\/start/];
     }
     report[role] = { pages, apis, problems };
     await ctx.close();
+    await browser.close();
   }
   fs.writeFileSync("qa-crawl-report.json", JSON.stringify(report, null, 1));
   for (const [role, r] of Object.entries(report)) {
@@ -62,5 +64,4 @@ const SKIP = [/^\/api\/auth\/signout/, /^\/api\/auth\/microsoft\/start/];
     const uniq = [...new Map(r.problems.map((p) => [p.kind + p.text, p])).values()];
     for (const p of uniq.slice(0, 15)) console.log("  err", p.kind, p.url, "::", p.text);
   }
-  await browser.close();
 })().catch((e) => { console.error(e); process.exit(1); });

@@ -27,6 +27,7 @@ import {
 } from "../src/services/inbox";
 import { addCourtEvent, addNoticeSender, decideCourtEvent, deleteCourtEvent, removeNoticeSender, setCourtEventDone, updateCourtEvent } from "../src/services/court";
 import { markAlertsRead, setAlertPreferences } from "../src/services/alerts";
+import { browse, disconnectIntegration, importFiles } from "../src/services/integrations";
 import { ROLES } from "../src/security/permissions";
 import { UserFacingError } from "../src/errors";
 import { act, db, getPending, setSessionCookie, withSession } from "./server";
@@ -576,4 +577,41 @@ export async function noticeSenderAddAction(fd: FormData): Promise<void> {
 }
 export async function noticeSenderRemoveAction(fd: FormData): Promise<void> {
   return act("/court-connections", "Sender removed.", () => withSession(async (s) => { await removeNoticeSender(s, text(fd, "senderId") ?? ""); }));
+}
+
+// ---------------------------------------------------------------------------
+// Integration Hub (Phase 9)
+// ---------------------------------------------------------------------------
+const LOCATION_PARAM = /^[A-Za-z0-9!,._:-]{1,400}$/;
+const browseLink = (connectionId: string, at: string | undefined, matter?: string) => {
+  const q = new URLSearchParams();
+  if (at && LOCATION_PARAM.test(at) && at !== "root") q.set("at", at);
+  if (matter && z.uuid().safeParse(matter).success) q.set("matter", matter);
+  const qs = q.toString();
+  return `/integrations/${encodeURIComponent(connectionId)}${qs ? `?${qs}` : ""}`;
+};
+
+export async function integrationRefreshAction(fd: FormData): Promise<void> {
+  const id = text(fd, "connectionId") ?? "";
+  const at = text(fd, "at") ?? "root";
+  return act(browseLink(id, at), "Fetching the folder again…", () => withSession(async (s) => { await browse(s, id, at, true); }));
+}
+
+export async function integrationImportAction(fd: FormData): Promise<void> {
+  const id = text(fd, "connectionId") ?? "";
+  const at = text(fd, "at");
+  const matterId = text(fd, "matterId") ?? "";
+  const items = fd.getAll("item").filter((v): v is string => typeof v === "string");
+  return act(browseLink(id, at, matterId), "Importing… Huis is copying the files into the Matter (scanned and fingerprinted like any upload).", () => withSession(async (s) => {
+    if (items.length === 0) throw new UserFacingError("Choose at least one file.");
+    const r = await importFiles(s, id, { matterId, folderId: text(fd, "folderId") ?? "", items, acknowledgePrivilegeWaiverRisk: fd.get("acknowledge") === "on" });
+    if (r.queued === 0) return { message: "Those files are already on their way into the Matter." };
+    return { message: `Importing ${r.queued} file${r.queued === 1 ? "" : "s"}${r.already ? ` (${r.already} already on the way)` : ""}. Each is scanned and fingerprinted like any upload.` };
+  }));
+}
+
+export async function integrationDisconnectAction(fd: FormData): Promise<void> {
+  const id = text(fd, "connectionId") ?? "";
+  return act("/integrations", "Disconnected. Huis no longer holds a sign-in for that account; files already imported stay in their Matters.",
+    () => withSession(async (s) => { await disconnectIntegration(s, id); }));
 }
