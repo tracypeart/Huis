@@ -46,6 +46,8 @@ export default async function BrowsePage({ params, searchParams }: {
   };
   const waiting = listing.status === "queued" || listing.status === "running" || data.imports.some((i) => i.status === "queued" || i.status === "running");
   const files = listing.items.filter((i) => i.kind === "file");
+  // Google Drive: Huis sees only the files chosen for it in Google's file picker (drive.file).
+  const picked = c.provider === "google_drive";
 
   return (
     <>
@@ -83,6 +85,10 @@ export default async function BrowsePage({ params, searchParams }: {
           </form>
         </div>
         {listing.parent ? <p className="notice"><Link href={link(listing.parent)}>↑ Up</Link></p> : null}
+        {picked ? (
+          <p><Link className="button" href={`/integrations/${c.id}/pick`}>Choose files in Google Drive</Link>{" "}
+            <span className="notice">Huis can open only the files you choose with Google&apos;s file picker.</span></p>
+        ) : null}
         {listing.status === "queued" || listing.status === "running"
           ? <p className="notice">{listing.items.length ? "Checking this folder for changes…" : "Fetching this folder…"}</p> : null}
         {listing.status === "failed" ? <p className="notice">Couldn&apos;t list this folder{listing.error ? `: ${listing.error}` : ""}.</p> : null}
@@ -93,7 +99,7 @@ export default async function BrowsePage({ params, searchParams }: {
             <input type="hidden" name="at" value={at} />
             {data.matterId ? <input type="hidden" name="matterId" value={data.matterId} /> : null}
             <table><tbody>
-              {listing.items.length === 0 ? <tr><td className="notice">This folder is empty.</td></tr> : null}
+              {listing.items.length === 0 ? <tr><td className="notice">{picked ? "You haven't chosen any files for Huis yet." : "This folder is empty."}</td></tr> : null}
               {listing.items.map((i) => (
                 <tr key={i.id}>
                   <td style={{ width: 1 }}>{i.kind === "file" && data.matterId ? <input type="checkbox" name="item" value={i.id} aria-label={`Import ${i.name}`} /> : null}</td>
@@ -122,7 +128,9 @@ export default async function BrowsePage({ params, searchParams }: {
             ) : null}
           </form>
         ) : null}
-        <p className="notice">Huis keeps only names, sizes and dates of the folders you open. A file&apos;s contents are copied only when you import it, and the same version is imported into a Matter once.</p>
+        <p className="notice">{picked
+          ? "Huis keeps only the names, sizes and dates of the files you chose. Google Docs, Sheets and Slides aren't listed: download them as a file (such as PDF or Word) first. "
+          : "Huis keeps only names, sizes and dates of the folders you open. "}A file&apos;s contents are copied only when you import it, and the same version is imported into a Matter once.</p>
       </div>
 
       {data.imports.length ? (
