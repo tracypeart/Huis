@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { NOTICE_READERS, readCourtNotice, type NoticeReaderId } from "../court/connectors";
 import { FREE_LOOK_DAYS } from "../court/nef";
@@ -132,7 +133,7 @@ export async function courtNotices(s: FirmSession, matterId: string): Promise<Co
        JOIN huis.firms f ON f.id = huis.current_firm_id()
       WHERE i.matter_id = $1 AND i.status = 'clean' AND i.duplicate_of IS NULL
         AND ((huis.is_court_sender(m.from_addr) AND position('Notice of Electronic Filing' IN t.content) > 0)
-             OR huis.is_notice_sender(huis.current_firm_id(), 'utah', m.from_addr))
+             OR huis.is_notice_sender('utah', m.from_addr))
       ORDER BY m.sent_at DESC NULLS LAST, i.id LIMIT 500`, [matterId]);
   const senders = (await s.client.query<{ address: string }>("SELECT address FROM huis.court_notice_senders")).rows.map((x) => x.address);
   const out: CourtNotice[] = [];
@@ -142,7 +143,12 @@ export async function courtNotices(s: FirmSession, matterId: string): Promise<Co
     const n = readCourtNotice(String(r.content), r.from_addr as string | null, senders);
     if (!n) continue;
     // The same filing, sent to several attorneys of record, is one docket entry (F3).
-    const filing = `${caseKey(n.caseNumber)}|${n.documentNumber ?? ""}|${n.enteredOn ?? ""}|${n.docketText.slice(0, 500)}`;
+    // Federal: the case, document number and entry date name the filing. Utah notices have neither, so their
+    // whole body (without the headers that differ between attorneys' copies) names it (R18-8).
+    const body = String(r.content).replace(/^[\s\S]*?\r?\n\r?\n/, "");
+    const filing = n.connector === "federal"
+      ? `${caseKey(n.caseNumber)}|${n.documentNumber ?? ""}|${n.enteredOn ?? ""}|${n.docketText.slice(0, 500)}`
+      : `utah|${caseKey(n.caseNumber)}|${createHash("sha256").update(body).digest("hex")}`;
     if (seen.has(filing)) continue;
     seen.add(filing);
     const start = n.enteredOn ?? (r.sent_day as string | null);
@@ -361,9 +367,11 @@ export async function addNoticeSender(s: FirmSession, input: unknown): Promise<s
     throw new UserFacingError("That's a personal email service. Register your e-filing provider's own notification address.");
   }
   const existing = (await s.client.query<{ id: string }>("SELECT id FROM huis.court_notice_senders WHERE address = $1", [v.address])).rows[0];
-  const id = existing?.id ?? (await s.client.query<{ id: string }>(
+  if (existing) return existing.id;
+  const id = (await s.client.query<{ id: string }>(
     "INSERT INTO huis.court_notice_senders (firm_id, address, label, added_by) VALUES ($1, $2, $3, $4) RETURNING id",
     [s.actor.firmId, v.address, v.label, s.actor.userId])).rows[0]!.id;
+  // Only when newly registered: the firm's email from it is read again (R18-7).
   await s.client.query("SELECT huis.requeue_notices_from($1)", [v.address]);
   await recordAudit(s, "court.notice_sender_added", { targetType: "firm", targetId: s.actor.firmId, metadata: { domain: v.address.split("@")[1] ?? "" } });
   return id;

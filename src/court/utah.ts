@@ -1,4 +1,4 @@
-import { clock, findCourtDates, usDate, type FoundCourtEvent } from "./nef";
+import { CANCELLED, clock, findCourtDates, sentenceAt, usDate, type FoundCourtEvent } from "./nef";
 
 /**
  * Utah court notices: notices of hearing, minute entries and e-filing
@@ -43,7 +43,10 @@ export function isUtahCourtSender(from: string | null | undefined): boolean {
 
 const COURT = /\b((?:First|Second|Third|Fourth|Fifth|Sixth|Seventh|Eighth)\s+(?:Judicial\s+)?District\s+(?:Juvenile\s+)?Court|[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\s+(?:County|City)\s+Justice\s+Court|Utah\s+(?:Supreme\s+Court|Court\s+of\s+Appeals))\b/;
 // Utah district case numbers are nine digits (e.g. 260900123); appellate ones look like 20260123-CA.
-const CASE = /\bCase\s*(?:No\.?|Number|#)?\s*:?\s*(\d{9}|\d{8}-(?:CA|SC))\b/i;
+// (Bounded whitespace between the parts, so no input can make it slow: security review 18, R18-9.)
+const CASE = /\bCase(?:[ \t]{0,3}(?:No\.?|Number|#))?[ \t]{0,3}:?[ \t]{0,3}(\d{9}|\d{8}-(?:CA|SC))\b/i;
+// "Smith vs. Acme Corporation": each word bounded, single spaces or tabs between.
+const CASE_NAME = /\b([A-Z][A-Za-z.'&-]{0,40}(?:[ \t]{1,3}[A-Z][A-Za-z.'&-]{0,40}){0,4}[ \t]{1,3}v(?:s)?\.[ \t]{1,3}[A-Z][A-Za-z.'&-]{0,40}(?:[ \t]{1,3}[A-Z][A-Za-z.'&-]{0,40}){0,4})/;
 
 /** "Wednesday, May 20, 2026" / "May 20, 2026" → YYYY-MM-DD. */
 function longDate(month: string, day: string, year: string): string | null {
@@ -61,15 +64,15 @@ const SCHEDULED = new RegExp(
 // A block: "Hearing Type: Pretrial Conference … Date: 05/20/2026 … Time: 10:00 AM" (each line short, the block bounded).
 const BLOCK = /(?:Hearing|Event)(?:\s+Type)?:[ \t]*([A-Za-z][A-Za-z/&' -]{1,60})[ \t]*\r?\n(?:[^\n]{0,120}\r?\n){0,4}?[ \t]*(?:Hearing\s+)?Date:[ \t]*(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ \t]*\r?\n?[ \t]*Time:[ \t]*(\d{1,2}:\d{2}[ \t]*[AaPp]\.?[ \t]*[Mm]\.?))?/g;
 
-const CANCELLED = /\b(vacat\w*|strick\w*|stricken|struck|cancel\w*|terminat\w*|withdrawn|moot)\b/i;
 const clean = (s: string | undefined) => (s ? s.replace(/\s+/g, " ").trim().replace(/^(?:the|a|an)\s+/i, "") : "");
 
 export function parseUtahNotice(input: string): UtahNotice | null {
   const text = input.slice(0, MAX_TEXT);
-  const court = COURT.exec(text);
-  const kase = CASE.exec(text);
   // A Utah court and a case number, or it isn't a Utah court notice.
-  if (!court || !kase) return null;
+  const court = COURT.exec(text);
+  if (!court) return null;
+  const kase = CASE.exec(text);
+  if (!kase) return null;
   const events: FoundCourtEvent[] = [];
   const seen = new Set<string>();
   const add = (e: FoundCourtEvent) => {
@@ -78,12 +81,11 @@ export function parseUtahNotice(input: string): UtahNotice | null {
     seen.add(key);
     events.push(e);
   };
-  // The rest of the sentence a date was found in ("… is VACATED", "… has been cancelled").
-  const rest = (at: number, len: number) => text.slice(at, at + len + 120).split(/\.(?:\s|$)/)[0] ?? "";
   for (const m of text.matchAll(SCHEDULED)) {
     const date = longDate(m[2]!, m[3]!, m[4]!);
     const title = clean(m[1]);
-    if (!date || !title || CANCELLED.test(rest(m.index!, m[0].length))) continue;
+    // The whole sentence, before and after the date ("HEARING VACATED, the … scheduled for …": R18-5).
+    if (!date || !title || CANCELLED.test(sentenceAt(text, m.index! + m[0].length - 1))) continue;
     add({
       // ("Pretrial Conference" is a conference, not a trial.)
       kind: /\b(conference|status|scheduling|mediation)\b/i.test(title) ? "conference" : /\btrial\b/i.test(title) ? "trial"
@@ -95,7 +97,9 @@ export function parseUtahNotice(input: string): UtahNotice | null {
   for (const m of text.matchAll(BLOCK)) {
     const date = usDate(m[2]!, m[3]!, m[4]!);
     const title = clean(m[1]);
-    if (!date || !title || CANCELLED.test(m[0])) continue;
+    // The block and the line before it ("VACATED" above a hearing block).
+    const lineBefore = text.slice(Math.max(0, m.index! - 160), m.index!).split(/\n/).slice(-2).join(" ");
+    if (!date || !title || CANCELLED.test(m[0]) || CANCELLED.test(lineBefore)) continue;
     add({ kind: /\bconference\b/i.test(title) ? "conference" : /\btrial\b/i.test(title) ? "trial" : "hearing", title: title.slice(0, 120), date,
       time: clock(m[5]), location: null, judge: null, start: m.index!, end: m.index! + m[0].length });
   }
@@ -105,7 +109,7 @@ export function parseUtahNotice(input: string): UtahNotice | null {
   return {
     court: court[1]!.replace(/\s+/g, " "),
     caseNumber: kase[1]!,
-    caseName: (/\b([A-Z][A-Za-z.'&-]+(?:\s+[A-Z][A-Za-z.'&-]+){0,4}\s+v(?:s)?\.\s+[A-Z][A-Za-z.'&-]+(?:\s+[A-Z][A-Za-z.'&-]+){0,4})/.exec(text)?.[1]) ?? null,
+    caseName: CASE_NAME.exec(text)?.[1] ?? null,
     summary: after.replace(/\s+/g, " ").trim().slice(0, 300),
     events: events.sort((a, b) => a.start - b.start),
   };

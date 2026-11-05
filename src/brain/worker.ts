@@ -44,7 +44,11 @@ export class BrainWorker {
         // Court dates from a court notice filed into the Matter (proposals only), through the CourtConnector
         // readers. The database checks the sender for each reader (federal: a uscourts.gov address; Utah: a
         // utcourts.gov address or the firm's registered e-filing provider), so the worker just offers what it read.
-        for (const reader of NOTICE_READERS) {
+        // Only email from a sender the database would accept for a reader is read at all (R18-9).
+        const sender = (await this.pool.query<{ from_addr: string | null; firm_senders: string[] }>(
+          "SELECT * FROM huis.worker_notice_sender($1, $2)", [job.source_id, job.lock_token])).rows[0];
+        for (const reader of sender ? NOTICE_READERS : []) {
+          if (!reader.acceptsSender(sender!.from_addr, sender!.firm_senders)) continue;
           const notice = reader.read(job.content);
           if (!notice?.events.length) continue;
           // Positions as the database counts them (characters, not UTF-16 units: security review 17, F2),

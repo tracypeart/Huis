@@ -50,8 +50,10 @@ CREATE FUNCTION huis.is_utah_court_sender(p_from text) RETURNS boolean LANGUAGE 
 $$;
 GRANT EXECUTE ON FUNCTION huis.is_utah_court_sender(text) TO huis_app;
 
--- Whether an email may carry a court notice for a given reader, for a firm.
-CREATE FUNCTION huis.is_notice_sender(p_firm_id uuid, p_reader text, p_from text) RETURNS boolean
+-- Whether an email may carry a court notice for a given reader, for a firm. Used only
+-- inside the database's own functions (the worker's), never callable from the app,
+-- so one firm can't probe another's registered senders (security review 18, R18-6).
+CREATE FUNCTION huis.notice_sender_for(p_firm_id uuid, p_reader text, p_from text) RETURNS boolean
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = huis, pg_temp AS $$
   SELECT CASE p_reader
     WHEN 'federal' THEN huis.is_court_sender(p_from)
@@ -61,9 +63,33 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = huis, pg_temp AS $$
          AND s.address = lower(coalesce(substring(p_from FROM '<([^<>[:space:]]+@[^<>[:space:]]+)>[[:space:]]*$'), btrim(coalesce(p_from, '')))))
     ELSE false END
 $$;
-ALTER FUNCTION huis.is_notice_sender(uuid, text, text) OWNER TO huis_security;
-REVOKE ALL ON FUNCTION huis.is_notice_sender(uuid, text, text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION huis.is_notice_sender(uuid, text, text) TO huis_app;
+ALTER FUNCTION huis.notice_sender_for(uuid, text, text) OWNER TO huis_security;
+REVOKE ALL ON FUNCTION huis.notice_sender_for(uuid, text, text) FROM PUBLIC;
+
+-- The app's version: always the person's own firm.
+CREATE FUNCTION huis.is_notice_sender(p_reader text, p_from text) RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = huis, pg_temp AS $$
+  SELECT huis.current_firm_id() IS NOT NULL AND huis.notice_sender_for(huis.current_firm_id(), p_reader, p_from)
+$$;
+ALTER FUNCTION huis.is_notice_sender(text, text) OWNER TO huis_security;
+REVOKE ALL ON FUNCTION huis.is_notice_sender(text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION huis.is_notice_sender(text, text) TO huis_app;
+
+-- The worker reads a source's firm's registered senders, so it only reads notices from
+-- senders the database would accept (no parsing of everything else: R18-9).
+CREATE FUNCTION huis.worker_notice_sender(p_source_id uuid, p_lock_token uuid) RETURNS TABLE (from_addr text, firm_senders text[])
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = huis, pg_temp AS $$
+DECLARE r huis.brain_sources;
+BEGIN
+  SELECT * INTO r FROM huis.brain_sources WHERE id = p_source_id AND status = 'running' AND lock_token = p_lock_token;
+  IF NOT FOUND THEN RAISE EXCEPTION 'source is not held by this worker'; END IF;
+  RETURN QUERY
+    SELECT m.from_addr, coalesce((SELECT array_agg(s.address) FROM huis.court_notice_senders s WHERE s.firm_id = r.firm_id), '{}')
+      FROM huis.evidence_email m WHERE m.evidence_id = r.evidence_id;
+END $$;
+ALTER FUNCTION huis.worker_notice_sender(uuid, uuid) OWNER TO huis_security;
+REVOKE ALL ON FUNCTION huis.worker_notice_sender(uuid, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION huis.worker_notice_sender(uuid, uuid) TO huis_worker;
 
 -- Huis's proposals from a court notice, by reader. Same rules as before (the quote
 -- comes from the notice itself; keyed by the filing), plus the sender check per reader.
@@ -82,7 +108,7 @@ BEGIN
   SELECT * INTO r FROM huis.brain_sources WHERE id = p_source_id AND status = 'running' AND lock_token = p_lock_token;
   IF NOT FOUND THEN RAISE EXCEPTION 'source is not held by this worker'; END IF;
   IF r.evidence_id IS NULL OR p_reader NOT IN ('federal', 'utah') THEN RETURN 0; END IF;
-  IF NOT EXISTS (SELECT 1 FROM huis.evidence_email m WHERE m.evidence_id = r.evidence_id AND huis.is_notice_sender(r.firm_id, p_reader, m.from_addr)) THEN
+  IF NOT EXISTS (SELECT 1 FROM huis.evidence_email m WHERE m.evidence_id = r.evidence_id AND huis.notice_sender_for(r.firm_id, p_reader, m.from_addr)) THEN
     RETURN 0;
   END IF;
   IF jsonb_typeof(p_events) <> 'array' OR jsonb_array_length(p_events) > 20 THEN RAISE EXCEPTION 'invalid court dates'; END IF;
@@ -125,16 +151,20 @@ GRANT EXECUTE ON FUNCTION huis.worker_save_court_proposals(uuid, uuid, text, jso
 DROP FUNCTION huis.worker_save_court_suggestions(uuid, uuid, jsonb);
 
 -- When an administrator registers a sender, the firm's email from it is read again
--- (so notices already filed are proposed too). Only that firm's, only from that sender.
+-- (so notices already filed are proposed too). Only that firm's, only from a sender
+-- the firm has registered, only email already read once (R18-7).
 CREATE FUNCTION huis.requeue_notices_from(p_address text) RETURNS int
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = huis, pg_temp AS $$
 DECLARE n int;
 BEGIN
   IF NOT huis.is_admin_role(huis.app_role()) THEN RAISE EXCEPTION 'not permitted' USING ERRCODE = '42501'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM huis.court_notice_senders s WHERE s.firm_id = huis.current_firm_id() AND s.address = lower(p_address)) THEN
+    RETURN 0;
+  END IF;
   UPDATE huis.brain_sources b SET status = 'queued', attempts = 0, last_error = NULL, queued_at = now()
     FROM huis.evidence_email m
    WHERE m.evidence_id = b.evidence_id AND b.firm_id = huis.current_firm_id() AND m.firm_id = huis.current_firm_id()
-     AND b.status IN ('indexed', 'failed')
+     AND b.status = 'indexed'
      AND lower(coalesce(substring(m.from_addr FROM '<([^<>[:space:]]+@[^<>[:space:]]+)>[[:space:]]*$'), btrim(coalesce(m.from_addr, '')))) = lower(p_address);
   GET DIAGNOSTICS n = ROW_COUNT;
   RETURN n;

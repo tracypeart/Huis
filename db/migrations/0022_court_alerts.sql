@@ -89,45 +89,67 @@ CREATE POLICY court_alerts_update ON huis.court_alerts FOR UPDATE TO huis_app
          AND huis.can_see_matter(matter_id) AND EXISTS (SELECT 1 FROM huis.court_events e WHERE e.id = court_event_id))
   WITH CHECK (firm_id = huis.current_firm_id() AND user_id = huis.current_user_id());
 
+-- A firm's time zone must be a real one (security review 18, R18-3): an
+-- unknown zone would break every date calculation that uses it.
+CREATE FUNCTION huis.firm_time_zone_valid() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_timezone_names WHERE name = NEW.time_zone) THEN
+    RAISE EXCEPTION 'Unknown time zone: choose one such as America/Denver' USING ERRCODE = '22023';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER firms_time_zone_valid BEFORE INSERT OR UPDATE OF time_zone ON huis.firms FOR EACH ROW EXECUTE FUNCTION huis.firm_time_zone_valid();
+
 -- ---------------------------------------------------------------------------
 -- Worker: queue the reminders due today, and deliver those leaving Huis.
 -- ---------------------------------------------------------------------------
 -- Due today (in each firm's own time zone): confirmed, not done, its notice (if any) clean.
 CREATE FUNCTION huis.worker_queue_court_alerts() RETURNS int
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = huis, pg_temp AS $$
-DECLARE n int;
+DECLARE
+  f record;
+  k int;
+  n int := 0;
 BEGIN
-  WITH due AS (
-    SELECT e.id AS event_id, e.firm_id, e.matter_id, e.event_date,
-           e.event_date - (now() AT TIME ZONE f.time_zone)::date AS days_before
-      FROM huis.court_events e
-      JOIN huis.firms f ON f.id = e.firm_id
-     WHERE e.status = 'confirmed' AND e.done_at IS NULL
-       AND e.event_date BETWEEN (now() AT TIME ZONE f.time_zone)::date AND (now() AT TIME ZONE f.time_zone)::date + 30
-       AND (e.source_evidence_id IS NULL OR EXISTS (
-             SELECT 1 FROM huis.evidence_items i WHERE i.id = e.source_evidence_id AND i.matter_id = e.matter_id AND i.status = 'clean'))
-  ), recipients AS (
-    -- Members of the Matter, and its lead attorney: active firm staff only.
-    SELECT d.*, u.id AS user_id
-      FROM due d
-      JOIN huis.matters m ON m.id = d.matter_id AND m.firm_id = d.firm_id
-      JOIN huis.users u ON u.firm_id = d.firm_id AND u.status = 'active' AND huis.is_internal_role(u.role)
-     WHERE u.id = m.lead_attorney_id
-        OR EXISTS (SELECT 1 FROM huis.matter_members mm WHERE mm.matter_id = d.matter_id AND mm.user_id = u.id)
-  ), wanted AS (
-    SELECT r.*, ch AS channel
-      FROM recipients r
-      LEFT JOIN huis.alert_preferences p ON p.user_id = r.user_id AND p.firm_id = r.firm_id
-      CROSS JOIN LATERAL unnest(coalesce(p.channels, ARRAY['in_app'])) ch
-     WHERE r.days_before = ANY (coalesce(p.reminder_days, ARRAY[30, 14, 7, 3, 1, 0]))
-  )
-  INSERT INTO huis.court_alerts (firm_id, user_id, matter_id, court_event_id, channel, days_before, event_date, status, sent_at)
-  SELECT firm_id, user_id, matter_id, event_id, channel, days_before, event_date,
-         CASE WHEN channel = 'in_app' THEN 'delivered' ELSE 'queued' END,
-         CASE WHEN channel = 'in_app' THEN now() END
-    FROM wanted
-  ON CONFLICT (court_event_id, user_id, channel, days_before, event_date) DO NOTHING;
-  GET DIAGNOSTICS n = ROW_COUNT;
+  -- One firm at a time, so a problem with one firm never stops another's reminders (R18-3).
+  FOR f IN SELECT id, time_zone FROM huis.firms LOOP
+    BEGIN
+      WITH due AS (
+        SELECT e.id AS event_id, e.firm_id, e.matter_id, e.event_date,
+               e.event_date - (now() AT TIME ZONE f.time_zone)::date AS days_before
+          FROM huis.court_events e
+         WHERE e.firm_id = f.id AND e.status = 'confirmed' AND e.done_at IS NULL
+           AND e.event_date BETWEEN (now() AT TIME ZONE f.time_zone)::date AND (now() AT TIME ZONE f.time_zone)::date + 30
+           AND (e.source_evidence_id IS NULL OR EXISTS (
+                 SELECT 1 FROM huis.evidence_items i WHERE i.id = e.source_evidence_id AND i.matter_id = e.matter_id AND i.status = 'clean'))
+      ), recipients AS (
+        -- Members of the Matter, and (on a Matter without a wall) its lead attorney: active firm staff only.
+        -- Behind a wall, membership is what counts: a lead attorney taken off a walled Matter isn't reminded (R18-1).
+        SELECT d.*, u.id AS user_id
+          FROM due d
+          JOIN huis.matters m ON m.id = d.matter_id AND m.firm_id = d.firm_id
+          JOIN huis.users u ON u.firm_id = d.firm_id AND u.status = 'active' AND huis.is_internal_role(u.role)
+         WHERE (NOT m.restricted AND u.id = m.lead_attorney_id)
+            OR EXISTS (SELECT 1 FROM huis.matter_members mm WHERE mm.matter_id = d.matter_id AND mm.user_id = u.id)
+      ), wanted AS (
+        SELECT r.*, ch AS channel
+          FROM recipients r
+          LEFT JOIN huis.alert_preferences p ON p.user_id = r.user_id AND p.firm_id = r.firm_id
+          CROSS JOIN LATERAL unnest(coalesce(p.channels, ARRAY['in_app'])) ch
+         WHERE r.days_before = ANY (coalesce(p.reminder_days, ARRAY[30, 14, 7, 3, 1, 0]))
+      )
+      INSERT INTO huis.court_alerts (firm_id, user_id, matter_id, court_event_id, channel, days_before, event_date, status, sent_at)
+      SELECT firm_id, user_id, matter_id, event_id, channel, days_before, event_date,
+             CASE WHEN channel = 'in_app' THEN 'delivered' ELSE 'queued' END,
+             CASE WHEN channel = 'in_app' THEN now() END
+        FROM wanted
+      ON CONFLICT (court_event_id, user_id, channel, days_before, event_date) DO NOTHING;
+      GET DIAGNOSTICS k = ROW_COUNT;
+      n := n + k;
+    EXCEPTION WHEN others THEN
+      RAISE WARNING 'court reminders skipped for one firm: %', SQLERRM;
+    END;
+  END LOOP;
   RETURN n;
 END $$;
 ALTER FUNCTION huis.worker_queue_court_alerts() OWNER TO huis_security;
@@ -142,27 +164,46 @@ CREATE FUNCTION huis.worker_claim_court_alert()
 RETURNS TABLE (alert_id bigint, channel text, email text, sms_number text, days_before int, event_date date,
                include_details boolean, kind text, title text, event_time text, matter_title text)
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = huis, pg_temp AS $$
-DECLARE a huis.court_alerts;
+DECLARE
+  a huis.court_alerts;
+  v_left int;
+  v_why text;
 BEGIN
   LOOP
     SELECT * INTO a FROM huis.court_alerts c
      WHERE c.channel <> 'in_app' AND (c.status = 'queued' OR (c.status = 'sending' AND c.locked_until < now())) AND c.attempts < 5
      ORDER BY c.created_at LIMIT 1 FOR UPDATE SKIP LOCKED;
     IF NOT FOUND THEN RETURN; END IF;
-    IF NOT EXISTS (
+    -- How far away the date really is now, in the firm's time zone (R18-4).
+    SELECT a.event_date - (now() AT TIME ZONE f.time_zone)::date INTO v_left FROM huis.firms f WHERE f.id = a.firm_id;
+    v_why := CASE
+      WHEN v_left IS NULL OR v_left < 0 THEN 'the court date has passed'
+      -- A newer reminder for the same date and channel is due: send that one instead.
+      WHEN EXISTS (SELECT 1 FROM huis.court_alerts o
+                    WHERE o.court_event_id = a.court_event_id AND o.user_id = a.user_id AND o.channel = a.channel
+                      AND o.event_date = a.event_date AND o.days_before < a.days_before AND o.days_before >= v_left
+                      AND o.status IN ('queued', 'sending', 'sent', 'waiting_for_provider')) THEN 'a later reminder replaces it'
+      -- Still the court date it was for, still wanted, still someone who should know (R18-1, R18-2).
+      WHEN NOT EXISTS (
          SELECT 1 FROM huis.court_events e
            JOIN huis.matters m ON m.id = e.matter_id
            JOIN huis.users u ON u.id = a.user_id AND u.firm_id = a.firm_id AND u.status = 'active' AND huis.is_internal_role(u.role)
           WHERE e.id = a.court_event_id AND e.status = 'confirmed' AND e.done_at IS NULL AND e.event_date = a.event_date
-            AND (u.id = m.lead_attorney_id OR EXISTS (SELECT 1 FROM huis.matter_members mm WHERE mm.matter_id = m.id AND mm.user_id = u.id))
+            AND ((NOT m.restricted AND u.id = m.lead_attorney_id)
+                 OR EXISTS (SELECT 1 FROM huis.matter_members mm WHERE mm.matter_id = m.id AND mm.user_id = u.id))
             AND (e.source_evidence_id IS NULL OR EXISTS (
-                  SELECT 1 FROM huis.evidence_items i WHERE i.id = e.source_evidence_id AND i.matter_id = e.matter_id AND i.status = 'clean'))) THEN
-      UPDATE huis.court_alerts SET status = 'failed', last_error = 'no longer applies' WHERE id = a.id;
+                  SELECT 1 FROM huis.evidence_items i WHERE i.id = e.source_evidence_id AND i.matter_id = e.matter_id AND i.status = 'clean'))) THEN 'no longer applies'
+      WHEN NOT EXISTS (
+         SELECT 1 WHERE a.channel = ANY (coalesce((SELECT p.channels FROM huis.alert_preferences p WHERE p.user_id = a.user_id), ARRAY['in_app']))
+                    AND a.days_before = ANY (coalesce((SELECT p.reminder_days FROM huis.alert_preferences p WHERE p.user_id = a.user_id), ARRAY[30, 14, 7, 3, 1, 0]))) THEN 'no longer wanted'
+      END;
+    IF v_why IS NOT NULL THEN
+      UPDATE huis.court_alerts SET status = 'failed', last_error = v_why, locked_until = NULL WHERE id = a.id;
       CONTINUE;
     END IF;
     UPDATE huis.court_alerts SET status = 'sending', attempts = attempts + 1, locked_until = now() + interval '5 minutes' WHERE id = a.id;
     RETURN QUERY
-      SELECT a.id, a.channel, u.email::text, p.sms_number, a.days_before, a.event_date, coalesce(p.include_details, false),
+      SELECT a.id, a.channel, u.email::text, p.sms_number, v_left, a.event_date, coalesce(p.include_details, false),
              CASE WHEN coalesce(p.include_details, false) THEN e.kind END,
              CASE WHEN coalesce(p.include_details, false) THEN e.title END,
              CASE WHEN coalesce(p.include_details, false) THEN to_char(e.event_time, 'HH24:MI') END,
@@ -202,8 +243,10 @@ CREATE FUNCTION huis.worker_retry_waiting_court_alerts(p_channel text) RETURNS i
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = huis, pg_temp AS $$
 DECLARE n int;
 BEGIN
-  UPDATE huis.court_alerts SET status = 'queued', attempts = 0
-   WHERE status = 'waiting_for_provider' AND channel = p_channel AND event_date >= current_date;
+  UPDATE huis.court_alerts a SET status = 'queued', attempts = 0
+    FROM huis.firms f
+   WHERE f.id = a.firm_id AND a.status = 'waiting_for_provider' AND a.channel = p_channel
+     AND a.event_date >= (now() AT TIME ZONE f.time_zone)::date;
   GET DIAGNOSTICS n = ROW_COUNT;
   RETURN n;
 END $$;
