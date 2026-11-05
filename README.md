@@ -16,7 +16,7 @@ The Legal Intelligence Operating System: an AI-powered platform that connects th
 - [`docs/PHASE-8.md`](docs/PHASE-8.md) — Court Intelligence: court calendar and federal court notices (part 1), Utah court notices (part 2), reminders and court connections (part 3).
 - [`docs/PHASE-9.md`](docs/PHASE-9.md) — Integration Hub: OneDrive / SharePoint (part 1), Dropbox (part 2a) and Google Drive (part 2b).
 - [`docs/FAQ.md`](docs/FAQ.md) — plain-language FAQ for attorneys and firms: safety, privilege and search.
-- [`docs/SECURITY-REVIEW-2026-11.md`](docs/SECURITY-REVIEW-2026-11.md) — independent security reviews (1–18) and fixes.
+- [`docs/SECURITY-REVIEW-2026-11.md`](docs/SECURITY-REVIEW-2026-11.md) — independent security reviews (1–21) and fixes.
 - [`docs/source/`](docs/source/) — original specs (ChatGPT architecture with Tracy's answers; Phase 11 Case Outcome Intelligence).
 
 ## Run locally

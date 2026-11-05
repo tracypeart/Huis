@@ -86,7 +86,7 @@ export default async function BrowsePage({ params, searchParams }: {
         </div>
         {listing.parent ? <p className="notice"><Link href={link(listing.parent)}>↑ Up</Link></p> : null}
         {picked ? (
-          <p><Link className="button" href={`/integrations/${c.id}/pick`}>Choose files in Google Drive</Link>{" "}
+          <p>{/* A plain link: the picker is a document of its own (security review 21, R21-2). */}<a className="button" href={`/integrations/${c.id}/pick`}>Choose files in Google Drive</a>{" "}
             <span className="notice">Huis can open only the files you choose with Google&apos;s file picker.</span></p>
         ) : null}
         {listing.status === "queued" || listing.status === "running"
