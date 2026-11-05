@@ -44,6 +44,8 @@ export class FakeMicrosoft {
   downloadAuth: string[] = [];
   /** Where /content redirects (to test the download-host check). */
   downloadRedirect: ((d: string, i: string) => string) | null = null;
+  /** The account the token belongs to (Graph /me id). */
+  meId = OID;
   privateKey!: CryptoKey | import("node:crypto").KeyObject;
   jwks!: ReturnType<typeof createLocalJWKSet>;
   idNonce = "";
@@ -84,7 +86,7 @@ export class FakeMicrosoft {
     }
     if (req.headers.authorization !== "Bearer AT-good") return this.json(res, 401, { error: "unauthorized" });
     this.graphCalls.push(url.pathname + url.search);
-    if (url.pathname === "/v1.0/me") return this.json(res, 200, { mail: "Avery@LawFirm.example", displayName: "Avery Attorney" });
+    if (url.pathname === "/v1.0/me") return this.json(res, 200, { id: this.meId, mail: "Avery@LawFirm.example", displayName: "Avery Attorney" });
     const driveJson = (it: FakeDriveItem) => ({
       id: it.id, name: it.name, lastModifiedDateTime: "2026-10-01T12:00:00Z",
       ...(it.folder ? { folder: { childCount: Object.values(this.drive).filter((x) => x.parent === it.id).length } }

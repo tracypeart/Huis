@@ -28,7 +28,7 @@ import { inviteUser } from "../../src/services/users";
 import { MasterKeyProvider } from "../../src/storage/encryption";
 import { EvidenceVault, LocalObjectStore } from "../../src/storage/store";
 import { EvidenceProcessor } from "../../src/worker/processor";
-import { FakeMicrosoft, mimeOf } from "../../test/fake-microsoft";
+import { FakeMicrosoft, mimeOf, OID, TID } from "../../test/fake-microsoft";
 import { newFirm } from "../../test/helpers";
 
 async function main() {
@@ -123,7 +123,7 @@ async function main() {
     "F-smith": { id: "F-smith", drive: "D1", name: "Smith", parent: "D1-root", folder: true },
     "I-memo": { id: "I-memo", drive: "D1", name: "Termination memo.txt", parent: "D1-root", content: "Fired April 18.", mime: "text/plain", path: "/drive/root:" },
   };
-  const integrationId = await db.withFirm(avery, (s) => connectIntegration(s, { provider: "onedrive", subject: "tid:oid", tenant: "tid", label: "avery@lawfirm.example", refreshToken: "RT-1", masterKey: master }));
+  const integrationId = await db.withFirm(avery, (s) => connectIntegration(s, { provider: "onedrive", subject: `${TID}:${OID}`, tenant: TID, label: "avery@lawfirm.example", refreshToken: "RT-1", masterKey: master }));
   const hub = new IntegrationWorker(pool, vault, { masterKey: master, microsoft: { clientId: "c", clientSecret: "s" } });
   await db.withFirm(avery, (s) => browse(s, integrationId));
   while (await hub.runOnce()) { /* list */ }
@@ -189,7 +189,7 @@ async function main() {
   }
   const env = { HUIS_DATABASE_URL: appUrl, HUIS_WORKER_DATABASE_URL: workerUrl, HUIS_STORAGE_DIR: storageDir, HUIS_STORAGE_MASTER_KEY: master,
     HUIS_SESSION_SECRET: secret, HUIS_BASE_URL: "http://localhost:3100", MICROSOFT_CLIENT_ID: "c", MICROSOFT_CLIENT_SECRET: "s",
-    GOOGLE_CLIENT_ID: "gc", GOOGLE_CLIENT_SECRET: "gs" };
+    GOOGLE_CLIENT_ID: "gc", GOOGLE_CLIENT_SECRET: "gs", DROPBOX_APP_KEY: "dk", DROPBOX_APP_SECRET: "ds" };
   await writeFile(process.env.HUIS_QA_STATE ?? "qa-state.json", JSON.stringify({ env, cookies, matterId: x.matter.id, walledId: x.walled.id, answerId, claimId, connectionId, integrationId, dbName: name }, null, 2));
   await admin.end();
   await db.close();

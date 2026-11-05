@@ -52,6 +52,15 @@ export function downloadHostAllowed(url: string): boolean {
   return /(^|\.)(sharepoint\.com|sharepoint-df\.com|files\.1drv\.com|1drv\.com|1drv\.ms|livefilestore\.com|onedrive\.com)$/i.test(u.hostname);
 }
 
+/**
+ * The Microsoft account a token belongs to (its object id). Security review 20, R20-1: the worker checks it
+ * against the account the connection was recorded for, so a token can't be filed under someone else's account.
+ */
+export async function onedriveAccountOid(accessToken: string): Promise<string | null> {
+  const me = await graphJson<{ id?: string }>(accessToken, `${graphBase()}/me?$select=id`);
+  return typeof me.id === "string" && /^[0-9a-f-]{36}$/i.test(me.id) ? me.id.toLowerCase() : null;
+}
+
 export class OneDriveSource implements FileSource {
   constructor(private readonly accessToken: string) {}
 

@@ -1,12 +1,13 @@
 # Phase 9 — Integration Hub
 
-**Status:** Part 1 (the hub, and OneDrive / SharePoint import) built, tested and through independent security review 19 (5 problems confirmed, all fixed).
+**Status:** Part 1 (the hub, and OneDrive / SharePoint import) merged after independent security review 19. Part 2a (Dropbox) built, tested and through independent security review 20 (1 problem confirmed, fixed for Dropbox and OneDrive). Part 2b (Google Drive) next.
 
 ## Plan
 | Part | What | Status |
 |---|---|---|
 | 9.1 | **Integration Hub** (connections, sync records, imports into Matters with chain of custody) and **OneDrive / SharePoint**: browse your OneDrive and the SharePoint sites you follow, import chosen files into a Matter as evidence | Review 19 done, fixes in |
-| 9.2 | **Google Drive** (Google's file picker, the `drive.file` permission: only the files picked) and **Dropbox** | Next |
+| 9.2a | **Dropbox**: browse your Dropbox and import chosen files into a Matter, like OneDrive | Review 20 done, fix in |
+| 9.2b | **Google Drive**: Google's own file picker now (the `drive.file` permission: Huis can only open the files picked); full browsing like OneDrive once Google's restricted-scope security assessment is done (the same assessment Gmail needs) | Next |
 | 9.3 | **Filevine, Clio and StrongSuit** adapters: link Matters, bring in documents, contacts and deadlines; StrongSuit's API connection and interface merger (O-1) | Needs partner or developer access |
 
 ## Part 1 — the hub and OneDrive / SharePoint
@@ -35,3 +36,20 @@
 **Security review 19:** see `SECURITY-REVIEW-2026-11.md`; regression tests in `test/security-review-19.test.ts` (12 tests).
 
 **Tests:** `test/integrations.test.ts`, 13 tests: the hub (systems and status, clients refused); read-only file scopes; sealed tokens under the integration label, unreadable by the app, connections private to their owner (not the firm owner), no takeover of a working connection, read-only staff can't connect, no direct writes; browsing My files, folders, followed sites and their libraries (names and sizes only); folder ids of the wrong shape refused (service and database); importing as evidence with custody details and a sync record, download without the token; the same version once and a changed file again; only listed files (not folders or invented ids); edit access and the privilege acknowledgement; re-checks when the worker runs (lost Matter access, disconnecting); the app can't create integration evidence or sync records; the download-host check; rotated and refused tokens.
+
+## Part 2a — Dropbox
+
+| Area | What Huis does |
+|---|---|
+| Connecting | A staff member connects **their own** Dropbox. Huis asks for read-only permissions only (`account_info.read`, `files.metadata.read`, `files.content.read`); a sign-in that carries anything more isn't kept, and every access token is narrowed to those three. Sign-in uses PKCE and is bound to the person and firm |
+| Whose account | The account is identified by Dropbox's own id, as Dropbox reports it. Before every listing or import the worker checks that the token still belongs to that account (also for OneDrive), so nobody can file a token under a colleague's account |
+| Browsing | Folders and files from the top of the Dropbox, with the way up; names, sizes, dates and revisions only, up to 1,000 entries a folder |
+| Importing | Exactly as OneDrive (Matter folder, privilege acknowledgement, scanning, fingerprint, custody, sync record, the same version once, checks again when the worker runs). Huis downloads the **exact revision it recorded**, so the custody record and the bytes always match. Errors: a refused sign-in needs reconnecting; a file that no longer exists fails just that import |
+| Not yet | Dropbox team spaces (folders shared through a Dropbox Business team root) — only the person's own space for now |
+
+### Before it can be used
+A Dropbox app for the firm (scoped access, permissions `account_info.read`, `files.metadata.read`, `files.content.read`), with redirect URI `<base URL>/api/integrations/dropbox/callback`, approved for production by Dropbox. Set `DROPBOX_APP_KEY` and `DROPBOX_APP_SECRET` for the app and the worker.
+
+**Security review 20:** see `SECURITY-REVIEW-2026-11.md`; regression tests in `test/security-review-20.test.ts` (6 tests).
+
+**Tests:** `test/dropbox.test.ts`, 9 tests: read-only, offline, PKCE sign-in; the account identified by Dropbox's id, missing permissions and mismatched accounts refused; available on the hub, token sealed under the integration label; browsing with the way up (names and revisions only, token only to Dropbox); importing the exact revision with custody and a sync record; a file saved again mid-copy; each system's ids kept apart; reconnecting vs a missing file; paged folders.
