@@ -129,6 +129,8 @@ async function main() {
   while (await hub.runOnce()) { /* list */ }
   await db.withFirm(avery, (s) => importFiles(s, integrationId, { matterId: x.matter.id, folderId: corr.id, items: ["drive:D1:I-memo"] }));
   while (await hub.runOnce()) { /* import */ }
+  // A connected Google Drive (files are chosen in Google's picker, in the browser).
+  const driveId = await db.withFirm(avery, (s) => connectIntegration(s, { provider: "google_drive", subject: "104857600000000000001", tenant: null, label: "avery@lawfirm.example", refreshToken: "GDRT-1", masterKey: master }));
   ms.server.close();
   await processor.drain();
 
@@ -189,8 +191,9 @@ async function main() {
   }
   const env = { HUIS_DATABASE_URL: appUrl, HUIS_WORKER_DATABASE_URL: workerUrl, HUIS_STORAGE_DIR: storageDir, HUIS_STORAGE_MASTER_KEY: master,
     HUIS_SESSION_SECRET: secret, HUIS_BASE_URL: "http://localhost:3100", MICROSOFT_CLIENT_ID: "c", MICROSOFT_CLIENT_SECRET: "s",
-    GOOGLE_CLIENT_ID: "gc", GOOGLE_CLIENT_SECRET: "gs", DROPBOX_APP_KEY: "dk", DROPBOX_APP_SECRET: "ds" };
-  await writeFile(process.env.HUIS_QA_STATE ?? "qa-state.json", JSON.stringify({ env, cookies, matterId: x.matter.id, walledId: x.walled.id, answerId, claimId, connectionId, integrationId, dbName: name }, null, 2));
+    GOOGLE_CLIENT_ID: "gc", GOOGLE_CLIENT_SECRET: "gs", DROPBOX_APP_KEY: "dk", DROPBOX_APP_SECRET: "ds",
+    GOOGLE_PICKER_API_KEY: "qa-picker-key", GOOGLE_CLOUD_PROJECT_NUMBER: "123456789012" };
+  await writeFile(process.env.HUIS_QA_STATE ?? "qa-state.json", JSON.stringify({ env, cookies, matterId: x.matter.id, walledId: x.walled.id, answerId, claimId, connectionId, integrationId, driveId, dbName: name }, null, 2));
   await admin.end();
   await db.close();
   console.log("ok");

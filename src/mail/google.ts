@@ -62,7 +62,12 @@ export function gmailAuthorizeUrl(p: { clientId: string; redirectUri: string; st
   return url.toString();
 }
 
-interface TokenResponse { access_token?: string; refresh_token?: string; id_token?: string; scope?: string; error?: string }
+export interface TokenResponse { access_token?: string; refresh_token?: string; id_token?: string; scope?: string; error?: string }
+
+/** Google's token endpoint (shared with the Integration Hub's Google Drive adapter). */
+export async function googleTokenRequest(params: Record<string, string>): Promise<TokenResponse> {
+  return tokenRequest(params);
+}
 
 async function tokenRequest(params: Record<string, string>): Promise<TokenResponse> {
   const res = await fetch(`${googleTokenBase()}/token`, {

@@ -54,7 +54,7 @@ export async function getConnection(s: FirmSession, id: string): Promise<Integra
 
 /** Records a newly authorized account (called from the connect callback). */
 export async function connectIntegration(s: FirmSession, p: {
-  provider: "onedrive" | "dropbox"; subject: string; tenant: string | null; label: string | null; refreshToken: string; masterKey: string;
+  provider: "onedrive" | "dropbox" | "google_drive"; subject: string; tenant: string | null; label: string | null; refreshToken: string; masterKey: string;
 }): Promise<string> {
   staffOnly(s, "connect an outside system");
   if (s.actor.role === "read_only") throw new PermissionDeniedError("connect an outside system");
@@ -75,9 +75,9 @@ export async function disconnectIntegration(s: FirmSession, id: string): Promise
 // ---------------------------------------------------------------------------
 // Browsing
 // ---------------------------------------------------------------------------
-const LOCATION_SHAPE = /^(root|sites|site:[A-Za-z0-9,._-]{1,300}|drive:[A-Za-z0-9!._-]{1,200}:[A-Za-z0-9!._-]{1,200}|dbx:id:[A-Za-z0-9_-]{1,200})$/;
+const LOCATION_SHAPE = /^(root|sites|site:[A-Za-z0-9,._-]{1,300}|drive:[A-Za-z0-9!._-]{1,200}:[A-Za-z0-9!._-]{1,200}|dbx:id:[A-Za-z0-9_-]{1,200}|gdrive:[A-Za-z0-9_-]{1,200})$/;
 /** What a file id starts with, per system. */
-const FILE_ID_PREFIX: Record<string, string> = { onedrive: "drive:", dropbox: "dbx:" };
+const FILE_ID_PREFIX: Record<string, string> = { onedrive: "drive:", dropbox: "dbx:", google_drive: "gdrive:" };
 /** A folder or file id of the provider's shape, with no "." or ".." part (which would become other Graph paths). */
 export const LOCATION = { test: (v: string) => LOCATION_SHAPE.test(v) && !v.split(/[:,]/).some((p) => /^\.+$/.test(p)) };
 /** A listing older than this is fetched again when the folder is opened. */

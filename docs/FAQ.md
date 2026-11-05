@@ -263,5 +263,8 @@ No. Where an imported file lived in your systems is shown only to firm staff. A 
 ### Can I import from Dropbox?
 Yes, the same way as OneDrive: connect your own Dropbox (read-only), browse, choose a Matter and folder, and import. Huis copies the exact revision it lists, so the chain of custody always matches the file. Dropbox team spaces aren't covered yet.
 
+### Can I import from Google Drive? Can Huis see my whole Drive?
+Yes, and no. Connect your own Google account, then use **Choose files in Google Drive**: Google's own file picker opens, and Huis can open only the files you choose there (Google's `drive.file` permission). It can't see the rest of your Drive, and it never changes, moves, shares or deletes anything. Tick the chosen files, pick a Matter and folder, and import; Huis copies the exact revision it lists, scanned and fingerprinted like any upload. Google Docs, Sheets and Slides aren't files Huis can copy yet: download them as a PDF or Word file first and import that. As with OneDrive and Dropbox, only you can use your connection.
+
 ### What about Google Drive, Filevine, Clio and StrongSuit?
 Google Drive comes next: first with Google's own file picker (Huis can only open the files you pick), then full browsing once Google's security assessment is done. Filevine and Clio need developer access from those companies, and StrongSuit (which supports an API connection and a user-interface merger) is being discussed with them. The Integrations page shows where each stands.
