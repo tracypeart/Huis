@@ -12,6 +12,8 @@ export const TID = "11111111-2222-3333-4444-555555555555";
 export const OID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 export const CLIENT_ID = "834e42f3-7b16-4473-bb23-e9990b483139";
 
+export interface FakeDriveItem { id: string; drive: string; name: string; parent: string | null; folder?: boolean; content?: string; mime?: string; ctag?: string; path?: string }
+
 export class FakeMicrosoft {
   server!: http.Server;
   base = "";
@@ -34,6 +36,14 @@ export class FakeMicrosoft {
   endlessEmptyPages = false;
   /** Raw JSON subject override (e.g. containing \u0000). */
   rawSubjects: Record<string, string> = {};
+  /** OneDrive / SharePoint stand-in: drive "D1" is the person's own; "SP1" is a SharePoint library. */
+  drive: Record<string, FakeDriveItem> = {};
+  sites = [{ id: "contoso.sharepoint.com,1111,2222", displayName: "Litigation" }];
+  siteDrives: Record<string, { id: string; name: string }[]> = { "contoso.sharepoint.com,1111,2222": [{ id: "b!SP1", name: "Documents" }] };
+  /** Authorization headers seen by the download host (must stay empty). */
+  downloadAuth: string[] = [];
+  /** Where /content redirects (to test the download-host check). */
+  downloadRedirect: ((d: string, i: string) => string) | null = null;
   privateKey!: CryptoKey | import("node:crypto").KeyObject;
   jwks!: ReturnType<typeof createLocalJWKSet>;
   idNonce = "";
@@ -64,9 +74,44 @@ export class FakeMicrosoft {
         .setIssuedAt().setExpirationTime("10m").sign(this.privateKey as never);
       return this.json(res, 200, { access_token: "AT-good", refresh_token: this.rotateTo ?? body.get("refresh_token") ?? "RT-1", id_token: idToken, expires_in: 3600 });
     }
+    const dl = /^\/download\/([^/]+)\/([^/]+)$/.exec(url.pathname);
+    if (dl) {
+      if (req.headers.authorization) this.downloadAuth.push(req.headers.authorization);
+      const it = this.drive[decodeURIComponent(dl[2]!)];
+      if (!it || it.content === undefined) return this.json(res, 404, { error: "not found" });
+      res.writeHead(200, { "content-type": it.mime ?? "application/octet-stream" });
+      return res.end(it.content);
+    }
     if (req.headers.authorization !== "Bearer AT-good") return this.json(res, 401, { error: "unauthorized" });
     this.graphCalls.push(url.pathname + url.search);
     if (url.pathname === "/v1.0/me") return this.json(res, 200, { mail: "Avery@LawFirm.example", displayName: "Avery Attorney" });
+    const driveJson = (it: FakeDriveItem) => ({
+      id: it.id, name: it.name, lastModifiedDateTime: "2026-10-01T12:00:00Z",
+      ...(it.folder ? { folder: { childCount: Object.values(this.drive).filter((x) => x.parent === it.id).length } }
+        : { file: { mimeType: it.mime ?? "application/octet-stream" }, size: Buffer.byteLength(it.content ?? ""), cTag: it.ctag ?? `c-${it.id}-1`, eTag: `e-${it.id}` }),
+      ...(it.parent === null ? { root: {} } : {}),
+      parentReference: { driveId: it.drive, ...(it.parent ? { id: it.parent } : {}), path: it.path ?? "/drive/root:" },
+    });
+    if (url.pathname === "/v1.0/me/drive/root/children") {
+      return this.json(res, 200, { value: Object.values(this.drive).filter((x) => x.drive === "D1" && x.parent === "D1-root").map(driveJson) });
+    }
+    if (url.pathname === "/v1.0/me/followedSites") return this.json(res, 200, { value: this.sites });
+    const sd = /^\/v1\.0\/sites\/([^/]+)\/drives$/.exec(url.pathname);
+    if (sd) return this.json(res, 200, { value: this.siteDrives[decodeURIComponent(sd[1]!)] ?? [] });
+    const di = /^\/v1\.0\/drives\/([^/]+)\/items\/([^/]+)(\/children|\/content)?$/.exec(url.pathname);
+    if (di) {
+      const d = decodeURIComponent(di[1]!);
+      let id = decodeURIComponent(di[2]!);
+      if (id === "root") id = `${d}-root`;
+      const it = this.drive[id];
+      if (!it || it.drive !== d) return this.json(res, 404, { error: "itemNotFound" });
+      if (di[3] === "/children") return this.json(res, 200, { value: Object.values(this.drive).filter((x) => x.parent === id).map(driveJson) });
+      if (di[3] === "/content") {
+        res.writeHead(302, { location: this.downloadRedirect ? this.downloadRedirect(d, id) : `${this.base}/download/${encodeURIComponent(d)}/${encodeURIComponent(id)}?tempauth=x` });
+        return res.end();
+      }
+      return this.json(res, 200, driveJson(it));
+    }
     if (url.pathname === "/v1.0/me/mailFolders") return this.json(res, 200, { value: this.folders });
     const child = /^\/v1\.0\/me\/mailFolders\/([^/]+)\/childFolders$/.exec(url.pathname);
     if (child) return this.json(res, 200, { value: this.children[decodeURIComponent(child[1]!)] ?? [] });

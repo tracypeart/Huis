@@ -326,6 +326,21 @@ export interface CustodyEvent {
   occurredAt: Date;
 }
 
+/**
+ * Security review 19, R19-2: where an imported file lived in the firm's own systems (its folder path,
+ * which can name other clients, the organization and the outside id) is for firm staff only. Others who
+ * can see the item (clients, co-counsel, experts) see that it was imported, from which system, and when.
+ * The stored event is unchanged, so the chain of custody still verifies.
+ */
+const STAFF_ONLY_CUSTODY: Record<string, readonly string[]> = {
+  imported_from_integration: ["path", "tenant", "external_id", "account"],
+};
+function custodyDetailsFor(s: FirmSession, event: string, details: Record<string, unknown>): Record<string, unknown> {
+  const hide = STAFF_ONLY_CUSTODY[event];
+  if (!hide || INTERNAL_ROLES.has(s.actor.role) || !details) return details;
+  return Object.fromEntries(Object.entries(details).filter(([k]) => !hide.includes(k)));
+}
+
 export async function custodyLog(s: FirmSession, evidenceId: string): Promise<{ events: CustodyEvent[]; brokenAt: string | null }> {
   await getEvidence(s, evidenceId);
   const { rows } = await s.client.query(
@@ -336,7 +351,7 @@ export async function custodyLog(s: FirmSession, evidenceId: string): Promise<{ 
   );
   const broken = (await s.client.query<{ b: string | null }>("SELECT huis.verify_custody_chain($1) AS b", [evidenceId])).rows[0]?.b ?? null;
   return {
-    events: rows.map((r) => ({ id: String(r.id), event: r.event, actorName: r.full_name ?? null, details: r.details, occurredAt: r.occurred_at })),
+    events: rows.map((r) => ({ id: String(r.id), event: r.event, actorName: r.full_name ?? null, details: custodyDetailsFor(s, r.event, r.details), occurredAt: r.occurred_at })),
     brokenAt: broken === null ? null : String(broken),
   };
 }

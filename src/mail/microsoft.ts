@@ -27,14 +27,14 @@ export function graphBase(): string {
   return (process.env.HUIS_GRAPH_BASE ?? "https://graph.microsoft.com/v1.0").replace(/\/$/, "");
 }
 
-export function mailboxAuthorizeUrl(p: { clientId: string; redirectUri: string; state: string; nonce: string; verifier: string; loginHint?: string }): string {
+export function mailboxAuthorizeUrl(p: { clientId: string; redirectUri: string; state: string; nonce: string; verifier: string; loginHint?: string; scopes?: string[] }): string {
   const url = new URL(`${loginBase()}/common/oauth2/v2.0/authorize`);
   url.search = new URLSearchParams({
     client_id: p.clientId,
     response_type: "code",
     redirect_uri: p.redirectUri,
     response_mode: "query",
-    scope: MAIL_SCOPES.join(" "),
+    scope: (p.scopes ?? MAIL_SCOPES).join(" "),
     state: p.state,
     nonce: p.nonce,
     code_challenge: pkceChallenge(p.verifier),
@@ -68,25 +68,25 @@ export interface ConnectedMailbox { subject: string; address: string | null; dis
 
 /** Completes the connect flow: exchanges the code, verifies who signed in, reads their mailbox address. */
 export async function completeMailboxConnect(p: {
-  clientId: string; clientSecret: string; redirectUri: string; code: string; verifier: string; nonce: string; keys?: JWTVerifyGetKey;
-}): Promise<ConnectedMailbox> {
+  clientId: string; clientSecret: string; redirectUri: string; code: string; verifier: string; nonce: string; keys?: JWTVerifyGetKey; scopes?: string[];
+}): Promise<ConnectedMailbox & { tenant: string | null }> {
   const t = await tokenRequest({
     client_id: p.clientId, client_secret: p.clientSecret, grant_type: "authorization_code", code: p.code,
-    redirect_uri: p.redirectUri, code_verifier: p.verifier, scope: MAIL_SCOPES.join(" "),
+    redirect_uri: p.redirectUri, code_verifier: p.verifier, scope: (p.scopes ?? MAIL_SCOPES).join(" "),
   });
   if (!t.id_token || !t.refresh_token) throw new Error("Microsoft did not grant offline mailbox access");
   const identity = await verifyMicrosoftIdToken(t.id_token, { clientId: p.clientId, nonce: p.nonce, keys: p.keys });
   const me = await graphJson<{ mail?: string; userPrincipalName?: string; displayName?: string }>(
     t.access_token!, `${graphBase()}/me?$select=mail,userPrincipalName,displayName`);
   const address = (me.mail ?? me.userPrincipalName ?? identity.email ?? null)?.toLowerCase() ?? null;
-  return { subject: identity.subject, address, displayName: me.displayName ?? identity.name, refreshToken: t.refresh_token };
+  return { subject: identity.subject, address, displayName: me.displayName ?? identity.name, refreshToken: t.refresh_token, tenant: identity.tenantId ?? null };
 }
 
 /** Exchanges a refresh token for an access token (Microsoft may rotate the refresh token). */
-export async function refreshAccess(p: { clientId: string; clientSecret: string; refreshToken: string }): Promise<{ accessToken: string; refreshToken: string }> {
+export async function refreshAccess(p: { clientId: string; clientSecret: string; refreshToken: string; scopes?: string[] }): Promise<{ accessToken: string; refreshToken: string }> {
   const t = await tokenRequest({
     client_id: p.clientId, client_secret: p.clientSecret, grant_type: "refresh_token",
-    refresh_token: p.refreshToken, scope: MAIL_SCOPES.join(" "),
+    refresh_token: p.refreshToken, scope: (p.scopes ?? MAIL_SCOPES).join(" "),
   });
   return { accessToken: t.access_token!, refreshToken: t.refresh_token ?? p.refreshToken };
 }
@@ -99,7 +99,7 @@ function checkGraphUrl(url: string): string {
   return u.toString();
 }
 
-async function graphFetch(token: string, url: string, init: { prefer?: string[]; stream?: boolean } = {}): Promise<Response> {
+export async function graphFetch(token: string, url: string, init: { prefer?: string[]; stream?: boolean } = {}): Promise<Response> {
   const target = checkGraphUrl(url);
   for (let attempt = 0; ; attempt++) {
     const res = await fetch(target, {
@@ -131,7 +131,7 @@ async function graphFetch(token: string, url: string, init: { prefer?: string[];
 /** Largest JSON response read from Graph (checked while reading, not after). */
 const MAX_JSON_BYTES = 50 * 1024 * 1024;
 
-async function graphJson<T>(token: string, url: string, prefer?: string[]): Promise<T> {
+export async function graphJson<T>(token: string, url: string, prefer?: string[]): Promise<T> {
   const res = await graphFetch(token, url, { prefer });
   const reader = res.body?.getReader();
   if (!reader) return {} as T;

@@ -6,6 +6,7 @@ import { evidenceVault } from "../storage/store";
 import { EvidenceProcessor } from "./processor";
 import { sandboxMode } from "../extract/sandbox";
 import { MailWorker } from "../mail/worker";
+import { IntegrationWorker } from "../integrations/worker";
 
 /**
  * Evidence worker process. Run alongside the web app:
@@ -35,6 +36,11 @@ async function main() {
     google: process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
       ? { clientId: process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_CLIENT_SECRET } : null,
   });
+  // Integration Hub: folder listings and imports for connected outside systems (OneDrive / SharePoint so far).
+  const integrations = new IntegrationWorker(pool, evidenceVault(), {
+    masterKey: process.env.HUIS_STORAGE_MASTER_KEY!,
+    microsoft: clientId && clientSecret ? { clientId, clientSecret } : null,
+  });
   const brain = new BrainWorker(pool);
   // Court date reminders. Email, SMS and push senders are set up with production hosting (O-2);
   // until then those reminders wait, visibly, and are sent once a sender exists.
@@ -44,8 +50,8 @@ async function main() {
 
   console.log(`[huis-worker] started with ${scanner.name}`);
   while (!stopping) {
-    // Evidence first (scans and reading), then filing requests, then mailbox sync, then the Matter Brain (so indexing never holds up mail).
-    const did = await (async () => (await processor.runOnce()) || (await mail.fileOnce()) || (await mail.syncOnce()) || (await alerts.runOnce()) || (await brain.indexOnce()))().catch((e) => {
+    // Evidence first (scans and reading), then filing requests and integration listings/imports, then mailbox sync, then the Matter Brain (so indexing never holds up mail).
+    const did = await (async () => (await processor.runOnce()) || (await mail.fileOnce()) || (await integrations.runOnce()) || (await mail.syncOnce()) || (await alerts.runOnce()) || (await brain.indexOnce()))().catch((e) => {
       console.error("[huis-worker] error:", e instanceof Error ? e.message : e);
       return false;
     });

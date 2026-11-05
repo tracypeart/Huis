@@ -29,6 +29,7 @@ const EVENT_LABELS: Record<string, string> = {
   copy_produced: "Copy produced",
   produced_from: "Produced by Huis from another document",
   filed_from_mailbox: "Filed from a connected mailbox (original message retrieved from the mail provider)",
+  imported_from_integration: "Imported from a connected system (file copied exactly as stored there)",
 };
 
 const COPY_STATUS: Record<string, string> = { queued: "Waiting", running: "Being produced", done: "Ready", failed: "Failed" };
@@ -199,6 +200,10 @@ export default async function EvidenceDetail({ params, searchParams }: {
                   <td>{EVENT_LABELS[c.event] ?? c.event}
                     {c.event === "moved" ? <div className="notice">{String(c.details.from)} → {String(c.details.to)}</div> : null}
                     {c.event === "filed_from_mailbox" && c.details.mailbox ? <div className="notice">{String(c.details.mailbox)}</div> : null}
+                    {c.event === "imported_from_integration" ? (
+                      <div className="notice">{[c.details.account, c.details.path, c.details.version ? `version ${String(c.details.version)}` : null]
+                        .filter(Boolean).map(String).join(" · ")}</div>
+                    ) : null}
                   </td>
                   <td>{c.actorName ?? "Huis system"}</td>
                 </tr>
