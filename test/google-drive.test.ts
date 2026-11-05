@@ -153,7 +153,7 @@ describe("choosing and importing from Google Drive", () => {
     await db.withFirm(x.avery, (s) => importFiles(s, x.connectionId, { matterId: x.matter.id, folderId: x.correspondence.id, items: [`gdrive:${MEMO}`] }));
     await drain();
     const [ev] = await evidenceIn(x.matter.id);
-    expect(ev).toMatchObject({ original_filename: "Termination memo.txt", sha256: sha("Fired April 18, two days after FMLA."), received_from: "Google Drive (avery@drive-firm.example)" });
+    expect(ev).toMatchObject({ original_filename: "Termination memo.txt", sha256: sha("Fired April 18, two days after FMLA."), received_from: "Google Drive" }); // security review 22, R22-1: the system only
     const custody = (await t.admin.query("SELECT details FROM huis.evidence_custody_events WHERE evidence_id = $1 AND event = 'imported_from_integration'", [ev.id])).rows[0];
     expect(custody.details).toMatchObject({ system: "google_drive", external_id: `gdrive:${MEMO}`, version: REV1 });
     expect(g.calls.some((c) => c.path === `/drive/v3/files/${MEMO}/revisions/${REV1}` && c.query === "?alt=media")).toBe(true);
@@ -173,10 +173,20 @@ describe("choosing and importing from Google Drive", () => {
     g.beforeDownload = () => { memo.revisions = { [REV1]: v1 }; memo.content = v2; memo.rev = REV2; g.beforeDownload = null; };
     await db.withFirm(x.avery, (s) => importFiles(s, x.connectionId, { matterId: x.matter.id, folderId: x.correspondence.id, items: [`gdrive:${MEMO}`] }));
     await drain();
+    // The version chosen (REV1) is no longer current, so nothing is recorded that doesn't match its bytes,
+    // and Huis never quietly imports the newer version instead (security review 22, R22-3).
+    expect(await evidenceIn(x.matter.id)).toHaveLength(0);
+    const job = (await t.admin.query("SELECT status, last_error FROM huis.integration_imports WHERE matter_id = $1", [x.matter.id])).rows[0];
+    expect(job).toMatchObject({ status: "failed" });
+    expect(job.last_error).toMatch(/changed after it was chosen|changed while it was being copied/);
+    // Listed again and chosen again, the new version comes in, and the record matches the bytes.
+    await open(x.avery, x.connectionId);
+    await db.withFirm(x.avery, (s) => importFiles(s, x.connectionId, { matterId: x.matter.id, folderId: x.correspondence.id, items: [`gdrive:${MEMO}`] }));
+    await drain();
     const ev = await evidenceIn(x.matter.id);
     expect(ev).toHaveLength(1);
     const c = (await t.admin.query("SELECT details FROM huis.evidence_custody_events WHERE evidence_id = $1 AND event = 'imported_from_integration'", [ev[0].id])).rows[0];
-    expect([`${REV1}=${sha(v1)}`, `${REV2}=${sha(v2)}`]).toContain(`${c.details.version}=${ev[0].sha256}`);
+    expect(`${c.details.version}=${ev[0].sha256}`).toBe(`${REV2}=${sha(v2)}`);
   });
 
   it("only listed files can be named: not unchosen files, Google Docs, other systems' ids or made-up ids", async () => {

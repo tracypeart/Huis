@@ -4,6 +4,7 @@ import { pkceChallenge } from "../auth/microsoft";
 import { UserFacingError } from "../errors";
 import { googleAuthBase, googleTokenRequest, verifyGoogleIdToken } from "../mail/google";
 import type { FileSource, ListedItem, Listing, RemoteFile } from "./types";
+import { fetchDownload } from "../net/http";
 
 /**
  * Google Drive through the Drive API (v3), with Google's own file picker.
@@ -91,16 +92,18 @@ export async function refreshGoogleDriveAccess(p: { clientId: string; clientSecr
   return { accessToken: t.access_token!, refreshToken: t.refresh_token ?? p.refreshToken };
 }
 
-async function googleFetch(token: string, url: string, accept = "application/json"): Promise<Response> {
+/** One Drive call. Security review 22, R22-2: the answer must start within the time limit and keep flowing. */
+async function googleFetch(token: string, url: string, accept = "application/json"): Promise<{ res: Response; stream: () => Readable }> {
   for (let attempt = 0; ; attempt++) {
-    const res = await fetch(url, { headers: { authorization: `Bearer ${token}`, accept }, redirect: "manual" });
+    const call = await fetchDownload(url, { headers: { authorization: `Bearer ${token}`, accept }, redirect: "manual" });
+    const res = call.res;
     if ((res.status === 429 || res.status === 500 || res.status === 503) && attempt < 3) {
       const wait = Math.min(30, Number(res.headers.get("retry-after") ?? "3") || 3);
       await res.body?.cancel().catch(() => undefined);
       await new Promise((r) => setTimeout(r, wait * 1000));
       continue;
     }
-    return res;
+    return call;
   }
 }
 
@@ -113,11 +116,21 @@ function failed(res: Response, what: string): Error {
 }
 
 async function googleJson<T>(token: string, url: string): Promise<T> {
-  const res = await googleFetch(token, url);
+  const { res, stream } = await googleFetch(token, url);
   if (res.status >= 300 && res.status < 400) { await res.body?.cancel().catch(() => undefined); throw new Error("Google sent an unexpected redirect"); }
-  const body = await res.text();
-  if (body.length > 20 * 1024 * 1024) throw new Error("Google response too large");
-  if (!res.ok) throw failed(res, "Google Drive request failed");
+  if (!res.ok) { await res.body?.cancel().catch(() => undefined); throw failed(res, "Google Drive request failed"); }
+  // Security review 22, R22-4: stop reading as soon as the response passes the limit.
+  const parts: Buffer[] = [];
+  let size = 0;
+  if (res.body) {
+    const s = stream();
+    for await (const chunk of s) {
+      size += (chunk as Buffer).length;
+      if (size > 20 * 1024 * 1024) { s.destroy(); throw new Error("Google response too large"); }
+      parts.push(chunk as Buffer);
+    }
+  }
+  const body = Buffer.concat(parts).toString("utf8");
   try { return JSON.parse(body) as T; } catch { throw new Error("Google sent an unreadable response"); }
 }
 
@@ -217,19 +230,21 @@ export class GoogleDriveSource implements FileSource {
     const url = version && REVISION.test(version)
       ? `${driveApiBase()}/files/${encodeURIComponent(d)}/revisions/${encodeURIComponent(version)}?alt=media`
       : `${driveApiBase()}/files/${encodeURIComponent(d)}?alt=media&supportsAllDrives=true`;
-    let res = await googleFetch(this.accessToken, url, "*/*");
+    let call = await googleFetch(this.accessToken, url, "*/*");
+    let res = call.res;
     if (res.status >= 300 && res.status < 400) {
       // Google may hand the bytes over from its content hosts: followed only there, and never with the token.
       const to = res.headers.get("location");
       await res.body?.cancel().catch(() => undefined);
       const next = to ? new URL(to, url).toString() : "";
       if (!driveDownloadHostAllowed(next)) throw new Error("Google sent the download somewhere unexpected");
-      res = await fetch(next, { redirect: "error" });
+      call = await fetchDownload(next, { redirect: "error" });
+      res = call.res;
     }
     if (!res.ok || !res.body) {
       await res.body?.cancel().catch(() => undefined);
       throw failed(res, "the file download failed");
     }
-    return Readable.fromWeb(res.body as never);
+    return call.stream();
   }
 }

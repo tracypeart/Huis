@@ -187,7 +187,7 @@ describe("importing into a Matter", () => {
     expect(ev).toHaveLength(1);
     const content = "Fired April 18, two days after the FMLA request.";
     expect(ev[0]).toMatchObject({ original_filename: "Termination memo.txt", source: "integration", size_bytes: String(Buffer.byteLength(content)),
-      sha256: createHash("sha256").update(content).digest("hex"), received_from: "OneDrive / SharePoint (avery@lawfirm.example)" });
+      sha256: createHash("sha256").update(content).digest("hex"), received_from: "OneDrive / SharePoint" }); // security review 22, R22-1
     const custody = (await t.admin.query("SELECT event, details FROM huis.evidence_custody_events WHERE evidence_id = $1 ORDER BY id", [ev[0].id])).rows;
     expect(custody.map((c) => c.event)).toEqual(["received", "imported_from_integration"]);
     expect(custody[1].details).toMatchObject({ system: "onedrive", external_id: "drive:D1:I-memo", version: "c-I-memo-1", path: "/Termination memo.txt", tenant: TID });
@@ -212,6 +212,9 @@ describe("importing into a Matter", () => {
     expect((await db.withFirm(x.avery, (s) => listImports(s, x.connectionId)))[0]).toMatchObject({ status: "skipped", error: "this version is already in the Matter" });
     ms.drive["I-memo"]!.content = "Fired April 18. (Edited: and the manager knew.)";
     ms.drive["I-memo"]!.ctag = "c-I-memo-2";
+    // Security review 22, R22-3: the changed file is imported once someone has seen it in a fresh listing.
+    await db.withFirm(x.avery, (s) => browse(s, x.connectionId, "root", true));
+    await drain();
     await req();
     await drain();
     expect(await evidenceIn(x.matter.id)).toHaveLength(2);

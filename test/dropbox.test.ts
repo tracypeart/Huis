@@ -140,7 +140,7 @@ describe("browsing and importing from Dropbox", () => {
     await db.withFirm(x.avery, (s) => importFiles(s, x.connectionId, { matterId: x.matter.id, folderId: x.correspondence.id, items: ["dbx:id:fileMemo00001"] }));
     await drain();
     const [ev] = await evidenceIn(x.matter.id);
-    expect(ev).toMatchObject({ original_filename: "Termination memo.txt", sha256: sha("Fired April 18, two days after FMLA."), received_from: "Dropbox (avery@lawfirm.example)" });
+    expect(ev).toMatchObject({ original_filename: "Termination memo.txt", sha256: sha("Fired April 18, two days after FMLA."), received_from: "Dropbox" }); // security review 22, R22-1: the system only
     const custody = (await t.admin.query("SELECT details FROM huis.evidence_custody_events WHERE evidence_id = $1 AND event = 'imported_from_integration'", [ev.id])).rows[0];
     expect(custody.details).toMatchObject({ system: "dropbox", external_id: "dbx:id:fileMemo00001", version: REV1, path: "/Clients/Smith/Termination memo.txt" });
     expect(dbx.calls.find((c) => c.path === "/2/files/download")?.arg).toBe(JSON.stringify({ path: `rev:${REV1}` }));
@@ -156,10 +156,21 @@ describe("browsing and importing from Dropbox", () => {
     dbx.beforeDownload = () => { memo.revisions = { [REV1]: v1 }; memo.content = v2; memo.rev = REV2; dbx.beforeDownload = null; };
     await db.withFirm(x.avery, (s) => importFiles(s, x.connectionId, { matterId: x.matter.id, folderId: x.correspondence.id, items: ["dbx:id:fileMemo00001"] }));
     await drain();
+    // The version chosen (REV1) is no longer current, so nothing is recorded that doesn't match its bytes,
+    // and Huis never quietly imports the newer version instead (security review 22, R22-3).
+    expect(await evidenceIn(x.matter.id)).toHaveLength(0);
+    const job = (await t.admin.query("SELECT status, last_error FROM huis.integration_imports WHERE matter_id = $1", [x.matter.id])).rows[0];
+    expect(job).toMatchObject({ status: "failed" });
+    expect(job.last_error).toMatch(/changed after it was chosen|changed while it was being copied/);
+    // Choosing it again from a fresh listing imports the new version, and the record matches the bytes.
+    await db.withFirm(x.avery, (s) => browse(s, x.connectionId, "dbx:id:folderSmith01", true));
+    await drain();
+    await db.withFirm(x.avery, (s) => importFiles(s, x.connectionId, { matterId: x.matter.id, folderId: x.correspondence.id, items: ["dbx:id:fileMemo00001"] }));
+    await drain();
     const ev = await evidenceIn(x.matter.id);
     expect(ev).toHaveLength(1);
     const c = (await t.admin.query("SELECT details FROM huis.evidence_custody_events WHERE evidence_id = $1 AND event = 'imported_from_integration'", [ev[0].id])).rows[0];
-    expect([`${REV1}=${sha(v1)}`, `${REV2}=${sha(v2)}`]).toContain(`${c.details.version}=${ev[0].sha256}`);
+    expect(`${c.details.version}=${ev[0].sha256}`).toBe(`${REV2}=${sha(v2)}`);
   });
 
   it("each system's ids stay its own (a OneDrive id on a Dropbox connection, and the reverse)", async () => {

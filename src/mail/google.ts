@@ -3,6 +3,7 @@ import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from "jose";
 import { pkceChallenge } from "../auth/microsoft";
 import { UserFacingError } from "../errors";
 import type { MailboxPage, MailFolderInfo, MailMessageInfo, MailProvider } from "./provider";
+import { fetchDownload, fetchWithTimeout } from "../net/http";
 
 /**
  * Gmail / Google Workspace mailboxes through the Gmail API.
@@ -70,7 +71,7 @@ export async function googleTokenRequest(params: Record<string, string>): Promis
 }
 
 async function tokenRequest(params: Record<string, string>): Promise<TokenResponse> {
-  const res = await fetch(`${googleTokenBase()}/token`, {
+  const res = await fetchWithTimeout(`${googleTokenBase()}/token`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams(params),
@@ -136,10 +137,12 @@ function checkGmailUrl(url: string): string {
   return u.toString();
 }
 
-async function gmailFetch(token: string, url: string): Promise<Response> {
+/** One Gmail call, with time limits (security review 22): the answer must start in time and keep flowing. */
+async function gmailFetch(token: string, url: string): Promise<{ res: Response; stream: () => Readable }> {
   const target = checkGmailUrl(url);
   for (let attempt = 0; ; attempt++) {
-    const res = await fetch(target, { headers: { authorization: `Bearer ${token}`, accept: "application/json" }, redirect: "error" });
+    const call = await fetchDownload(target, { headers: { authorization: `Bearer ${token}`, accept: "application/json" }, redirect: "error" });
+    const res = call.res;
     // Google rate-limits busy mailboxes (429, or 403 with a rate-limit reason): back off a few times.
     if ((res.status === 429 || res.status === 500 || res.status === 503) && attempt < 3) {
       // Short waits only, so one mailbox can't hold the worker (or outlast its lock).
@@ -155,7 +158,7 @@ async function gmailFetch(token: string, url: string): Promise<Response> {
       (err as Error & { status?: number }).status = res.status;
       throw err;
     }
-    return res;
+    return call;
   }
 }
 
@@ -165,17 +168,15 @@ const MAX_JSON_BYTES = 50 * 1024 * 1024;
 const MAX_RAW_JSON_BYTES = 100 * 1024 * 1024;
 
 async function gmailJson<T>(token: string, url: string, max = MAX_JSON_BYTES): Promise<T> {
-  const res = await gmailFetch(token, url);
-  const reader = res.body?.getReader();
-  if (!reader) return {} as T;
-  const parts: Uint8Array[] = [];
+  const { res, stream } = await gmailFetch(token, url);
+  if (!res.body) return {} as T;
+  const body = stream();
+  const parts: Buffer[] = [];
   let size = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.length;
-    if (size > max) { await reader.cancel().catch(() => undefined); throw new Error("Gmail response too large"); }
-    parts.push(value);
+  for await (const chunk of body) {
+    size += (chunk as Buffer).length;
+    if (size > max) { body.destroy(); throw new Error("Gmail response too large"); }
+    parts.push(chunk as Buffer);
   }
   try {
     return JSON.parse(Buffer.concat(parts).toString("utf8")) as T;

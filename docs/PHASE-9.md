@@ -1,6 +1,6 @@
 # Phase 9 — Integration Hub
 
-**Status:** Part 1 (the hub, and OneDrive / SharePoint import) merged after independent security review 19. Part 2a (Dropbox) merged after independent security review 20 (1 problem confirmed, fixed for Dropbox and OneDrive). Part 2b (Google Drive, with Google's own file picker) built, tested and through independent security review 21 (2 problems confirmed, both fixed). Part 3 (Filevine, Clio, StrongSuit) needs partner or developer access.
+**Status:** Part 1 (the hub, and OneDrive / SharePoint import) merged after independent security review 19. Part 2a (Dropbox) merged after independent security review 20 (1 problem confirmed, fixed for Dropbox and OneDrive). Part 2b (Google Drive, with Google's own file picker) built, tested and through independent security review 21 (2 problems confirmed, both fixed). Review 22 re-checked Dropbox and the shared hub code (1 Medium and 2 Low problems confirmed, all fixed for Dropbox, OneDrive and Google Drive; see below). Part 3 (Filevine, Clio, StrongSuit) needs partner or developer access.
 
 ## Plan
 | Part | What | Status |
@@ -9,6 +9,13 @@
 | 9.2a | **Dropbox**: browse your Dropbox and import chosen files into a Matter, like OneDrive | Merged after review 20 |
 | 9.2b | **Google Drive**: Google's own file picker now (the `drive.file` permission: Huis can only open the files picked); full browsing like OneDrive once Google's restricted-scope security assessment is done (the same assessment Gmail needs) | Review 21 done |
 | 9.3 | **Filevine, Clio and StrongSuit** adapters: link Matters, bring in documents, contacts and deadlines; StrongSuit's API connection and interface merger (O-1) | Needs partner or developer access |
+
+## Security review 22 (Dropbox, Google Drive and the hub)
+
+See `SECURITY-REVIEW-2026-11.md`; regression tests in `test/security-review-22.test.ts` (6 tests). What changed for people using it:
+- An imported file's *Received from* says only the system ("Dropbox", "OneDrive / SharePoint", "Google Drive"); the account it came from is in the chain of custody, which only firm staff see.
+- Huis imports the version you saw when you chose the file. If the file changed since, the import stops and asks you to choose it again.
+- Every call to Dropbox, Microsoft and Google has a time limit, and a download that stops sending data is stopped, so one stuck connection can't hold up the rest of Huis.
 
 ## Part 1 — the hub and OneDrive / SharePoint
 

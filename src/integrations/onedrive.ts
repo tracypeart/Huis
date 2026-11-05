@@ -1,6 +1,7 @@
 import { Readable } from "node:stream";
 import { graphBase, graphJson } from "../mail/microsoft";
 import type { FileSource, ListedItem, Listing, RemoteFile } from "./types";
+import { fetchDownload } from "../net/http";
 
 /**
  * OneDrive and SharePoint through Microsoft Graph.
@@ -161,13 +162,16 @@ export class OneDriveSource implements FileSource {
     const di = driveItem(id);
     if (!di) throw new Error("unknown file");
     const url = `${graphBase()}/drives/${encodeURIComponent(di.drive)}/items/${encodeURIComponent(di.item)}/content`;
-    const first = await fetch(url, { headers: { authorization: `Bearer ${this.accessToken}` }, redirect: "manual" });
+    // Security review 22, R22-2: every step has a time limit, and the download stops if no data arrives.
+    const firstCall = await fetchDownload(url, { headers: { authorization: `Bearer ${this.accessToken}` }, redirect: "manual" });
+    const first = firstCall.res;
     // Graph itself refusing the token means the account needs reconnecting.
     if (first.status === 401 || first.status === 403) {
       await first.body?.cancel().catch(() => undefined);
       throw Object.assign(new Error(`Microsoft Graph refused the download (${first.status})`), { reconnect: true });
     }
     let res: Response = first;
+    let stream = firstCall.stream;
     let fromLink = false;
     if (first.status >= 300 && first.status < 400) {
       const to = first.headers.get("location");
@@ -175,7 +179,9 @@ export class OneDriveSource implements FileSource {
       if (!to) throw new Error("Microsoft did not give a download link");
       const target = new URL(to, url).toString();
       if (!downloadHostAllowed(target)) throw new Error("unexpected download link");
-      res = await fetch(target, { redirect: "error" });
+      const linkCall = await fetchDownload(target, { redirect: "error" });
+      res = linkCall.res;
+      stream = linkCall.stream;
       fromLink = true;
     }
     // (A file that comes straight back, without a redirect, came from Graph itself.)
@@ -187,6 +193,6 @@ export class OneDriveSource implements FileSource {
       (err as Error & { final?: boolean }).final = res.status === 404 || (fromLink && res.status === 403);
       throw err;
     }
-    return Readable.fromWeb(res.body as never);
+    return stream();
   }
 }

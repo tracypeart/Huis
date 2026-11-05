@@ -25,7 +25,11 @@ export interface IntegrationConfig {
 
 interface Held { firm_id: string; provider: string; account_subject: string; ciphertext: Buffer | null }
 interface ListingJob extends Held { listing_id: string; lock_token: string; connection_id: string; location: string }
-interface ImportJob extends Held { import_id: string; lock_token: string; matter_id: string; connection_id: string; external_id: string; external_name: string }
+interface ImportJob extends Held {
+  import_id: string; lock_token: string; matter_id: string; connection_id: string; external_id: string; external_name: string;
+  /** The version the person saw in the listing when they chose the file (security review 22, R22-3). */
+  expected_version: string | null;
+}
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : "integration error").slice(0, 300);
 const flag = (e: unknown, k: "reconnect" | "final") => Boolean((e as Record<string, unknown> | null)?.[k]);
@@ -97,6 +101,10 @@ export class IntegrationWorker {
       const source = await this.open(f, (sealed) =>
         this.pool.query("SELECT huis.worker_save_integration_credentials('import', $1, $2, $3)", [f.import_id, f.lock_token, sealed]).then(() => undefined));
       const file = await source.describe(f.external_id);
+      // Security review 22, R22-3: import the version the person chose, never a newer one they haven't seen.
+      if (f.expected_version !== null && file.version !== f.expected_version) {
+        throw Object.assign(new Error("the file changed after it was chosen; open the folder again and choose it again"), { final: true });
+      }
       if (file.size !== null && file.size > MAX_IMPORT_BYTES) throw Object.assign(new Error("the file is too large to import"), { final: true });
       let size = 0;
       const cap = new Transform({
