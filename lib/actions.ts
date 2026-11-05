@@ -25,7 +25,8 @@ import {
 import {
   fileMessage, fileToSuggestion, requestSync, setAutoFile, setDelegate, setFilingMode, setFolderIncluded, setMatterColor, updateMailbox,
 } from "../src/services/inbox";
-import { addCourtEvent, decideCourtEvent, deleteCourtEvent, setCourtEventDone, updateCourtEvent } from "../src/services/court";
+import { addCourtEvent, addNoticeSender, decideCourtEvent, deleteCourtEvent, removeNoticeSender, setCourtEventDone, updateCourtEvent } from "../src/services/court";
+import { markAlertsRead, setAlertPreferences } from "../src/services/alerts";
 import { ROLES } from "../src/security/permissions";
 import { UserFacingError } from "../src/errors";
 import { act, db, getPending, setSessionCookie, withSession } from "./server";
@@ -551,4 +552,28 @@ export async function courtDoneAction(fd: FormData): Promise<void> {
 export async function courtDeleteAction(fd: FormData): Promise<void> {
   const matterId = text(fd, "matterId") ?? "";
   return act(courtPath(matterId), "Court date deleted.", () => withSession(async (s) => { await deleteCourtEvent(s, text(fd, "eventId") ?? ""); }));
+}
+
+// ---------------------------------------------------------------------------
+// Court reminders and court connections (Phase 8 parts 2–3)
+// ---------------------------------------------------------------------------
+export async function alertPreferencesAction(fd: FormData): Promise<void> {
+  return act("/alerts", "Reminder settings saved.", () => withSession(async (s) => {
+    await setAlertPreferences(s, {
+      channels: fd.getAll("channels").map(String), reminderDays: fd.getAll("reminderDays").map(String),
+      includeDetails: text(fd, "includeDetails") === "on", smsNumber: text(fd, "smsNumber") || null,
+    });
+  }));
+}
+export async function alertsReadAction(fd: FormData): Promise<void> {
+  const id = text(fd, "alertId");
+  return act("/alerts", id ? "Marked read." : "All marked read.", () => withSession(async (s) => { await markAlertsRead(s, id || undefined); }));
+}
+export async function noticeSenderAddAction(fd: FormData): Promise<void> {
+  return act("/court-connections", "Sender registered. Email already filed from it is being read again.", () => withSession(async (s) => {
+    await addNoticeSender(s, { address: text(fd, "address"), label: text(fd, "label") });
+  }));
+}
+export async function noticeSenderRemoveAction(fd: FormData): Promise<void> {
+  return act("/court-connections", "Sender removed.", () => withSession(async (s) => { await removeNoticeSender(s, text(fd, "senderId") ?? ""); }));
 }

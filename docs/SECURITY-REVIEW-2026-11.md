@@ -321,6 +321,25 @@ Also fixed while reviewing: overlapping passages could produce a second, cut-sho
 - **Sender check without signatures:** the sender is checked by address. Checking the court's email signatures (DKIM/DMARC) needs the inbox sync to keep those results; until then a forged sender address could still produce proposals, which still need an attorney to confirm each date.
 - **Forwarded notices:** a court notice an attorney forwards from another address isn't read as a notice. File the original from the inbox.
 
+## Eighteenth review — Phase 8 parts 2–3 (Utah court notices, reminders, court connections)
+
+**Scope:** court date reminders (preferences, queueing, sending and the re-check at sending), the Utah notice reader, registered notice senders, the CourtConnector framework, and their pages and database rules.
+**Result:** reminders' privacy held (clients, staff not on the Matter and disabled users get none; bare messages carry nothing privileged; no header injection; reminders can't be forged or read by others), and the review 17 fixes held. The reviewer confirmed 9 problems. **All fixed.** Regression tests are in `test/security-review-18.test.ts` (11 tests) and `test/court-alerts.test.ts`. Each fails without its fix.
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| R18-9 | High (availability) | The Utah case-number and case-name patterns could take seconds to minutes on hostile text, and the worker ran readers on every document, not only court email | Both patterns bounded; the worker reads a notice only from a sender the database would accept for that reader; 100k-character hostile inputs in the tests |
+| R18-1 | High (ethical wall) | A lead attorney taken off a walled Matter was still reminded (and emailed details) of its court dates | Behind a wall only members are reminded, when queued and again when sent |
+| R18-2 | Medium | Turning a channel or reminder day off didn't stop reminders already waiting on it | The person's current choices are checked again when sending |
+| R18-3 | Medium | One firm's administrator could stop every firm's reminders by setting an unknown time zone | A firm's time zone must be a real one; reminders are queued firm by firm, so one firm's problem never affects another's |
+| R18-4 | Low-Medium | A reminder sent late used its original wording ("in 7 days" for tomorrow), and one for a date that had passed could still go out | The days left are worked out when sending, in the firm's time zone; passed dates and reminders a later one replaces aren't sent |
+| R18-5 | Low-Medium | The Utah reader proposed a date its sentence vacated before the date ("HEARING VACATED, the … scheduled for …") (review 17 F4) | The whole sentence is checked, and the line above a hearing block |
+| R18-6 | Low | One firm could check whether an address was another firm's registered e-filing provider | The app's check always uses the person's own firm; the firm-taking version is only used inside the database's own functions |
+| R18-7 | Low | An administrator could re-run reading on any sender's email, any number of times | Only for a sender the firm has registered, only when newly registered, only email already read |
+| R18-8 | Low | Two different Utah notices sharing a provider's header collapsed into one docket entry | A Utah notice is named by its whole body (without the headers that differ between attorneys' copies) |
+
+**Accepted, not changed:** the list of personal email services refused as notice senders isn't exhaustive; registration is by exact address, so this adds no spoofing risk beyond the accepted one (no DKIM/DMARC check yet, review 17).
+
 ## Still open (tracked, not code defects)
 1. **MFA enforcement** — Microsoft sign-in doesn't yet require proof of MFA. Plan: require the firm's Microsoft MFA (Conditional Access) or a Huis passkey. Part of the end-of-build Azure/hosting step.
 2. **Administrator-level tampering** — someone with full database superuser access could switch off the protective rules and rewrite history consistently. The hash chains make ordinary tampering detectable, but defeating a superuser needs the chain's latest fingerprint stored outside the database (e.g. a daily signed export). Planned with production hosting.

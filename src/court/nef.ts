@@ -115,7 +115,7 @@ const clean = (s: string | undefined) => (s ? s.replace(/\s+/g, " ").trim().repl
 const title = (s: string | undefined) => clean(s).replace(/^(?:the|a|an|any|all)\s+/i, "");
 
 /** The sentence around a position (a period followed by a space ends one; "7.100" and "B. Pead" don't). */
-function sentenceAt(text: string, at: number): string {
+export function sentenceAt(text: string, at: number): string {
   const before = text.slice(Math.max(0, at - 400), at);
   const b = Math.max(before.lastIndexOf(". "), before.lastIndexOf(".\n"), before.lastIndexOf("; "));
   const after = text.slice(at, at + 400);
@@ -123,7 +123,7 @@ function sentenceAt(text: string, at: number): string {
   return `${b >= 0 ? before.slice(b + 2) : before}${e >= 0 ? after.slice(0, e) : after}`;
 }
 /** Security review 17, F4: a date the same sentence vacates, strikes or cancels is not a date to keep. */
-const CANCELLED = /\b(vacat\w*|strick\w*|stricken|struck|cancel\w*|terminat\w*|withdrawn|moot)\b/i;
+export const CANCELLED = /\b(vacat\w*|strick\w*|stricken|struck|cancel\w*|terminat\w*|withdrawn|moot)\b/i;
 
 /** Court dates set in a piece of docket text, positioned relative to `offset`. */
 export function findCourtDates(docket: string, offset = 0): FoundCourtEvent[] {

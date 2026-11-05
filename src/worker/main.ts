@@ -1,5 +1,6 @@
 import pg from "pg";
 import { BrainWorker } from "../brain/worker";
+import { CourtAlertWorker } from "../court/alerts";
 import { scannerFromEnv } from "../storage/scanner";
 import { evidenceVault } from "../storage/store";
 import { EvidenceProcessor } from "./processor";
@@ -35,13 +36,16 @@ async function main() {
       ? { clientId: process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_CLIENT_SECRET } : null,
   });
   const brain = new BrainWorker(pool);
+  // Court date reminders. Email, SMS and push senders are set up with production hosting (O-2);
+  // until then those reminders wait, visibly, and are sent once a sender exists.
+  const alerts = new CourtAlertWorker(pool, {}, `${(process.env.HUIS_BASE_URL ?? "").replace(/\/$/, "")}/alerts`);
   let stopping = false;
   for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => { stopping = true; });
 
   console.log(`[huis-worker] started with ${scanner.name}`);
   while (!stopping) {
     // Evidence first (scans and reading), then filing requests, then mailbox sync, then the Matter Brain (so indexing never holds up mail).
-    const did = await (async () => (await processor.runOnce()) || (await mail.fileOnce()) || (await mail.syncOnce()) || (await brain.indexOnce()))().catch((e) => {
+    const did = await (async () => (await processor.runOnce()) || (await mail.fileOnce()) || (await mail.syncOnce()) || (await alerts.runOnce()) || (await brain.indexOnce()))().catch((e) => {
       console.error("[huis-worker] error:", e instanceof Error ? e.message : e);
       return false;
     });
