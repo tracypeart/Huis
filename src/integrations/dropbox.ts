@@ -1,5 +1,6 @@
 import { Readable } from "node:stream";
 import { pkceChallenge } from "../auth/microsoft";
+import { fetchDownload, fetchWithTimeout, readTextCapped } from "../net/http";
 import type { FileSource, ListedItem, Listing, RemoteFile } from "./types";
 
 /**
@@ -40,10 +41,11 @@ export function dropboxAuthorizeUrl(p: { clientId: string; redirectUri: string; 
 interface TokenResponse { access_token?: string; refresh_token?: string; account_id?: string; scope?: string; error?: string }
 
 async function tokenRequest(params: Record<string, string>): Promise<TokenResponse> {
-  const res = await fetch(`${dropboxApiBase()}/oauth2/token`, {
+  const res = await fetchWithTimeout(`${dropboxApiBase()}/oauth2/token`, {
     method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(params), redirect: "error",
   });
-  const body = (await res.json().catch(() => ({}))) as TokenResponse;
+  let body: TokenResponse = {};
+  try { body = JSON.parse(await readTextCapped(res, 64 * 1024, "Dropbox response too large")) as TokenResponse; } catch { body = {}; }
   if (!res.ok || !body.access_token) {
     // Only Dropbox's short error codes are kept, never raw response text.
     const code = typeof body.error === "string" && /^[a-z_]{1,40}$/.test(body.error) ? body.error : String(res.status);
@@ -57,7 +59,7 @@ async function tokenRequest(params: Record<string, string>): Promise<TokenRespon
 /** Every Dropbox API call: POST with a JSON body (or none), token only to the configured host. */
 async function rpc<T>(token: string, endpoint: string, body: unknown): Promise<T> {
   for (let attempt = 0; ; attempt++) {
-    const res = await fetch(`${dropboxApiBase()}/2/${endpoint}`, {
+    const res = await fetchWithTimeout(`${dropboxApiBase()}/2/${endpoint}`, {
       method: "POST",
       headers: { authorization: `Bearer ${token}`, ...(body === null ? {} : { "content-type": "application/json" }) },
       body: body === null ? undefined : JSON.stringify(body),
@@ -69,15 +71,16 @@ async function rpc<T>(token: string, endpoint: string, body: unknown): Promise<T
       await new Promise((r) => setTimeout(r, wait * 1000));
       continue;
     }
-    const text = await res.text();
-    if (text.length > 20 * 1024 * 1024) throw new Error("Dropbox response too large");
     if (!res.ok) {
+      await res.body?.cancel().catch(() => undefined);
       const err = new Error(`Dropbox request failed (${res.status})`);
       (err as Error & { reconnect?: boolean }).reconnect = res.status === 401;
       // 409 is Dropbox's "this path/id doesn't exist (any more)".
       (err as Error & { final?: boolean }).final = res.status === 409;
       throw err;
     }
+    // Security review 21, R21-4: stop reading as soon as the response passes the limit.
+    const text = await readTextCapped(res, 20 * 1024 * 1024, "Dropbox response too large");
     try { return JSON.parse(text) as T; } catch { throw new Error("Dropbox sent an unreadable response"); }
   }
 }
@@ -198,7 +201,7 @@ export class DropboxSource implements FileSource {
     const d = dropboxId(id);
     if (!d) throw new Error("unknown file");
     const path = version && /^[0-9a-f]{9,64}$/i.test(version) ? `rev:${version}` : d;
-    const res = await fetch(`${dropboxContentBase()}/2/files/download`, {
+    const { res, stream } = await fetchDownload(`${dropboxContentBase()}/2/files/download`, {
       method: "POST",
       // Dropbox reads the argument from a header, which must be ASCII-only JSON.
       headers: { authorization: `Bearer ${this.accessToken}`, "dropbox-api-arg": JSON.stringify({ path }).replace(/[\u007f-￿]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`) },
@@ -211,6 +214,6 @@ export class DropboxSource implements FileSource {
       (err as Error & { final?: boolean }).final = res.status === 409;
       throw err;
     }
-    return Readable.fromWeb(res.body as never);
+    return stream();
   }
 }

@@ -2,6 +2,7 @@ import { Readable } from "node:stream";
 import type { JWTVerifyGetKey } from "jose";
 import { pkceChallenge, verifyMicrosoftIdToken } from "../auth/microsoft";
 import type { MailFolderInfo, MailMessageInfo, MailProvider, DeltaPage } from "./provider";
+import { fetchDownload, fetchWithTimeout } from "../net/http";
 
 /**
  * Outlook / Microsoft 365 mailboxes through Microsoft Graph.
@@ -48,7 +49,7 @@ export function mailboxAuthorizeUrl(p: { clientId: string; redirectUri: string; 
 interface TokenResponse { access_token?: string; refresh_token?: string; id_token?: string; expires_in?: number; error?: string }
 
 async function tokenRequest(params: Record<string, string>): Promise<TokenResponse> {
-  const res = await fetch(`${loginBase()}/common/oauth2/v2.0/token`, {
+  const res = await fetchWithTimeout(`${loginBase()}/common/oauth2/v2.0/token`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams(params),
@@ -99,10 +100,15 @@ function checkGraphUrl(url: string): string {
   return u.toString();
 }
 
-export async function graphFetch(token: string, url: string, init: { prefer?: string[]; stream?: boolean } = {}): Promise<Response> {
+/**
+ * One Graph call. Security review 21, R21-2: the answer must start within the request limit,
+ * and the body is read through `stream()`, which stops if no data arrives for too long.
+ */
+export async function graphFetch(token: string, url: string, init: { prefer?: string[]; stream?: boolean } = {}):
+  Promise<{ res: Response; stream: () => Readable }> {
   const target = checkGraphUrl(url);
   for (let attempt = 0; ; attempt++) {
-    const res = await fetch(target, {
+    const call = await fetchDownload(target, {
       headers: {
         authorization: `Bearer ${token}`,
         prefer: ['IdType="ImmutableId"', ...(init.prefer ?? [])].join(", "),
@@ -110,6 +116,7 @@ export async function graphFetch(token: string, url: string, init: { prefer?: st
       },
       redirect: "error",
     });
+    const res = call.res;
     // Microsoft throttles busy mailboxes: honour Retry-After a few times.
     if ((res.status === 429 || res.status === 503 || res.status === 504) && attempt < 3) {
       const wait = Math.min(60, Number(res.headers.get("retry-after") ?? "5") || 5);
@@ -124,7 +131,7 @@ export async function graphFetch(token: string, url: string, init: { prefer?: st
       (err as Error & { status?: number }).status = res.status;
       throw err;
     }
-    return res;
+    return call;
   }
 }
 
@@ -132,17 +139,15 @@ export async function graphFetch(token: string, url: string, init: { prefer?: st
 const MAX_JSON_BYTES = 50 * 1024 * 1024;
 
 export async function graphJson<T>(token: string, url: string, prefer?: string[]): Promise<T> {
-  const res = await graphFetch(token, url, { prefer });
-  const reader = res.body?.getReader();
-  if (!reader) return {} as T;
-  const parts: Uint8Array[] = [];
+  const { res, stream } = await graphFetch(token, url, { prefer });
+  if (!res.body) return {} as T;
+  const body = stream();
+  const parts: Buffer[] = [];
   let size = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.length;
-    if (size > MAX_JSON_BYTES) { await reader.cancel().catch(() => undefined); throw new Error("Graph response too large"); }
-    parts.push(value);
+  for await (const chunk of body) {
+    size += (chunk as Buffer).length;
+    if (size > MAX_JSON_BYTES) { body.destroy(); throw new Error("Graph response too large"); }
+    parts.push(chunk as Buffer);
   }
   try {
     return JSON.parse(Buffer.concat(parts).toString("utf8")) as T;
@@ -217,8 +222,8 @@ export class MicrosoftMailProvider implements MailProvider {
 
   /** The original message exactly as Outlook holds it (RFC 822 / MIME). */
   async fetchMime(messageId: string): Promise<Readable> {
-    const res = await graphFetch(this.accessToken, `${graphBase()}/me/messages/${encodeURIComponent(messageId)}/$value`, { stream: true });
+    const { res, stream } = await graphFetch(this.accessToken, `${graphBase()}/me/messages/${encodeURIComponent(messageId)}/$value`, { stream: true });
     if (!res.body) throw new Error("empty message");
-    return Readable.fromWeb(res.body as never);
+    return stream();
   }
 }
